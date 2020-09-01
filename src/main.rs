@@ -5,9 +5,9 @@ mod logger;
 mod parse;
 
 use anyhow::Context;
+use futures::stream::StreamExt;
 use git2::{Cred, RemoteCallbacks, Repository};
 use logger::Logger;
-use reqwest::blocking::Client;
 use shiplift::{BuildOptions, Docker};
 use std::fmt::{self, Display, Formatter};
 use std::io::{self, Write};
@@ -15,7 +15,6 @@ use std::path::{Path, PathBuf};
 use std::{env, fs, process::Command};
 use structopt::StructOpt;
 use tempfile::NamedTempFile;
-use tokio::prelude::{Future, Stream};
 
 const DOCKERFILE_BUILDER: &str = include_str!("../docker/Dockerfile");
 const FEDORA_IMAGE_URL: (&str, &str) = ("Fedora 32", "https://download.fedoraproject.org/pub/fedora/linux/releases/32/Server/armhfp/images/Fedora-Server-armhfp-32-1.6-sda.raw.xz");
@@ -44,7 +43,7 @@ struct CmdBuild {
 }
 
 impl CmdBuild {
-    fn run(self, log: &mut Logger) -> anyhow::Result<impl Future<Item = (), Error = ()>> {
+    async fn run(self, log: &mut Logger) -> anyhow::Result<()> {
         info!("Building service '{}'", self.base.service);
 
         let dir = tempfile::tempdir().context("Creating temporary directory")?;
@@ -52,7 +51,7 @@ impl CmdBuild {
         let repo = self.clone_repo(dir.path())?;
         let build_dir = self.prepare_build_dir(repo)?;
 
-        self.build_docker_image(build_dir)
+        self.build_docker_image(build_dir).await
     }
 
     fn clone_repo(&self, repo_path: &Path) -> anyhow::Result<Repository> {
@@ -130,10 +129,7 @@ impl CmdBuild {
         Ok(build_dir.to_path_buf())
     }
 
-    fn build_docker_image(
-        &self,
-        build_dir: PathBuf,
-    ) -> anyhow::Result<impl Future<Item = (), Error = ()>> {
+    async fn build_docker_image(&self, build_dir: PathBuf) -> anyhow::Result<()> {
         let docker = Docker::new();
 
         // Prepare build options for Docker.
@@ -146,22 +142,25 @@ impl CmdBuild {
 
         // Start the Docker build process.
         info!("Building Docker image '{}'", tag);
-        let fut = docker
-            .images()
-            .build(&options)
-            .for_each(|object| {
-                if let Some(stream) = object
-                    .get("stream")
-                    .and_then(|v| v.as_str())
-                    .filter(|s| s.trim().len() > 0)
-                {
-                    info!("{}", stream.trim());
-                }
-                Ok(())
-            })
-            .map_err(|e| error!("{}", e));
+        let images = docker.images();
+        let stream = images.build(&options);
 
-        Ok(fut)
+        stream
+            .for_each(|object| async {
+                match object {
+                    Ok(v) => {
+                        if let Some(stream) = v.get("stream").and_then(|v| v.as_str()) {
+                            for chunk in stream.split('\n') {
+                                info!("{}", chunk);
+                            }
+                        }
+                    }
+                    Err(e) => (),
+                }
+            })
+            .await;
+
+        Ok(())
     }
 }
 
@@ -172,10 +171,10 @@ struct CmdDeploy {
 }
 
 impl CmdDeploy {
-    fn run(self, log: &mut Logger) -> anyhow::Result<impl Future<Item = (), Error = ()>> {
+    async fn run(self, log: &mut Logger) -> anyhow::Result<()> {
         info!("Deploying service '{}'", self.base.service);
         let build_cmd = CmdBuild { base: self.base };
-        build_cmd.run(log)
+        build_cmd.run(log).await
     }
 }
 
@@ -183,13 +182,14 @@ impl CmdDeploy {
 struct CmdFlash {}
 
 impl CmdFlash {
-    fn run(self, log: &mut Logger) -> anyhow::Result<()> {
+    async fn run(self, log: &mut Logger) -> anyhow::Result<()> {
         let disk_info = self.select_drive(log).context("Selecting drive")?;
         let disk_info_str = disk_info.to_string();
 
         let url = self.select_image(log).context("Selecting image")?;
         let image_path = self
             .fetch_image(log, url)
+            .await
             .with_context(|| format!("Fetching image '{}'", url.0))?;
 
         self.flash(log, disk_info, image_path.path())
@@ -207,18 +207,13 @@ impl CmdFlash {
         Ok([FEDORA_IMAGE_URL, RASPBIAN_IMAGE_URL][index])
     }
 
-    fn fetch_image(
-        &self,
-        log: &mut Logger,
+    async fn fetch_image<'a: 'b, 'b>(
+        &'a self,
+        log: &'b mut Logger,
         url: (&'static str, &'static str),
     ) -> anyhow::Result<NamedTempFile> {
-        let client = Client::builder()
-            .timeout(None)
-            .build()
-            .context("Building HTTP client")?;
-
         log.status(format!("Fetching image '{}'", url.0))?;
-        let bytes = client.get(url.1).send()?.bytes()?;
+        let bytes = reqwest::get(url.1).await?.bytes().await?;
 
         let mut named_temp_file = NamedTempFile::new().context("Creating temporary file")?;
         named_temp_file
@@ -344,22 +339,23 @@ struct PartitionInfo {
 
 type Size = (String, f32, String);
 
-fn run(log: &mut Logger) -> anyhow::Result<()> {
+async fn run(log: &mut Logger) -> anyhow::Result<()> {
     match App::from_args() {
-        App::Build(cmd) => tokio::run(cmd.run(log).context("Running build command")?),
-        App::Deploy(cmd) => tokio::run(cmd.run(log).context("Running deploy command")?),
-        App::Flash(cmd) => cmd.run(log).context("Running flash command")?,
+        App::Build(cmd) => cmd.run(log).await.context("Running build command")?,
+        App::Deploy(cmd) => cmd.run(log).await.context("Running deploy command")?,
+        App::Flash(cmd) => cmd.run(log).await.context("Running flash command")?,
     }
 
     Ok(())
 }
 
-fn main() {
+#[tokio::main]
+async fn main() {
     pretty_env_logger::init();
 
     let mut log = Logger::new();
 
-    match run(&mut log) {
+    match run(&mut log).await {
         Err(e) => log
             .error(
                 e.chain()

@@ -102,7 +102,7 @@ impl Logger {
             .interact_on(&self.stderr)
             .context("Reading for input")?;
         if !want_continue {
-            anyhow::bail!("User canceled operation");
+            anyhow::bail!("User cancelled operation");
         }
 
         Ok(())
@@ -129,7 +129,7 @@ impl Logger {
         if let Some(index) = index {
             Ok(index)
         } else {
-            anyhow::bail!("User canceled operation");
+            anyhow::bail!("User cancelled operation");
         }
     }
 
