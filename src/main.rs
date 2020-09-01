@@ -18,7 +18,11 @@ use tempfile::NamedTempFile;
 use tokio::prelude::{Future, Stream};
 
 const DOCKERFILE_BUILDER: &str = include_str!("../docker/Dockerfile");
-const RPI_IMAGE_URL: &str = "https://downloads.raspberrypi.org/raspios_lite_armhf_latest";
+const FEDORA_IMAGE_URL: (&str, &str) = ("Fedora 32", "https://download.fedoraproject.org/pub/fedora/linux/releases/32/Server/armhfp/images/Fedora-Server-armhfp-32-1.6-sda.raw.xz");
+const RASPBIAN_IMAGE_URL: (&str, &str) = (
+    "Raspbian Latest",
+    "https://downloads.raspberrypi.org/raspios_lite_armhf_latest",
+);
 
 #[derive(StructOpt)]
 enum App {
@@ -183,29 +187,46 @@ impl CmdFlash {
         let disk_info = self.select_drive(log).context("Selecting drive")?;
         let disk_info_str = disk_info.to_string();
 
-        let image_path = self.fetch_image(log)?;
+        let url = self.select_image(log).context("Selecting image")?;
+        let image_path = self
+            .fetch_image(log, url)
+            .with_context(|| format!("Fetching image '{}'", url.0))?;
 
         self.flash(log, disk_info, image_path.path())
-            .with_context(|| format!("Flashing disk {}", disk_info_str))?;
+            .with_context(|| format!("Flashing drive '{}'", disk_info_str))?;
 
         Ok(())
     }
 
-    fn fetch_image(&self, log: &mut Logger) -> anyhow::Result<NamedTempFile> {
+    fn select_image(&self, log: &mut Logger) -> anyhow::Result<(&'static str, &'static str)> {
+        let index = log.choose(
+            "Choose which operating image to download",
+            &[FEDORA_IMAGE_URL.0, RASPBIAN_IMAGE_URL.0],
+        )?;
+
+        Ok([FEDORA_IMAGE_URL, RASPBIAN_IMAGE_URL][index])
+    }
+
+    fn fetch_image(
+        &self,
+        log: &mut Logger,
+        url: (&'static str, &'static str),
+    ) -> anyhow::Result<NamedTempFile> {
         let client = Client::builder()
             .timeout(None)
             .build()
             .context("Building HTTP client")?;
 
-        log.status("Fetching latest Raspbian image")?;
-        let bytes = client.get(RPI_IMAGE_URL).send()?.bytes()?;
+        log.status(format!("Fetching image '{}'", url.0))?;
+        let bytes = client.get(url.1).send()?.bytes()?;
 
         let mut named_temp_file = NamedTempFile::new().context("Creating temporary file")?;
         named_temp_file
             .write(bytes.as_ref())
             .context("Writing Raspbian image to file")?;
         log.info(format!(
-            "Raspbian image written to temporary file '{}'",
+            "Image '{}' written to temporary file '{}'",
+            url.0,
             named_temp_file.path().to_string_lossy()
         ))?;
 
@@ -213,12 +234,22 @@ impl CmdFlash {
     }
 
     fn select_drive(&self, log: &mut Logger) -> anyhow::Result<DiskInfo> {
-        #[cfg(target_os = "macos")]
-        let stdout = Command::new("diskutil")
-            .args(&["list", "external", "physical"])
-            .output()
-            .context("Executing diskutil")?
-            .stdout;
+        let stdout = if cfg!(target_os = "macos") {
+            Command::new("diskutil")
+                .args(&["list", "external", "physical"])
+                .output()
+                .context("Executing diskutil")?
+                .stdout
+        } else if cfg!(target_os = "linux") {
+            // TODO: implement parsing for this
+            Command::new("lsblk")
+                .args(&["-OJ"])
+                .output()
+                .context("Executing lsblk")?
+                .stdout
+        } else {
+            anyhow::bail!("Windows not supported");
+        };
 
         let output = String::from_utf8(stdout).context("Converting stdout to UTF-8")?;
         let mut disk_info = parse::disk_info(&output).context("Parsing disk info")?;
@@ -226,15 +257,11 @@ impl CmdFlash {
         if disk_info.is_empty() {
             anyhow::bail!("No external physical drive mounted");
         } else {
-            let choice = log.choose(
+            let index = log.choose(
                 "Choose one of the following drives to flash",
                 disk_info.iter(),
             )?;
-            if let Some(index) = choice {
-                Ok(disk_info.remove(index))
-            } else {
-                anyhow::bail!("User canceled operation");
-            }
+            Ok(disk_info.remove(index))
         }
     }
 
@@ -244,10 +271,40 @@ impl CmdFlash {
         disk_info: DiskInfo,
         image_path: &Path,
     ) -> anyhow::Result<()> {
-        if !log.prompt(format!("Do you want to flash '{}'?", disk_info))? {
-            anyhow::bail!("User canceled operation");
-        }
+        let disk_info_str = disk_info.to_string();
 
+        log.prompt(format!("Do you want to flash drive '{}'?", disk_info_str))?;
+
+        log.status(format!("Flashing drive '{}'", disk_info_str))?;
+        let mut handle = if cfg!(target_family = "unix") {
+            Command::new("dd")
+                .arg("bs=1m")
+                .arg(format!("if={}", image_path.to_string_lossy()))
+                .arg(format!(
+                    "of=/dev/{}",
+                    if cfg!(target_os = "macos") {
+                        format!("r{}", disk_info.id)
+                    } else {
+                        disk_info.id
+                    }
+                ))
+                .spawn()
+                .context("Spawning process for dd")?
+        } else {
+            anyhow::bail!("Windows not supported");
+        };
+
+        let exit_status = handle.wait().context("Executing dd")?;
+        anyhow::ensure!(
+            exit_status.success(),
+            format!("dd exited with {}", exit_status)
+        );
+
+        log.info(format!(
+            "Image '{}' flashed to drive '{}'",
+            image_path.to_string_lossy(),
+            disk_info_str
+        ))?;
         Ok(())
     }
 }

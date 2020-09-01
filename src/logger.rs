@@ -3,21 +3,17 @@ use console::{Style, Term};
 use dialoguer::{Confirm, Select};
 use std::io::Write;
 
-pub(crate) struct Logger<'a> {
+pub(crate) struct Logger {
     stdout: Term,
     stderr: Term,
-    confirm: Confirm<'a>,
-    select: Select<'a>,
     new_line_present: bool,
 }
 
-impl Logger<'_> {
+impl Logger {
     pub fn new() -> Self {
         Self {
             stdout: Term::stdout(),
             stderr: Term::stderr(),
-            confirm: Confirm::new(),
-            select: Select::new(),
             new_line_present: true,
         }
     }
@@ -96,30 +92,31 @@ impl Logger<'_> {
         Ok(())
     }
 
-    pub fn prompt(&mut self, message: impl AsRef<str>) -> anyhow::Result<bool> {
+    pub fn prompt(&mut self, message: impl AsRef<str>) -> anyhow::Result<()> {
         let cyan = Style::new().cyan();
-        let choice = self
-            .confirm
+        let want_continue = Confirm::new()
             .with_prompt(
                 cyan.apply_to("> ".to_string() + message.as_ref())
                     .to_string(),
             )
             .interact_on(&self.stderr)
             .context("Reading for input")?;
+        if !want_continue {
+            anyhow::bail!("User canceled operation");
+        }
 
-        Ok(choice)
+        Ok(())
     }
 
     pub fn choose(
         &mut self,
         message: impl AsRef<str>,
         items: impl IntoIterator<Item = impl ToString>,
-    ) -> anyhow::Result<Option<usize>> {
+    ) -> anyhow::Result<usize> {
         let items: Vec<_> = items.into_iter().collect();
 
         let cyan = Style::new().cyan();
-        let index = self
-            .select
+        let index = Select::new()
             .with_prompt(
                 cyan.apply_to("# ".to_string() + message.as_ref())
                     .to_string(),
@@ -129,7 +126,11 @@ impl Logger<'_> {
             .interact_on_opt(&self.stderr)
             .context("Reading for input")?;
 
-        Ok(index)
+        if let Some(index) = index {
+            Ok(index)
+        } else {
+            anyhow::bail!("User canceled operation");
+        }
     }
 
     pub fn new_line_if_not_present(&mut self) -> anyhow::Result<()> {
