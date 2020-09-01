@@ -1254,7 +1254,7 @@ dependencies = [
 [[package]]
 name = "shiplift"
 version = "0.6.0"
-source = "git+https://github.com/softprops/shiplift.git#4b399f576e219c8b407aaba7049e87f11beac716"
+source = "git+https://github.com/lidin/shiplift.git#a76bafef57a087c792fe787f22f61532b0280c44"
 dependencies = [
  "base64 0.11.0",
  "byteorder",

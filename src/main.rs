@@ -44,17 +44,17 @@ struct CmdBuild {
 
 impl CmdBuild {
     async fn run(self, log: &mut Logger) -> anyhow::Result<()> {
-        info!("Building service '{}'", self.base.service);
+        log.status(format!("Building service '{}'", self.base.service))?;
 
         let dir = tempfile::tempdir().context("Creating temporary directory")?;
 
-        let repo = self.clone_repo(dir.path())?;
+        let repo = self.clone_repo(log, dir.path())?;
         let build_dir = self.prepare_build_dir(repo)?;
 
-        self.build_docker_image(build_dir).await
+        self.build_docker_image(log, build_dir).await
     }
 
-    fn clone_repo(&self, repo_path: &Path) -> anyhow::Result<Repository> {
+    fn clone_repo(&self, log: &mut Logger, repo_path: &Path) -> anyhow::Result<Repository> {
         // Prepare callbacks.
         let mut callbacks = RemoteCallbacks::new();
         callbacks.credentials(|_url, username_from_url, _allowed_types| {
@@ -76,11 +76,11 @@ impl CmdBuild {
 
         // Clone the project.
         let url = format!("git@github.com:lidin/homepi-{}.git", self.base.service);
-        trace!(
+        log.status(format!(
             "Cloning repository '{}' into directory '{}'",
             &url,
             repo_path.to_string_lossy()
-        );
+        ))?;
         builder
             .clone(&url, repo_path)
             .context(format!("Cloning repository '{}'", &url))
@@ -96,13 +96,11 @@ impl CmdBuild {
                 .context(format!("Checking if path '{}' is ignored by git", path_str))?
             {
                 if path.is_dir() {
-                    let msg = format!("Removing directory '{}'", path_str);
-                    trace!("{}", msg);
-                    fs::remove_dir_all(path).context(msg)?;
+                    fs::remove_dir_all(&path)
+                        .with_context(|| format!("Removing directory '{}'", path_str))?;
                 } else {
-                    let msg = format!("Removing file '{}'", path_str);
-                    trace!("{}", msg);
-                    fs::remove_file(path).context(msg)?;
+                    fs::remove_file(&path)
+                        .with_context(|| format!("Removing file '{}'", path_str))?;
                 }
             } else if path.is_dir() {
                 let entries: Vec<_> = fs::read_dir(&path)
@@ -120,7 +118,6 @@ impl CmdBuild {
 
         // Add Dockerfile.
         let dockerfile_path = build_dir.join("Dockerfile");
-        trace!("Adding Dockerfile");
         fs::write(&dockerfile_path, DOCKERFILE_BUILDER).context(format!(
             "Writing file '{}'",
             dockerfile_path.to_string_lossy()
@@ -129,7 +126,7 @@ impl CmdBuild {
         Ok(build_dir.to_path_buf())
     }
 
-    async fn build_docker_image(&self, build_dir: PathBuf) -> anyhow::Result<()> {
+    async fn build_docker_image(&self, log: &mut Logger, build_dir: PathBuf) -> anyhow::Result<()> {
         let docker = Docker::new();
 
         // Prepare build options for Docker.
@@ -141,24 +138,37 @@ impl CmdBuild {
         let options = BuildOptions::builder(build_dir_str).tag(tag).build();
 
         // Start the Docker build process.
-        info!("Building Docker image '{}'", tag);
+        log.status(format!("Building Docker image '{}'", tag))?;
         let images = docker.images();
-        let stream = images.build(&options);
+        let mut stream = images.build(&options);
 
-        stream
-            .for_each(|object| async {
-                match object {
-                    Ok(v) => {
-                        if let Some(stream) = v.get("stream").and_then(|v| v.as_str()) {
-                            for chunk in stream.split('\n') {
-                                info!("{}", chunk);
-                            }
+        let mut line = String::new();
+        while let Some(object) = stream.next().await {
+            match object {
+                Ok(v) => {
+                    if let Some(stream) = v.get("stream").and_then(|v| v.as_str()) {
+                        let mut chunks = stream.split('\n');
+
+                        // Always append the first chunk unconditionally.
+                        if let Some(chunk) = chunks.next() {
+                            line += chunk;
+                        }
+
+                        for chunk in chunks {
+                            info!("{}", line);
+
+                            line.clear();
+                            line += chunk;
                         }
                     }
-                    Err(e) => (),
                 }
-            })
-            .await;
+                Err(e) => error!("{}", e),
+            }
+        }
+
+        if line.len() > 0 {
+            info!("{}", line);
+        }
 
         Ok(())
     }
@@ -172,7 +182,7 @@ struct CmdDeploy {
 
 impl CmdDeploy {
     async fn run(self, log: &mut Logger) -> anyhow::Result<()> {
-        info!("Deploying service '{}'", self.base.service);
+        log.status(format!("Deploying service '{}'", self.base.service))?;
         let build_cmd = CmdBuild { base: self.base };
         build_cmd.run(log).await
     }
