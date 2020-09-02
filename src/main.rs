@@ -143,6 +143,7 @@ impl CmdBuild {
         let mut stream = images.build(&options);
 
         let mut line = String::new();
+        let mut current_escape_code = None;
         while let Some(object) = stream.next().await {
             match object {
                 Ok(v) => {
@@ -155,7 +156,15 @@ impl CmdBuild {
                         }
 
                         for chunk in chunks {
-                            info!("{}", line);
+                            info!(
+                                "{}{}",
+                                current_escape_code.as_ref().unwrap_or(&String::new()),
+                                line
+                            );
+                            if let Some(escape_code) = parse::last_ansi_escape_code(&line) {
+                                current_escape_code =
+                                    Some(escape_code).filter(|t| t != "\u{1b}[0m");
+                            }
 
                             line.clear();
                             line += chunk;
