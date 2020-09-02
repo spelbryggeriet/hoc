@@ -3,7 +3,7 @@ use console::{Style, Term};
 use dialoguer::{Confirm, Select};
 use std::io::Write;
 
-pub(crate) struct Logger {
+pub(super) struct Logger {
     stdout: Term,
     stderr: Term,
     new_line_present: bool,

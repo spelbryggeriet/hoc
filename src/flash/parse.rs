@@ -1,8 +1,8 @@
-use crate::{DiskInfo, PartitionInfo, Size};
+use super::{DiskInfo, PartitionInfo, Size};
 use anyhow::anyhow;
 use nom::IResult;
 
-pub(crate) fn disk_info(s: &str) -> anyhow::Result<Vec<DiskInfo>> {
+pub(super) fn disk_info(s: &str) -> anyhow::Result<Vec<DiskInfo>> {
     use nom::multi::many0;
 
     let (_, disk_info) = many0(single_disk_info)(s).map_err(|e| anyhow!(e.to_string()))?;
@@ -82,45 +82,4 @@ fn valid_name(s: &str) -> IResult<&str, String> {
     use nom::{bytes::complete::take_till, combinator::map};
 
     map(take_till(char::is_whitespace), str::to_string)(s)
-}
-
-pub(crate) fn last_ansi_escape_code(s: &str) -> Option<String> {
-    use nom::multi::many0;
-
-    many0(next_ansi_escape_code)(s)
-        .ok()
-        .and_then(|(_, mut v)| v.pop().flatten())
-}
-
-fn next_ansi_escape_code(s: &str) -> IResult<&str, Option<String>> {
-    use nom::branch::alt;
-    use nom::bytes::complete::take_until;
-    use nom::combinator::opt;
-
-    let (s, _) = take_until("\u{1b}")(s)?;
-    opt(alt((ansi_csi_single, ansi_csi_multi)))(s)
-}
-
-fn ansi_csi_single(s: &str) -> IResult<&str, String> {
-    use nom::bytes::complete::{tag, take_while_m_n};
-    use nom::character::complete::digit1;
-
-    let (s, start) = tag("\u{1b}[")(s)?;
-    let (s, digits) = digit1(s)?;
-    let (s, end) = take_while_m_n(1, 1, |c: char| c.is_ascii_alphabetic())(s)?;
-
-    Ok((s, [start, digits, end].join("")))
-}
-
-fn ansi_csi_multi(s: &str) -> IResult<&str, String> {
-    use nom::bytes::complete::{tag, take_while_m_n};
-    use nom::character::complete::digit1;
-
-    let (s, start) = tag("\u{1b}[")(s)?;
-    let (s, first_digits) = digit1(s)?;
-    let (s, colon) = tag(";")(s)?;
-    let (s, second_digits) = digit1(s)?;
-    let (s, end) = take_while_m_n(1, 1, |c: char| c.is_ascii_alphabetic())(s)?;
-
-    Ok((s, [start, first_digits, colon, second_digits, end].join("")))
 }
