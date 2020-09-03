@@ -1,6 +1,7 @@
 use structopt::StructOpt;
 
-use crate::{build::CmdBuild, logger::Logger};
+use super::build::CmdBuild;
+use crate::prelude::*;
 
 #[derive(StructOpt)]
 pub(super) struct CmdDeploy {
@@ -9,7 +10,7 @@ pub(super) struct CmdDeploy {
 }
 
 impl CmdDeploy {
-    pub(super) async fn run(self, log: &mut Logger) -> anyhow::Result<()> {
+    pub(super) async fn run(self, log: &mut Logger) -> AppResult<()> {
         log.status(format!("Deploying service '{}'", self.service))?;
         let build_cmd = CmdBuild {
             service: self.service,

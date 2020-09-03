@@ -12,7 +12,7 @@ use strum::IntoEnumIterator;
 use tempfile::NamedTempFile;
 use xz2::read::XzDecoder;
 
-use crate::{logger::Logger, CACHE_DIR};
+use crate::prelude::*;
 
 #[derive(StructOpt)]
 pub(super) struct CmdFlash {
@@ -22,7 +22,7 @@ pub(super) struct CmdFlash {
 }
 
 impl CmdFlash {
-    pub(super) async fn run(self, log: &mut Logger) -> anyhow::Result<()> {
+    pub(super) async fn run(self, log: &mut Logger) -> AppResult<()> {
         let image = self.select_image(log).context("Selecting image")?;
 
         let image_file = self
@@ -54,7 +54,7 @@ impl CmdFlash {
         Ok(())
     }
 
-    fn select_image(&self, log: &mut Logger) -> anyhow::Result<Image> {
+    fn select_image(&self, log: &mut Logger) -> AppResult<Image> {
         let index = log.choose(
             "Choose which operating system image to download",
             Image::iter().map(|i| i.description()),
@@ -68,7 +68,7 @@ impl CmdFlash {
         &'a self,
         log: &'b mut Logger,
         image: Image,
-    ) -> anyhow::Result<Box<dyn KnownFile>> {
+    ) -> AppResult<Box<dyn KnownFile>> {
         let (is_fetched, known_file): (bool, Box<dyn KnownFile>) = if !self.cached {
             let known_file = Box::new(NamedTempFile::new().context("Creating temporary file")?);
             (false, known_file)
@@ -115,7 +115,7 @@ impl CmdFlash {
         &self,
         log: &mut Logger,
         image_path: &Path,
-    ) -> anyhow::Result<(u64, NamedTempFile)> {
+    ) -> AppResult<(u64, NamedTempFile)> {
         let file = File::open(image_path)
             .with_context(|| format!("Opening image file '{}'", image_path.to_string_lossy()))?;
         let mut decompressor = XzDecoder::new(file);
@@ -138,7 +138,7 @@ impl CmdFlash {
         log: &mut Logger,
         image_path: &Path,
         image_size: u64,
-    ) -> anyhow::Result<DiskPartitionInfo> {
+    ) -> AppResult<DiskPartitionInfo> {
         let stdout = if cfg!(target_os = "macos") {
             Command::new("fdisk")
                 .arg(image_path)
@@ -195,7 +195,7 @@ impl CmdFlash {
         Ok(disk_info.partitions.remove(index))
     }
 
-    fn select_drive(&self, log: &mut Logger) -> anyhow::Result<DriveInfo> {
+    fn select_drive(&self, log: &mut Logger) -> AppResult<DriveInfo> {
         let stdout = if cfg!(target_os = "macos") {
             Command::new("diskutil")
                 .args(&["list", "external", "physical"])
@@ -231,7 +231,7 @@ impl CmdFlash {
         log: &mut Logger,
         disk_info: DriveInfo,
         image_path: &Path,
-    ) -> anyhow::Result<()> {
+    ) -> AppResult<()> {
         let disk_info_str = disk_info.to_string();
 
         log.prompt(format!("Do you want to flash drive '{}'?", disk_info_str))?;
@@ -310,14 +310,14 @@ struct NamedFile {
 }
 
 impl NamedFile {
-    pub fn new(path: impl AsRef<Path>) -> anyhow::Result<Self> {
+    pub fn new(path: impl AsRef<Path>) -> AppResult<Self> {
         Ok(Self {
             path: path.as_ref().to_path_buf(),
             file: File::create(path)?,
         })
     }
 
-    pub fn open(path: impl AsRef<Path>) -> anyhow::Result<Self> {
+    pub fn open(path: impl AsRef<Path>) -> AppResult<Self> {
         Ok(Self {
             path: path.as_ref().to_path_buf(),
             file: File::open(path)?,

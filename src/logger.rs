@@ -3,6 +3,8 @@ use console::{Style, Term};
 use dialoguer::{Confirm, Select};
 use std::io::Write;
 
+use crate::prelude::*;
+
 pub(super) struct Logger {
     stdout: Term,
     stderr: Term,
@@ -19,14 +21,14 @@ impl Logger {
     }
 
     #[cfg(target_os = "not used")]
-    pub fn new_line(&mut self) -> anyhow::Result<()> {
+    pub fn new_line(&mut self) -> AppResult<()> {
         self.stdout.write_line("")?;
         self.new_line_present = true;
 
         Ok(())
     }
 
-    pub fn info(&mut self, message: impl AsRef<str>) -> anyhow::Result<()> {
+    pub fn info(&mut self, message: impl AsRef<str>) -> AppResult<()> {
         self.stdout.write(b"~ ").context("Writing to stdout")?;
         self.stdout
             .write_line(message.as_ref())
@@ -36,7 +38,7 @@ impl Logger {
         Ok(())
     }
 
-    pub fn status(&mut self, message: impl AsRef<str>) -> anyhow::Result<()> {
+    pub fn status(&mut self, message: impl AsRef<str>) -> AppResult<()> {
         self.stdout.write(b"* ").context("Writing to stdout")?;
         self.stdout
             .write(message.as_ref().as_bytes())
@@ -50,7 +52,7 @@ impl Logger {
     }
 
     #[cfg(target_os = "not used")]
-    pub fn warning(&mut self, message: impl AsRef<str>) -> anyhow::Result<()> {
+    pub fn warning(&mut self, message: impl AsRef<str>) -> AppResult<()> {
         let yellow = Style::new().yellow();
         self.stderr
             .write(yellow.apply_to("! ").to_string().as_bytes())
@@ -63,7 +65,7 @@ impl Logger {
         Ok(())
     }
 
-    pub fn error(&mut self, message: impl AsRef<str>) -> anyhow::Result<()> {
+    pub fn error(&mut self, message: impl AsRef<str>) -> AppResult<()> {
         let red = Style::new().red();
         self.stderr
             .write(red.apply_to("[ERROR] ").to_string().as_bytes())
@@ -81,7 +83,7 @@ impl Logger {
         &mut self,
         message: Option<impl ToString>,
         items: impl IntoIterator<Item = impl AsRef<str>>,
-    ) -> anyhow::Result<()> {
+    ) -> AppResult<()> {
         if let Some(message) = message {
             self.info(message.to_string() + ":")?;
         }
@@ -95,7 +97,7 @@ impl Logger {
         Ok(())
     }
 
-    pub fn prompt(&mut self, message: impl AsRef<str>) -> anyhow::Result<()> {
+    pub fn prompt(&mut self, message: impl AsRef<str>) -> AppResult<()> {
         let cyan = Style::new().cyan();
         let want_continue = Confirm::new()
             .with_prompt(
@@ -116,7 +118,7 @@ impl Logger {
         message: impl AsRef<str>,
         items: impl IntoIterator<Item = impl ToString>,
         default_index: usize,
-    ) -> anyhow::Result<usize> {
+    ) -> AppResult<usize> {
         let items: Vec<_> = items.into_iter().collect();
 
         let cyan = Style::new().cyan();
@@ -138,7 +140,7 @@ impl Logger {
     }
 
     #[cfg(target_os = "not used")]
-    pub fn new_line_if_not_present(&mut self) -> anyhow::Result<()> {
+    pub fn new_line_if_not_present(&mut self) -> AppResult<()> {
         if !self.new_line_present {
             self.new_line()?;
         }

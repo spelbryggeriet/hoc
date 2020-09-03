@@ -9,7 +9,7 @@ use git2::{Cred, RemoteCallbacks, Repository};
 use shiplift::{BuildOptions, Docker};
 use structopt::StructOpt;
 
-use crate::logger::Logger;
+use crate::prelude::*;
 
 const DOCKERFILE_BUILDER: &str = include_str!("../../docker/Dockerfile");
 
@@ -20,7 +20,7 @@ pub(super) struct CmdBuild {
 }
 
 impl CmdBuild {
-    pub(super) async fn run(self, log: &mut Logger) -> anyhow::Result<()> {
+    pub(super) async fn run(self, log: &mut Logger) -> AppResult<()> {
         log.status(format!("Building service '{}'", self.service))?;
 
         let dir = tempfile::tempdir().context("Creating temporary directory")?;
@@ -31,7 +31,7 @@ impl CmdBuild {
         self.build_docker_image(log, build_dir).await
     }
 
-    fn clone_repo(&self, log: &mut Logger, repo_path: &Path) -> anyhow::Result<Repository> {
+    fn clone_repo(&self, log: &mut Logger, repo_path: &Path) -> AppResult<Repository> {
         // Prepare callbacks.
         let mut callbacks = RemoteCallbacks::new();
         callbacks.credentials(|_url, username_from_url, _allowed_types| {
@@ -63,7 +63,7 @@ impl CmdBuild {
             .context(format!("Cloning repository '{}'", &url))
     }
 
-    fn prepare_build_dir(&self, repo: Repository) -> anyhow::Result<PathBuf> {
+    fn prepare_build_dir(&self, repo: Repository) -> AppResult<PathBuf> {
         // Remove any ignored files.
         let mut paths = vec![repo.path().to_path_buf()];
         while let Some(path) = paths.pop() {
@@ -103,7 +103,7 @@ impl CmdBuild {
         Ok(build_dir.to_path_buf())
     }
 
-    async fn build_docker_image(&self, log: &mut Logger, build_dir: PathBuf) -> anyhow::Result<()> {
+    async fn build_docker_image(&self, log: &mut Logger, build_dir: PathBuf) -> AppResult<()> {
         let docker = Docker::new();
 
         // Prepare build options for Docker.

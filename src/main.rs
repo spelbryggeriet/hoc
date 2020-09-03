@@ -9,6 +9,8 @@ mod build;
 mod deploy;
 mod flash;
 
+mod prelude;
+
 use std::path::PathBuf;
 use std::{env, fs};
 
@@ -31,7 +33,7 @@ lazy_static! {
     static ref CACHE_DIR: PathBuf = HOME_DIR.join("cache");
 }
 
-fn configure_home_dir(log: &mut Logger) -> anyhow::Result<()> {
+fn configure_home_dir(log: &mut Logger) -> AppResult<()> {
     if !is_home_dir_complete() {
         log.status(format!(
             "Configuring home directory at '{}'",
@@ -48,6 +50,8 @@ fn is_home_dir_complete() -> bool {
     CACHE_DIR.exists()
 }
 
+type AppResult<T> = anyhow::Result<T>;
+
 #[derive(StructOpt)]
 enum App {
     Build(CmdBuild),
@@ -55,7 +59,7 @@ enum App {
     Flash(CmdFlash),
 }
 
-async fn run(log: &mut Logger) -> anyhow::Result<()> {
+async fn run(log: &mut Logger) -> AppResult<()> {
     match App::from_args() {
         App::Build(cmd) => cmd.run(log).await.context("Running build command")?,
         App::Deploy(cmd) => cmd.run(log).await.context("Running deploy command")?,
