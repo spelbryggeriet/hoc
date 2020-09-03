@@ -18,6 +18,7 @@ impl Logger {
         }
     }
 
+    #[cfg(target_os = "not used")]
     pub fn new_line(&mut self) -> anyhow::Result<()> {
         self.stdout.write_line("")?;
         self.new_line_present = true;
@@ -48,6 +49,7 @@ impl Logger {
         Ok(())
     }
 
+    #[cfg(target_os = "not used")]
     pub fn warning(&mut self, message: impl AsRef<str>) -> anyhow::Result<()> {
         let yellow = Style::new().yellow();
         self.stderr
@@ -74,6 +76,7 @@ impl Logger {
         Ok(())
     }
 
+    #[cfg(target_os = "not used")]
     pub fn list(
         &mut self,
         message: Option<impl ToString>,
@@ -112,6 +115,7 @@ impl Logger {
         &mut self,
         message: impl AsRef<str>,
         items: impl IntoIterator<Item = impl ToString>,
+        default_index: usize,
     ) -> anyhow::Result<usize> {
         let items: Vec<_> = items.into_iter().collect();
 
@@ -122,7 +126,7 @@ impl Logger {
                     .to_string(),
             )
             .items(&items)
-            .default(0)
+            .default(default_index)
             .interact_on_opt(&self.stderr)
             .context("Reading for input")?;
 
@@ -133,6 +137,7 @@ impl Logger {
         }
     }
 
+    #[cfg(target_os = "not used")]
     pub fn new_line_if_not_present(&mut self) -> anyhow::Result<()> {
         if !self.new_line_present {
             self.new_line()?;

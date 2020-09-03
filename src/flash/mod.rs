@@ -5,7 +5,7 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::{fs::File, process::Command};
 
-use anyhow::Context;
+use anyhow::{anyhow, Context};
 use heck::SnakeCase;
 use structopt::StructOpt;
 use strum::IntoEnumIterator;
@@ -30,11 +30,19 @@ impl CmdFlash {
             .await
             .with_context(|| format!("Fetching image '{}'", image))?;
 
+        let raw_file;
+        let image_size;
         if image == Image::Fedora {
-            let raw_file = self
+            let r = self
                 .decompress_image(log, image_file.path())
                 .await
                 .context("Decompressing image")?;
+            image_size = r.0;
+            raw_file = r.1;
+
+            let disk_partition = self
+                .select_disk_partition(log, raw_file.path(), image_size)
+                .context("Selecting disk partition")?;
         }
 
         let disk_info = self.select_drive(log).context("Selecting drive")?;
@@ -50,6 +58,7 @@ impl CmdFlash {
         let index = log.choose(
             "Choose which operating system image to download",
             Image::iter().map(|i| i.description()),
+            0,
         )?;
 
         Ok(Image::iter().nth(index).unwrap())
@@ -106,14 +115,14 @@ impl CmdFlash {
         &self,
         log: &mut Logger,
         image_path: &Path,
-    ) -> anyhow::Result<NamedTempFile> {
+    ) -> anyhow::Result<(u64, NamedTempFile)> {
         let file = File::open(image_path)
             .with_context(|| format!("Opening image file '{}'", image_path.to_string_lossy()))?;
         let mut decompressor = XzDecoder::new(file);
 
         log.status("Decompressing image")?;
         let mut raw_file = NamedTempFile::new().context("Creating temporary file")?;
-        io::copy(&mut decompressor, &mut raw_file).with_context(|| {
+        let size = io::copy(&mut decompressor, &mut raw_file).with_context(|| {
             format!(
                 "Decompressing image '{}' into raw file '{}'",
                 image_path.to_string_lossy(),
@@ -121,10 +130,72 @@ impl CmdFlash {
             )
         })?;
 
-        Ok(raw_file)
+        Ok((size, raw_file))
     }
 
-    fn select_drive(&self, log: &mut Logger) -> anyhow::Result<DiskInfo> {
+    fn select_disk_partition(
+        &self,
+        log: &mut Logger,
+        image_path: &Path,
+        image_size: u64,
+    ) -> anyhow::Result<DiskPartitionInfo> {
+        let stdout = if cfg!(target_os = "macos") {
+            Command::new("fdisk")
+                .arg(image_path)
+                .output()
+                .context("Executing fdisk")?
+                .stdout
+        } else if cfg!(target_os = "linux") {
+            // TODO: implement parsing for this
+            Command::new("fdisk")
+                .arg("-l")
+                .arg(image_path)
+                .output()
+                .context("Executing fdisk")?
+                .stdout
+        } else {
+            anyhow::bail!("Windows not supported");
+        };
+
+        let output = String::from_utf8(stdout).context("Converting stdout to UTF-8")?;
+        let (_, mut disk_info) = parse::disk_info(&output)
+            .map_err(|e| anyhow!(e.to_string()))
+            .context("Parsing disk info")?;
+
+        let sector_size = image_size / disk_info.num_sectors;
+        disk_info
+            .partitions
+            .iter_mut()
+            .for_each(|p| p.sector_size = sector_size);
+        disk_info.partitions = disk_info
+            .partitions
+            .into_iter()
+            .filter(|p| p.num_sectors > 0)
+            .collect();
+
+        let (largest_partition_index, _) =
+            disk_info
+                .partitions
+                .iter()
+                .enumerate()
+                .fold((0, 0), |(acc_i, acc_num), (i, p)| {
+                    if p.num_sectors >= acc_num {
+                        (i, p.num_sectors)
+                    } else {
+                        (acc_i, acc_num)
+                    }
+                });
+
+        let index = log.choose(
+            "Choose the partition where the OS lives (most likely the largest one)",
+            disk_info.partitions.iter(),
+            largest_partition_index
+        )?;
+
+        Ok(disk_info.partitions.remove(index))
+    }
+
+    fn select_drive(&self, log: &mut Logger) -> anyhow::Result<DriveInfo> {
         let stdout = if cfg!(target_os = "macos") {
             Command::new("diskutil")
                 .args(&["list", "external", "physical"])
@@ -143,20 +214,22 @@ impl CmdFlash {
         };
 
         let output = String::from_utf8(stdout).context("Converting stdout to UTF-8")?;
-        let mut disk_info = parse::disk_info(&output).context("Parsing disk info")?;
+        let (_, mut drive_info) = parse::drive_info(&output)
+            .map_err(|e| anyhow!(e.to_string()))
+            .context("Parsing drive info")?;
 
-        if disk_info.is_empty() {
+        if drive_info.is_empty() {
             anyhow::bail!("No external physical drive mounted");
         } else {
-            let index = log.choose("Choose which drive to flash", disk_info.iter())?;
-            Ok(disk_info.remove(index))
+            let index = log.choose("Choose which drive to flash", drive_info.iter(), 0)?;
+            Ok(drive_info.remove(index))
         }
     }
 
     fn flash_drive(
         &self,
         log: &mut Logger,
-        disk_info: DiskInfo,
+        disk_info: DriveInfo,
         image_path: &Path,
     ) -> anyhow::Result<()> {
         let disk_info_str = disk_info.to_string();
@@ -281,31 +354,32 @@ impl KnownFile for NamedTempFile {
 }
 
 #[derive(Debug, Clone)]
-struct DiskInfo {
+struct DriveInfo {
     dir: String,
     id: String,
-    partitions: Vec<PartitionInfo>,
-    last_partition: PartitionInfo,
+    partitions: Vec<DrivePartitionInfo>,
 }
 
-impl Display for DiskInfo {
+impl Display for DriveInfo {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        write!(f, "{}: {}", self.id, self.last_partition.part_type)?;
-
-        if let Some(name) = self.last_partition.name.as_ref() {
-            write!(f, "{}", name)?;
-        }
-
         write!(
             f,
-            " - {}{} {}",
-            self.last_partition.size.0, self.last_partition.size.1, self.last_partition.size.2
-        )
+            "dir: {:>7} | id: {:>7}\n  {}",
+            self.dir,
+            self.id,
+            "-".repeat(26)
+        )?;
+
+        for partition in &self.partitions {
+            write!(f, "\n  {}", partition)?;
+        }
+
+        Ok(())
     }
 }
 
 #[derive(Debug, Clone)]
-struct PartitionInfo {
+struct DrivePartitionInfo {
     index: u32,
     part_type: String,
     name: Option<String>,
@@ -313,4 +387,67 @@ struct PartitionInfo {
     id: String,
 }
 
+impl Display for DrivePartitionInfo {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "index: {:>3} | type: {:>30} | id: {:>10} | size: {:>5} {}",
+            self.index, self.part_type, self.id, self.size.1, self.size.2
+        )?;
+
+        if let Some(name) = self.name.as_ref() {
+            write!(f, " | name: {:>10}", name)?;
+        }
+
+        Ok(())
+    }
+}
+
 type Size = (String, f32, String);
+
+#[derive(Debug, Clone)]
+struct DiskInfo {
+    num_sectors: u64,
+    partitions: Vec<DiskPartitionInfo>,
+}
+
+#[derive(Clone, Debug, Default)]
+struct DiskPartitionInfo {
+    index: u64,
+    name: String,
+    num_sectors: u64,
+    sector_size: u64,
+    start_sector: u64,
+}
+
+impl DiskPartitionInfo {
+    fn size(&self) -> u64 {
+        self.num_sectors * self.sector_size
+    }
+}
+
+impl Display for DiskPartitionInfo {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        let mut order_thousands = 0;
+        let mut size = self.size() as f32;
+        while size >= 1000.0 && order_thousands < 4 {
+            size /= 1000.0;
+            order_thousands += 1;
+        }
+
+        let unit = match order_thousands {
+            0 => "bytes",
+            1 => "KB",
+            2 => "MB",
+            3 => "GB",
+            4 => "TB",
+            _ => unreachable!(),
+        };
+
+        write!(
+            f,
+            "index: {:>3} | name: {:>15} | start: {:>10} | size: {:>5.1} {}",
+            self.index, self.name, self.start_sector, size, unit
+        )
+    }
+}

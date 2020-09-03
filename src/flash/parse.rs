@@ -1,16 +1,11 @@
-use super::{DiskInfo, PartitionInfo, Size};
-use anyhow::anyhow;
+use super::{DiskInfo, DiskPartitionInfo, DriveInfo, DrivePartitionInfo, Size};
 use nom::IResult;
 
-pub(super) fn disk_info(s: &str) -> anyhow::Result<Vec<DiskInfo>> {
-    use nom::multi::many0;
-
-    let (_, disk_info) = many0(single_disk_info)(s).map_err(|e| anyhow!(e.to_string()))?;
-
-    Ok(disk_info)
+pub(super) fn drive_info(s: &str) -> IResult<&str, Vec<DriveInfo>> {
+    nom::multi::many0(single_drive_info)(s)
 }
 
-fn single_disk_info(s: &str) -> IResult<&str, DiskInfo> {
+fn single_drive_info(s: &str) -> IResult<&str, DriveInfo> {
     use nom::bytes::complete::{tag, take_till, take_while};
     use nom::{combinator::map, multi::many1};
 
@@ -20,21 +15,19 @@ fn single_disk_info(s: &str) -> IResult<&str, DiskInfo> {
         take_while(|c: char| c.is_alphabetic() || c.is_whitespace() || c.is_ascii_punctuation())(
             s,
         )?;
-    let (s, mut partitions) = many1(partition_info)(s)?;
-    let last_partition = partitions.pop().unwrap();
+    let (s, partitions) = many1(drive_partition_info)(s)?;
 
     Ok((
         s,
-        DiskInfo {
+        DriveInfo {
             dir,
             id,
             partitions,
-            last_partition,
         },
     ))
 }
 
-fn partition_info(s: &str) -> IResult<&str, PartitionInfo> {
+fn drive_partition_info(s: &str) -> IResult<&str, DrivePartitionInfo> {
     use nom::bytes::complete::tag;
     use nom::character::complete::{digit1, multispace0, space1};
     use nom::combinator::{map, map_res};
@@ -53,7 +46,7 @@ fn partition_info(s: &str) -> IResult<&str, PartitionInfo> {
 
     Ok((
         s,
-        PartitionInfo {
+        DrivePartitionInfo {
             index,
             part_type,
             name,
@@ -82,4 +75,61 @@ fn valid_name(s: &str) -> IResult<&str, String> {
     use nom::{bytes::complete::take_till, combinator::map};
 
     map(take_till(char::is_whitespace), str::to_string)(s)
+}
+
+pub(super) fn disk_info(s: &str) -> IResult<&str, DiskInfo> {
+    use nom::bytes::complete::{tag, take_till, take_until};
+    use nom::character::complete::digit1;
+    use nom::multi::separated_list;
+    use nom::{combinator::map_res, multi::many1};
+
+    let (s, _) = take_until("geometry: ")(s)?;
+    let (s, _) = tag("geometry: ")(s)?;
+    let (s, _) = separated_list(tag("/"), digit1)(s)?;
+    let (s, _) = tag(" [")(s)?;
+    let (s, num_sectors) = map_res(digit1, str::parse::<u64>)(s)?;
+    let (s, _) = take_until("size]")(s)?;
+    let (s, _) = take_till(|c: char| c.is_digit(10))(s)?;
+    let (s, partitions) = many1(disk_partition_info)(s)?;
+
+    Ok((
+        s,
+        DiskInfo {
+            num_sectors,
+            partitions,
+        },
+    ))
+}
+
+// Disk: <...>  geometry: 785/128/63 [6332416 sectors]
+// Signature: 0xAA55
+//          Starting       Ending
+//  #: id  cyl  hd sec -  cyl  hd sec [     start -       size]
+// ------------------------------------------------------------------------
+//  1: 0C   16  16   1 -  321  64   2 [      8192 -     155648] Win95 FAT32L
+// *2: 83  321  65   1 - 1023 254   2 [    163840 -     999424] Linux files*
+//  3: 83 1023 254   2 - 1023 254   2 [   1163264 -    4884480] Linux files*
+//  4: 00    0   0   0 -    0   0   0 [         0 -          0] unused
+fn disk_partition_info(s: &str) -> IResult<&str, DiskPartitionInfo> {
+    use nom::bytes::complete::{tag, take_till, take_until};
+    use nom::character::complete::digit1;
+    use nom::combinator::{map, map_res};
+
+    let (s, index) = map_res(digit1, str::parse::<u64>)(s)?;
+    let (s, _) = take_until("[")(s)?;
+    let (s, _) = take_till(|c: char| c.is_digit(10))(s)?;
+    let (s, start_sector) = map_res(digit1, str::parse::<u64>)(s)?;
+    let (s, _) = take_till(|c: char| c.is_digit(10))(s)?;
+    let (s, num_sectors) = map_res(digit1, str::parse::<u64>)(s)?;
+    let (s, _) = tag("] ")(s)?;
+    let (s, name) = map(take_until("\n"), |s: &str| s.trim().to_string())(s)?;
+    let (s, _) = take_till(|c: char| c.is_digit(10))(s)?;
+
+    Ok((s, DiskPartitionInfo {
+        index,
+        name,
+        num_sectors,
+        start_sector,
+        ..Default::default()
+    }))
 }
