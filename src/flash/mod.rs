@@ -2,7 +2,7 @@ mod parse;
 
 use std::ffi::OsString;
 use std::fmt::{self, Display, Formatter};
-use std::io::{self, Write};
+use std::io::{self, Cursor, Write};
 use std::path::{Path, PathBuf};
 use std::{fs::File, process::Command};
 
@@ -43,12 +43,18 @@ impl CmdFlash {
                 .context("Selecting disk partition")?;
         }
 
-        let target_disk_info = self.select_target_disk(log).context("Selecting target disk")?;
+        let target_disk_info = self
+            .select_target_disk(log)
+            .context("Selecting target disk")?;
 
         let disk_info_str = target_disk_info.to_string();
-        log.prompt(format!("Do you want to flash target disk '{}'?", disk_info_str))?;
+        log.prompt(format!(
+            "Do you want to flash target disk '{}'?",
+            disk_info_str
+        ))?;
 
-        self.unmount_target_disk(log, &target_disk_info).context("Unmounting target disk")?;
+        self.unmount_target_disk(log, &target_disk_info)
+            .context("Unmounting target disk")?;
 
         self.flash_target_disk(log, target_disk_info, raw_file.path())
             .with_context(|| format!("Flashing target disk '{}'", disk_info_str))?;
@@ -191,9 +197,9 @@ impl CmdFlash {
                 .context("Executing fdisk")?
                 .stdout
         } else if cfg!(target_os = "linux") {
-            // TODO: implement parsing for this
             Command::new("fdisk")
                 .arg("-l")
+                .args(&["-o", "Start,Sectors,Type"])
                 .arg(image_path)
                 .output()
                 .context("Executing fdisk")?
@@ -241,24 +247,13 @@ impl CmdFlash {
     }
 
     fn select_target_disk(&self, log: &mut Logger) -> AppResult<TargetDiskInfo> {
-        let stdout = if cfg!(target_os = "macos") {
-            Command::new("diskutil")
+        let mut disk_info = if cfg!(target_os = "macos") {
+            let stdout = Command::new("diskutil")
                 .args(&["list", "-plist", "external", "physical"])
                 .output()
                 .context("Executing diskutil")?
-                .stdout
-        } else if cfg!(target_os = "linux") {
-            // TODO: implement parsing for this
-            Command::new("lsblk")
-                .args(&["-OJ"])
-                .output()
-                .context("Executing lsblk")?
-                .stdout
-        } else {
-            anyhow::bail!("Windows not supported");
-        };
+                .stdout;
 
-        let mut disk_info = if cfg!(target_os = "macos") {
             #[derive(Deserialize)]
             #[serde(rename_all = "PascalCase")]
             struct DiskutilOutput {
@@ -269,8 +264,30 @@ impl CmdFlash {
                 plist::from_bytes(&stdout).context("Parsing diskutil output")?;
 
             output.all_disks_and_partitions
+        } else if cfg!(target_os = "linux") {
+            let stdout = Command::new("lsblk")
+                .arg("-bOJ")
+                .output()
+                .context("Executing lsblk")?
+                .stdout;
+
+            #[derive(Deserialize)]
+            struct LsblkOutput {
+                blockdevices: Vec<TargetDiskInfo>,
+            }
+
+            let mut output: LsblkOutput =
+                serde_json::from_reader(Cursor::new(stdout)).context("Parsing lsblk output")?;
+
+            output.blockdevices = output
+                .blockdevices
+                .into_iter()
+                .filter(|bd| bd.id.starts_with("sd"))
+                .collect();
+
+            output.blockdevices
         } else {
-            unimplemented!();
+            anyhow::bail!("Windows not supported");
         };
 
         if disk_info.is_empty() {
@@ -485,6 +502,21 @@ struct TargetDiskInfo {
     partitions: Vec<TargetDiskPartitionInfo>,
 }
 
+#[cfg(target_os = "linux")]
+#[derive(Debug, Clone, Deserialize)]
+struct TargetDiskInfo {
+    #[serde(rename = "name")]
+    id: String,
+
+    #[serde(rename = "type")]
+    part_type: String,
+
+    size: u64,
+
+    #[serde(default = "Vec::new", rename = "children")]
+    partitions: Vec<TargetDiskPartitionInfo>,
+}
+
 impl Display for TargetDiskInfo {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         let (size, unit) = crate::readable_size(self.size);
@@ -522,6 +554,21 @@ struct TargetDiskPartitionInfo {
     name: Option<String>,
 }
 
+#[cfg(target_os = "linux")]
+#[derive(Debug, Clone, Deserialize)]
+struct TargetDiskPartitionInfo {
+    #[serde(rename = "name")]
+    id: String,
+
+    #[serde(rename = "type")]
+    part_type: Option<String>,
+
+    size: u64,
+
+    #[serde(rename = "label")]
+    name: Option<String>,
+}
+
 impl Display for TargetDiskPartitionInfo {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         let (size, unit) = crate::readable_size(self.size);
@@ -556,7 +603,6 @@ struct SourceDiskInfo {
 
 #[derive(Clone, Debug, Default)]
 struct SourceDiskPartitionInfo {
-    index: u64,
     name: String,
     num_sectors: u64,
     sector_size: u64,
@@ -575,8 +621,8 @@ impl Display for SourceDiskPartitionInfo {
 
         write!(
             f,
-            "index: {:>3} | name: {:>15} | start: {:>10} | size: {:>5.1} {}",
-            self.index, self.name, self.start_sector, size, unit
+            "name: {:>15} | start: {:>10} | size: {:>5.1} {}",
+            self.name, self.start_sector, size, unit
         )
     }
 }

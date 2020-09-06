@@ -87,44 +87,70 @@ fn valid_name(s: &str) -> IResult<&str, String> {
 }
 
 pub(super) fn source_disk_info(s: &str) -> IResult<&str, SourceDiskInfo> {
-    use nom::bytes::complete::{tag, take_till, take_until};
-    use nom::character::complete::digit1;
-    use nom::multi::separated_list;
-    use nom::{combinator::map_res, multi::many1};
+    if cfg!(target_os = "macos") {
+        use nom::bytes::complete::{tag, take_till, take_until};
+        use nom::character::complete::digit1;
+        use nom::multi::separated_list;
+        use nom::{combinator::map_res, multi::many1};
 
-    let (s, _) = take_until("geometry: ")(s)?;
-    let (s, _) = tag("geometry: ")(s)?;
-    let (s, _) = separated_list(tag("/"), digit1)(s)?;
-    let (s, _) = tag(" [")(s)?;
-    let (s, num_sectors) = map_res(digit1, str::parse::<u64>)(s)?;
-    let (s, _) = take_until("size]")(s)?;
-    let (s, _) = take_till(|c: char| c.is_digit(10))(s)?;
-    let (s, partitions) = many1(disk_partition_info)(s)?;
+        let (s, _) = take_until("geometry: ")(s)?;
+        let (s, _) = tag("geometry: ")(s)?;
+        let (s, _) = separated_list(tag("/"), digit1)(s)?;
+        let (s, _) = tag(" [")(s)?;
+        let (s, num_sectors) = map_res(digit1, str::parse::<u64>)(s)?;
+        let (s, _) = take_until("size]")(s)?;
+        let (s, _) = take_till(|c: char| c.is_digit(10))(s)?;
+        let (s, partitions) = many1(source_disk_partition_info)(s)?;
 
-    Ok((
-        s,
-        SourceDiskInfo {
-            num_sectors,
-            partitions,
-        },
-    ))
+        Ok((
+            s,
+            SourceDiskInfo {
+                num_sectors,
+                partitions,
+            },
+        ))
+    } else if cfg!(target_os = "linux") {
+        use nom::bytes::complete::{tag, take_until};
+        use nom::character::complete::{digit1, multispace1};
+        use nom::combinator::map_res;
+        use nom::multi::many1;
+        use nom::sequence::preceded;
+
+        let (s, _) = take_until("bytes")(s)?;
+        let (s, num_sectors) = preceded(tag("bytes, "), map_res(digit1, str::parse::<u64>))(s)?;
+        let (s, _) = take_until("Sector size")(s)?;
+        let (s, sector_size) = preceded(
+            tag("Sector size (logical/physical): "),
+            map_res(digit1, str::parse::<u64>),
+        )(s)?;
+        let (s, _) = take_until("Type")(s)?;
+        let (s, _) = tag("Type")(s)?;
+        let (s, _) = multispace1(s)?;
+        let (s, mut partitions) = many1(source_disk_partition_info)(s)?;
+
+        partitions
+            .iter_mut()
+            .for_each(|p| p.sector_size = sector_size);
+
+        Ok((
+            s,
+            SourceDiskInfo {
+                num_sectors,
+                partitions,
+            },
+        ))
+    } else {
+        unimplemented!();
+    }
 }
 
-// Disk: <...>  geometry: 785/128/63 [6332416 sectors]
-// Signature: 0xAA55
-//          Starting       Ending
-//  #: id  cyl  hd sec -  cyl  hd sec [     start -       size]
-// ------------------------------------------------------------------------
-//  1: 0C   16  16   1 -  321  64   2 [      8192 -     155648] Win95 FAT32L
-// *2: 83  321  65   1 - 1023 254   2 [    163840 -     999424] Linux files*
-//  3: 83 1023 254   2 - 1023 254   2 [   1163264 -    4884480] Linux files*
-//  4: 00    0   0   0 -    0   0   0 [         0 -          0] unused
-fn disk_partition_info(s: &str) -> IResult<&str, SourceDiskPartitionInfo> {
+#[cfg(target_os = "macos")]
+fn source_disk_partition_info(s: &str) -> IResult<&str, SourceDiskPartitionInfo> {
     use nom::bytes::complete::{tag, take_till, take_until};
     use nom::character::complete::digit1;
     use nom::combinator::{map, map_res};
 
-    let (s, index) = map_res(digit1, str::parse::<u64>)(s)?;
+    let (s, _) = map_res(digit1, str::parse::<u64>)(s)?;
     let (s, _) = take_until("[")(s)?;
     let (s, _) = take_till(|c: char| c.is_digit(10))(s)?;
     let (s, start_sector) = map_res(digit1, str::parse::<u64>)(s)?;
@@ -134,11 +160,39 @@ fn disk_partition_info(s: &str) -> IResult<&str, SourceDiskPartitionInfo> {
     let (s, name) = map(take_until("\n"), |s: &str| s.trim().to_string())(s)?;
     let (s, _) = take_till(|c: char| c.is_digit(10))(s)?;
 
-    Ok((s, SourceDiskPartitionInfo {
-        index,
-        name,
-        num_sectors,
-        start_sector,
-        ..Default::default()
-    }))
+    Ok((
+        s,
+        SourceDiskPartitionInfo {
+            name,
+            num_sectors,
+            start_sector,
+            ..Default::default()
+        },
+    ))
+}
+
+#[cfg(target_os = "linux")]
+fn source_disk_partition_info(
+    s: &str,
+) -> IResult<&str, SourceDiskPartitionInfo> {
+    use nom::bytes::complete::take_until;
+    use nom::character::complete::{digit1, space1, multispace1};
+    use nom::combinator::{map, map_res};
+
+    let (s, start_sector) = map_res(digit1, str::parse::<u64>)(s)?;
+    let (s, _) = space1(s)?;
+    let (s, num_sectors) = map_res(digit1, str::parse::<u64>)(s)?;
+    let (s, _) = space1(s)?;
+    let (s, name) = map(take_until("\n"), |s: &str| s.trim().to_string())(s)?;
+    let (s, _) = multispace1(s)?;
+
+    Ok((
+        s,
+        SourceDiskPartitionInfo {
+            name,
+            num_sectors,
+            start_sector,
+            ..Default::default()
+        },
+    ))
 }

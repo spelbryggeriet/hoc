@@ -22,6 +22,7 @@ plist = "1.0"
 pretty_env_logger = "0.4"
 reqwest = "0.10"
 serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
 shiplift = { git = "https://github.com/softprops/shiplift.git", branch = "master" }
 structopt = "0.3"
 strum = "0.19"

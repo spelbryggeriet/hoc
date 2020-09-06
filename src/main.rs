@@ -51,19 +51,19 @@ fn is_home_dir_complete() -> bool {
 }
 
 fn readable_size(size: u64) -> (f32, &'static str) {
-    let mut order_thousands = 0;
+    let mut order_10_bits = 0;
     let mut size = size as f32;
-    while size >= 1000.0 && order_thousands < 4 {
-        size /= 1000.0;
-        order_thousands += 1;
+    while size >= 1024.0 && order_10_bits < 4 {
+        size /= 1024.0;
+        order_10_bits += 1;
     }
 
-    let unit = match order_thousands {
+    let unit = match order_10_bits {
         0 => "bytes",
-        1 => "KB",
-        2 => "MB",
-        3 => "GB",
-        4 => "TB",
+        1 => "KiB",
+        2 => "MiB",
+        3 => "GiB",
+        4 => "TiB",
         _ => unreachable!(),
     };
 
