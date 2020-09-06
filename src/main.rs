@@ -50,6 +50,26 @@ fn is_home_dir_complete() -> bool {
     CACHE_DIR.exists()
 }
 
+fn readable_size(size: u64) -> (f32, &'static str) {
+    let mut order_thousands = 0;
+    let mut size = size as f32;
+    while size >= 1000.0 && order_thousands < 4 {
+        size /= 1000.0;
+        order_thousands += 1;
+    }
+
+    let unit = match order_thousands {
+        0 => "bytes",
+        1 => "KB",
+        2 => "MB",
+        3 => "GB",
+        4 => "TB",
+        _ => unreachable!(),
+    };
+
+    (size, unit)
+}
+
 type AppResult<T> = anyhow::Result<T>;
 
 #[derive(StructOpt)]

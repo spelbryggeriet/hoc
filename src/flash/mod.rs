@@ -1,5 +1,6 @@
 mod parse;
 
+use std::ffi::OsString;
 use std::fmt::{self, Display, Formatter};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -7,10 +8,12 @@ use std::{fs::File, process::Command};
 
 use anyhow::{anyhow, Context};
 use heck::SnakeCase;
+use serde::Deserialize;
 use structopt::StructOpt;
 use strum::IntoEnumIterator;
 use tempfile::NamedTempFile;
 use xz2::read::XzDecoder;
+use zip::ZipArchive;
 
 use crate::prelude::*;
 
@@ -25,31 +28,30 @@ impl CmdFlash {
     pub(super) async fn run(self, log: &mut Logger) -> AppResult<()> {
         let image = self.select_image(log).context("Selecting image")?;
 
-        let image_file = self
+        let mut image_file = self
             .fetch_image(log, image)
             .await
             .with_context(|| format!("Fetching image '{}'", image))?;
 
-        let raw_file;
-        let image_size;
-        if image == Image::Fedora {
-            let r = self
-                .decompress_image(log, image_file.path())
-                .await
-                .context("Decompressing image")?;
-            image_size = r.0;
-            raw_file = r.1;
+        let (image_size, raw_file) = self
+            .decompress_image(log, &mut image_file, image.compression_type())
+            .context("Decompressing image")?;
 
-            let disk_partition = self
-                .select_disk_partition(log, raw_file.path(), image_size)
+        if image == Image::Fedora {
+            let source_disk_partition = self
+                .select_source_disk_partition(log, raw_file.path(), image_size)
                 .context("Selecting disk partition")?;
         }
 
-        let disk_info = self.select_drive(log).context("Selecting drive")?;
+        let target_disk_info = self.select_target_disk(log).context("Selecting target disk")?;
 
-        let disk_info_str = disk_info.to_string();
-        self.flash_drive(log, disk_info, image_file.path())
-            .with_context(|| format!("Flashing drive '{}'", disk_info_str))?;
+        let disk_info_str = target_disk_info.to_string();
+        log.prompt(format!("Do you want to flash target disk '{}'?", disk_info_str))?;
+
+        self.unmount_target_disk(log, &target_disk_info).context("Unmounting target disk")?;
+
+        self.flash_target_disk(log, target_disk_info, raw_file.path())
+            .with_context(|| format!("Flashing target disk '{}'", disk_info_str))?;
 
         Ok(())
     }
@@ -111,34 +113,77 @@ impl CmdFlash {
         Ok(known_file)
     }
 
-    async fn decompress_image(
+    fn decompress_image(
         &self,
         log: &mut Logger,
-        image_path: &Path,
+        image_file: impl KnownFile,
+        compression_type: CompressionType,
     ) -> AppResult<(u64, NamedTempFile)> {
-        let file = File::open(image_path)
-            .with_context(|| format!("Opening image file '{}'", image_path.to_string_lossy()))?;
-        let mut decompressor = XzDecoder::new(file);
-
-        log.status("Decompressing image")?;
         let mut raw_file = NamedTempFile::new().context("Creating temporary file")?;
-        let size = io::copy(&mut decompressor, &mut raw_file).with_context(|| {
-            format!(
-                "Decompressing image '{}' into raw file '{}'",
-                image_path.to_string_lossy(),
-                raw_file.path().to_string_lossy()
-            )
-        })?;
+
+        let size = match compression_type {
+            CompressionType::Xz => self.decompress_xz_image(log, image_file, &mut raw_file)?,
+            CompressionType::Zip => self.decompress_zip_image(log, image_file, &mut raw_file)?,
+        };
 
         Ok((size, raw_file))
     }
 
-    fn select_disk_partition(
+    fn decompress_xz_image(
+        &self,
+        log: &mut Logger,
+        compressed_file: impl KnownFile,
+        raw_file: &mut impl KnownFile,
+    ) -> AppResult<u64> {
+        let mut decompressor = XzDecoder::new(compressed_file.as_file());
+
+        log.status("Decompressing image")?;
+        let size = io::copy(&mut decompressor, raw_file.as_file_mut()).with_context(|| {
+            format!(
+                "Decompressing image '{}' into raw file '{}'",
+                compressed_file.path().to_string_lossy(),
+                raw_file.path().to_string_lossy()
+            )
+        })?;
+
+        Ok(size)
+    }
+
+    fn decompress_zip_image(
+        &self,
+        log: &mut Logger,
+        compressed_file: impl KnownFile,
+        raw_file: &mut impl KnownFile,
+    ) -> AppResult<u64> {
+        let mut archive = ZipArchive::new(compressed_file.as_file()).context("Reading Zip file")?;
+
+        for i in 0..archive.len() {
+            let mut archive_file = archive.by_index(i).context("Reading archive file")?;
+
+            if archive_file.is_file() && archive_file.name().ends_with(".img") {
+                log.status("Decompressing image")?;
+                let size =
+                    io::copy(&mut archive_file, raw_file.as_file_mut()).with_context(|| {
+                        format!(
+                            "Decompressing image '{}' into raw file '{}'",
+                            compressed_file.path().to_string_lossy(),
+                            raw_file.path().to_string_lossy()
+                        )
+                    })?;
+
+                return Ok(size);
+            }
+        }
+
+        Err(anyhow!("Image not found within Zip archive"))
+    }
+
+    fn select_source_disk_partition(
         &self,
         log: &mut Logger,
         image_path: &Path,
         image_size: u64,
-    ) -> AppResult<DiskPartitionInfo> {
+    ) -> AppResult<SourceDiskPartitionInfo> {
         let stdout = if cfg!(target_os = "macos") {
             Command::new("fdisk")
                 .arg(image_path)
@@ -158,7 +203,7 @@ impl CmdFlash {
         };
 
         let output = String::from_utf8(stdout).context("Converting stdout to UTF-8")?;
-        let (_, mut disk_info) = parse::disk_info(&output)
+        let (_, mut disk_info) = parse::source_disk_info(&output)
             .map_err(|e| anyhow!(e.to_string()))
             .context("Parsing disk info")?;
 
@@ -189,16 +234,16 @@ impl CmdFlash {
         let index = log.choose(
             "Choose the partition where the OS lives (most likely the largest one)",
             disk_info.partitions.iter(),
-            largest_partition_index
+            largest_partition_index,
         )?;
 
         Ok(disk_info.partitions.remove(index))
     }
 
-    fn select_drive(&self, log: &mut Logger) -> AppResult<DriveInfo> {
+    fn select_target_disk(&self, log: &mut Logger) -> AppResult<TargetDiskInfo> {
         let stdout = if cfg!(target_os = "macos") {
             Command::new("diskutil")
-                .args(&["list", "external", "physical"])
+                .args(&["list", "-plist", "external", "physical"])
                 .output()
                 .context("Executing diskutil")?
                 .stdout
@@ -213,56 +258,86 @@ impl CmdFlash {
             anyhow::bail!("Windows not supported");
         };
 
-        let output = String::from_utf8(stdout).context("Converting stdout to UTF-8")?;
-        let (_, mut drive_info) = parse::drive_info(&output)
-            .map_err(|e| anyhow!(e.to_string()))
-            .context("Parsing drive info")?;
+        let mut disk_info = if cfg!(target_os = "macos") {
+            #[derive(Deserialize)]
+            #[serde(rename_all = "PascalCase")]
+            struct DiskutilOutput {
+                all_disks_and_partitions: Vec<TargetDiskInfo>,
+            }
 
-        if drive_info.is_empty() {
-            anyhow::bail!("No external physical drive mounted");
+            let output: DiskutilOutput =
+                plist::from_bytes(&stdout).context("Parsing diskutil output")?;
+
+            output.all_disks_and_partitions
         } else {
-            let index = log.choose("Choose which drive to flash", drive_info.iter(), 0)?;
-            Ok(drive_info.remove(index))
+            unimplemented!();
+        };
+
+        if disk_info.is_empty() {
+            anyhow::bail!("No external physical disk mounted");
+        } else {
+            let index = log.choose("Choose which disk to flash", disk_info.iter(), 0)?;
+            Ok(disk_info.remove(index))
         }
     }
 
-    fn flash_drive(
-        &self,
-        log: &mut Logger,
-        disk_info: DriveInfo,
-        image_path: &Path,
-    ) -> AppResult<()> {
-        let disk_info_str = disk_info.to_string();
+    fn unmount_target_disk(&self, log: &mut Logger, disk_info: &TargetDiskInfo) -> AppResult<()> {
+        log.status("Unmounting disk")?;
 
-        log.prompt(format!("Do you want to flash drive '{}'?", disk_info_str))?;
-
-        log.status(format!("Flashing drive '{}'", disk_info_str))?;
-        let mut handle = if cfg!(target_family = "unix") {
-            Command::new("dd")
-                .arg("bs=1m")
-                .arg(format!("if={}", image_path.to_string_lossy()))
-                .arg(format!(
-                    "of=/dev/{}",
-                    if cfg!(target_os = "macos") {
-                        format!("r{}", disk_info.id)
-                    } else {
-                        disk_info.id
-                    }
-                ))
-                .spawn()
-                .context("Spawning process for dd")?
+        let output = if cfg!(target_os = "macos") {
+            Command::new("diskutil")
+                .arg("unmountDisk")
+                .arg(format!("/dev/{}", disk_info.id))
+                .output()
+                .context("Executing diskutil")?
+        } else if cfg!(target_os = "linux") {
+            anyhow::bail!("Linux not supported");
         } else {
             anyhow::bail!("Windows not supported");
         };
 
-        let exit_status = handle.wait().context("Executing dd")?;
         anyhow::ensure!(
-            exit_status.success(),
-            format!("dd exited with {}", exit_status)
+            output.status.success(),
+            String::from_utf8_lossy(&output.stderr).into_owned()
+        );
+
+        Ok(())
+    }
+
+    fn flash_target_disk(
+        &self,
+        log: &mut Logger,
+        disk_info: TargetDiskInfo,
+        image_path: &Path,
+    ) -> AppResult<()> {
+        let disk_info_str = disk_info.to_string();
+
+        log.status(format!("Flashing disk '{}'", disk_info_str))?;
+        let output = if cfg!(target_family = "unix") {
+            let mut arg_if = OsString::from("if=");
+            arg_if.push(image_path);
+
+            Command::new("dd")
+                .arg("bs=1m")
+                .arg(arg_if)
+                .arg(format!(
+                    "of=/dev/{}{}",
+                    if cfg!(target_os = "macos") { "r" } else { "" },
+                    disk_info.id
+                ))
+                .output()
+                .context("Executing dd")?
+        } else {
+            anyhow::bail!("Windows not supported");
+        };
+
+        anyhow::ensure!(
+            output.status.success(),
+            format!("{}", String::from_utf8_lossy(&output.stderr))
         );
 
         log.info(format!(
-            "Image '{}' flashed to drive '{}'",
+            "Image '{}' flashed to target disk '{}'",
             image_path.to_string_lossy(),
             disk_info_str
         ))?;
@@ -290,6 +365,13 @@ impl Image {
             Self::Raspbian => "https://downloads.raspberrypi.org/raspios_lite_armhf_latest",
         }
     }
+
+    pub const fn compression_type(&self) -> CompressionType {
+        match self {
+            Self::Fedora => CompressionType::Xz,
+            Self::Raspbian => CompressionType::Zip,
+        }
+    }
 }
 
 impl Display for Image {
@@ -298,10 +380,44 @@ impl Display for Image {
     }
 }
 
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum CompressionType {
+    Xz,
+    Zip,
+}
+
 trait KnownFile {
     fn path(&self) -> &Path;
     fn as_file(&self) -> &File;
     fn as_file_mut(&mut self) -> &mut File;
+}
+
+impl KnownFile for Box<dyn KnownFile> {
+    fn path(&self) -> &Path {
+        (**self).path()
+    }
+
+    fn as_file(&self) -> &File {
+        (**self).as_file()
+    }
+
+    fn as_file_mut(&mut self) -> &mut File {
+        (**self).as_file_mut()
+    }
+}
+
+impl KnownFile for &mut Box<dyn KnownFile> {
+    fn path(&self) -> &Path {
+        (**self).path()
+    }
+
+    fn as_file(&self) -> &File {
+        (**self).as_file()
+    }
+
+    fn as_file_mut(&mut self) -> &mut File {
+        (**self).as_file_mut()
+    }
 }
 
 struct NamedFile {
@@ -353,66 +469,93 @@ impl KnownFile for NamedTempFile {
     }
 }
 
-#[derive(Debug, Clone)]
-struct DriveInfo {
-    dir: String,
+#[cfg(target_os = "macos")]
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+struct TargetDiskInfo {
+    #[serde(rename = "DeviceIdentifier")]
     id: String,
-    partitions: Vec<DrivePartitionInfo>,
-}
 
-impl Display for DriveInfo {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "dir: {:>7} | id: {:>7}\n  {}",
-            self.dir,
-            self.id,
-            "-".repeat(26)
-        )?;
-
-        for partition in &self.partitions {
-            write!(f, "\n  {}", partition)?;
-        }
-
-        Ok(())
-    }
-}
-
-#[derive(Debug, Clone)]
-struct DrivePartitionInfo {
-    index: u32,
+    #[serde(rename = "Content")]
     part_type: String,
-    name: Option<String>,
-    size: Size,
-    id: String,
+
+    size: u64,
+
+    #[serde(default = "Vec::new")]
+    partitions: Vec<TargetDiskPartitionInfo>,
 }
 
-impl Display for DrivePartitionInfo {
+impl Display for TargetDiskInfo {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        let (size, unit) = crate::readable_size(self.size);
+
         write!(
             f,
-            "index: {:>3} | type: {:>30} | id: {:>10} | size: {:>5} {}",
-            self.index, self.part_type, self.id, self.size.1, self.size.2
+            "id: {:>7} | type: {:>30} | size: {:>5.1} {}",
+            self.id, self.part_type, size, unit
         )?;
+        if self.partitions.len() > 0 {
+            write!(f, "\n  {}", "-".repeat(67))?;
 
-        if let Some(name) = self.name.as_ref() {
-            write!(f, " | name: {:>10}", name)?;
+            for partition in &self.partitions {
+                write!(f, "\n  {}", partition)?;
+            }
         }
 
         Ok(())
     }
 }
 
-type Size = (String, f32, String);
+#[cfg(target_os = "macos")]
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+struct TargetDiskPartitionInfo {
+    #[serde(rename = "DeviceIdentifier")]
+    id: String,
+
+    #[serde(rename = "Content")]
+    part_type: Option<String>,
+
+    size: u64,
+
+    #[serde(rename = "VolumeName")]
+    name: Option<String>,
+}
+
+impl Display for TargetDiskPartitionInfo {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        let (size, unit) = crate::readable_size(self.size);
+
+        write!(
+            f,
+            "id: {:>7} | type: {:>30} | size: {:>5.1} {} | name: {:>10}",
+            self.id,
+            if let Some(part_type) = self.part_type.as_ref() {
+                part_type
+            } else {
+                ""
+            },
+            size,
+            unit,
+            if let Some(name) = self.name.as_ref() {
+                name
+            } else {
+                ""
+            }
+        )?;
+
+        Ok(())
+    }
+}
 
 #[derive(Debug, Clone)]
-struct DiskInfo {
+struct SourceDiskInfo {
     num_sectors: u64,
-    partitions: Vec<DiskPartitionInfo>,
+    partitions: Vec<SourceDiskPartitionInfo>,
 }
 
 #[derive(Clone, Debug, Default)]
-struct DiskPartitionInfo {
+struct SourceDiskPartitionInfo {
     index: u64,
     name: String,
     num_sectors: u64,
@@ -420,29 +563,15 @@ struct DiskPartitionInfo {
     start_sector: u64,
 }
 
-impl DiskPartitionInfo {
+impl SourceDiskPartitionInfo {
     fn size(&self) -> u64 {
         self.num_sectors * self.sector_size
     }
 }
 
-impl Display for DiskPartitionInfo {
+impl Display for SourceDiskPartitionInfo {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        let mut order_thousands = 0;
-        let mut size = self.size() as f32;
-        while size >= 1000.0 && order_thousands < 4 {
-            size /= 1000.0;
-            order_thousands += 1;
-        }
-
-        let unit = match order_thousands {
-            0 => "bytes",
-            1 => "KB",
-            2 => "MB",
-            3 => "GB",
-            4 => "TB",
-            _ => unreachable!(),
-        };
+        let (size, unit) = crate::readable_size(self.size());
 
         write!(
             f,
