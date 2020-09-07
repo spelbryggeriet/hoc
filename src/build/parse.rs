@@ -9,9 +9,7 @@ pub(super) fn last_ansi_escape_code(s: &str) -> Option<String> {
 }
 
 fn next_ansi_escape_code(s: &str) -> IResult<&str, Option<String>> {
-    use nom::branch::alt;
-    use nom::bytes::complete::take_until;
-    use nom::combinator::opt;
+    use nom::{branch::alt, bytes::complete::take_until, combinator::opt};
 
     let (s, _) = take_until("\u{1b}")(s)?;
     opt(alt((ansi_csi_single, ansi_csi_multi)))(s)

@@ -2,44 +2,69 @@ mod parse;
 
 use std::ffi::OsString;
 use std::fmt::{self, Display, Formatter};
-use std::io::{self, Cursor, Write};
-use std::path::{Path, PathBuf};
-use std::{fs::File, process::Command};
+use std::fs::File;
+use std::io::{Cursor, Read, Write, Seek, SeekFrom};
+use std::path::Path;
+use std::process::Command;
 
 use anyhow::{anyhow, Context};
 use heck::SnakeCase;
 use serde::Deserialize;
 use structopt::StructOpt;
 use strum::IntoEnumIterator;
-use tempfile::NamedTempFile;
 use xz2::read::XzDecoder;
 use zip::ZipArchive;
 
 use crate::prelude::*;
 
-#[derive(StructOpt)]
-pub(super) struct CmdFlash {
-    /// Use cached image instead of fetching it.
-    #[structopt(short, long)]
-    cached: bool,
+#[derive(Clone, Copy)]
+enum FlashCacheState {
+    Downloaded,
+    Decompressed,
 }
 
+#[derive(StructOpt)]
+pub(super) struct CmdFlash {}
+
 impl CmdFlash {
-    pub(super) async fn run(self, log: &mut Logger) -> AppResult<()> {
+    pub(super) async fn run(self, context: &mut AppContext, log: &mut Logger) -> AppResult<()> {
         let image = self.select_image(log).context("Selecting image")?;
 
-        let mut image_file = self
-            .fetch_image(log, image)
-            .await
-            .with_context(|| format!("Fetching image '{}'", image))?;
+        let image_key = image.description().to_snake_case();
 
-        let (image_size, raw_file) = self
-            .decompress_image(log, &mut image_file, image.compression_type())
-            .context("Decompressing image")?;
+        let (current_state, temp_file) = context.start_cache_processing(&image_key)?;
+        if current_state < Some(FlashCacheState::Downloaded as isize) {
+            self.fetch_image(log, image, temp_file.as_file_mut())
+                .await
+                .with_context(|| format!("Fetching image '{}'", image))?;
+        }
+        context.stop_cache_processing(
+            &image_key,
+            current_state
+                .unwrap_or(FlashCacheState::Downloaded as isize)
+                .max(FlashCacheState::Downloaded as isize),
+        )?;
+
+        let (current_state, temp_file) = context.start_cache_processing(&image_key)?;
+        let image_size = if current_state < Some(FlashCacheState::Decompressed as isize) {
+            self.decompress_image(log, image, temp_file.as_file_mut())
+                .context("Decompressing image")?
+        } else {
+            temp_file.as_file().metadata()?.len() as usize
+        };
+
+        context.stop_cache_processing(
+            &image_key,
+            current_state
+                .unwrap_or(FlashCacheState::Decompressed as isize)
+                .max(FlashCacheState::Decompressed as isize),
+        )?;
+
+        let image_file = context.get_named_file(image_key)?;
 
         if image == Image::Fedora {
             let source_disk_partition = self
-                .select_source_disk_partition(log, raw_file.path(), image_size)
+                .select_source_disk_partition(log, image_file.path(), image_size)
                 .context("Selecting disk partition")?;
         }
 
@@ -56,7 +81,7 @@ impl CmdFlash {
         self.unmount_target_disk(log, &target_disk_info)
             .context("Unmounting target disk")?;
 
-        self.flash_target_disk(log, target_disk_info, raw_file.path())
+        self.flash_target_disk(log, target_disk_info, image_file.path())
             .with_context(|| format!("Flashing target disk '{}'", disk_info_str))?;
 
         Ok(())
@@ -76,108 +101,64 @@ impl CmdFlash {
         &'a self,
         log: &'b mut Logger,
         image: Image,
-    ) -> AppResult<Box<dyn KnownFile>> {
-        let (is_fetched, known_file): (bool, Box<dyn KnownFile>) = if !self.cached {
-            let known_file = Box::new(NamedTempFile::new().context("Creating temporary file")?);
-            (false, known_file)
-        } else {
-            crate::configure_home_dir(log).context("Configuring home directory")?;
+        dest: &mut File,
+    ) -> AppResult<()> {
+        log.status(format!("Fetching image '{}' from '{}'", image, image.url()))?;
+        let bytes = reqwest::get(image.url()).await?.bytes().await?;
 
-            let cached_image_path = CACHE_DIR.join(image.description().to_snake_case());
-            if !cached_image_path.exists() {
-                let known_file = Box::new(
-                    NamedFile::new(cached_image_path).context("Creating cached image file")?,
-                );
-                (false, known_file)
-            } else {
-                log.info(format!(
-                    "Using cached image file '{}'",
-                    cached_image_path.to_string_lossy()
-                ))?;
-                let known_file = Box::new(
-                    NamedFile::open(cached_image_path).context("Opening cached image file")?,
-                );
-                (true, known_file)
-            }
-        };
+        log.status(format!("Writing image '{}' to file", image))?;
+        dest.write(bytes.as_ref())
+            .with_context(|| format!("Writing image '{}' to file", image))?;
 
-        if !is_fetched {
-            log.status(format!("Fetching image '{}' from '{}'", image, image.url()))?;
-            let bytes = reqwest::get(image.url()).await?.bytes().await?;
-
-            log.status(format!(
-                "Writing image '{}' to file '{}'",
-                image,
-                known_file.path().to_string_lossy()
-            ))?;
-            known_file
-                .as_file()
-                .write(bytes.as_ref())
-                .context("Writing Raspbian image to file")?;
-        }
-
-        Ok(known_file)
+        Ok(())
     }
 
     fn decompress_image(
         &self,
         log: &mut Logger,
-        image_file: impl KnownFile,
-        compression_type: CompressionType,
-    ) -> AppResult<(u64, NamedTempFile)> {
-        let mut raw_file = NamedTempFile::new().context("Creating temporary file")?;
-
-        let size = match compression_type {
-            CompressionType::Xz => self.decompress_xz_image(log, image_file, &mut raw_file)?,
-            CompressionType::Zip => self.decompress_zip_image(log, image_file, &mut raw_file)?,
+        image: Image,
+        file: &mut File,
+    ) -> AppResult<usize> {
+        let size = match image.compression_type() {
+            CompressionType::Xz => self.decompress_xz_image(log, file)?,
+            CompressionType::Zip => self.decompress_zip_image(log, file)?,
         };
-
-        Ok((size, raw_file))
-    }
-
-    fn decompress_xz_image(
-        &self,
-        log: &mut Logger,
-        compressed_file: impl KnownFile,
-        raw_file: &mut impl KnownFile,
-    ) -> AppResult<u64> {
-        let mut decompressor = XzDecoder::new(compressed_file.as_file());
-
-        log.status("Decompressing image")?;
-        let size = io::copy(&mut decompressor, raw_file.as_file_mut()).with_context(|| {
-            format!(
-                "Decompressing image '{}' into raw file '{}'",
-                compressed_file.path().to_string_lossy(),
-                raw_file.path().to_string_lossy()
-            )
-        })?;
 
         Ok(size)
     }
 
-    fn decompress_zip_image(
-        &self,
-        log: &mut Logger,
-        compressed_file: impl KnownFile,
-        raw_file: &mut impl KnownFile,
-    ) -> AppResult<u64> {
-        let mut archive = ZipArchive::new(compressed_file.as_file()).context("Reading Zip file")?;
+    fn decompress_xz_image(&self, log: &mut Logger, file: &mut File) -> AppResult<usize> {
+        let mut decompressor = XzDecoder::new(&*file);
+
+        log.status("Decompressing image")?;
+        let mut buf = Vec::new();
+        decompressor
+            .read_to_end(&mut buf)
+            .context("Reading decompressed image file")?;
+
+        file.seek(SeekFrom::Start(0))?;
+        file.write(&buf)
+            .context("Writing decompressed content back to file")
+    }
+
+    fn decompress_zip_image(&self, log: &mut Logger, file: &mut File) -> AppResult<usize> {
+        let mut archive = ZipArchive::new(&*file).context("Reading Zip file")?;
 
         for i in 0..archive.len() {
             let mut archive_file = archive.by_index(i).context("Reading archive file")?;
 
             if archive_file.is_file() && archive_file.name().ends_with(".img") {
                 log.status("Decompressing image")?;
-                let size =
-                    io::copy(&mut archive_file, raw_file.as_file_mut()).with_context(|| {
-                        format!(
-                            "Decompressing image '{}' into raw file '{}'",
-                            compressed_file.path().to_string_lossy(),
-                            raw_file.path().to_string_lossy()
-                        )
-                    })?;
+                let mut buf = Vec::new();
+                archive_file
+                    .read_to_end(&mut buf)
+                    .context("Reading decompressed image file")?;
+                drop(archive_file);
 
-                return Ok(size);
+                file.seek(SeekFrom::Start(0))?;
+                return file
+                    .write(&buf)
+                    .context("Writing decompressed content back to file");
             }
         }
 
@@ -188,7 +169,7 @@ impl CmdFlash {
         &self,
         log: &mut Logger,
         image_path: &Path,
-        image_size: u64,
+        image_size: usize,
     ) -> AppResult<SourceDiskPartitionInfo> {
         let stdout = if cfg!(target_os = "macos") {
             Command::new("fdisk")
@@ -402,90 +383,6 @@ enum CompressionType {
     Xz,
     Zip,
 }
-
-trait KnownFile {
-    fn path(&self) -> &Path;
-    fn as_file(&self) -> &File;
-    fn as_file_mut(&mut self) -> &mut File;
-}
-
-impl KnownFile for Box<dyn KnownFile> {
-    fn path(&self) -> &Path {
-        (**self).path()
-    }
-
-    fn as_file(&self) -> &File {
-        (**self).as_file()
-    }
-
-    fn as_file_mut(&mut self) -> &mut File {
-        (**self).as_file_mut()
-    }
-}
-
-impl KnownFile for &mut Box<dyn KnownFile> {
-    fn path(&self) -> &Path {
-        (**self).path()
-    }
-
-    fn as_file(&self) -> &File {
-        (**self).as_file()
-    }
-
-    fn as_file_mut(&mut self) -> &mut File {
-        (**self).as_file_mut()
-    }
-}
-
-struct NamedFile {
-    path: PathBuf,
-    file: File,
-}
-
-impl NamedFile {
-    pub fn new(path: impl AsRef<Path>) -> AppResult<Self> {
-        Ok(Self {
-            path: path.as_ref().to_path_buf(),
-            file: File::create(path)?,
-        })
-    }
-
-    pub fn open(path: impl AsRef<Path>) -> AppResult<Self> {
-        Ok(Self {
-            path: path.as_ref().to_path_buf(),
-            file: File::open(path)?,
-        })
-    }
-}
-
-impl KnownFile for NamedFile {
-    fn path(&self) -> &Path {
-        self.path.as_path()
-    }
-
-    fn as_file(&self) -> &File {
-        &self.file
-    }
-
-    fn as_file_mut(&mut self) -> &mut File {
-        &mut self.file
-    }
-}
-
-impl KnownFile for NamedTempFile {
-    fn path(&self) -> &Path {
-        self.path()
-    }
-
-    fn as_file(&self) -> &File {
-        self.as_file()
-    }
-
-    fn as_file_mut(&mut self) -> &mut File {
-        self.as_file_mut()
-    }
-}
-
 #[cfg(target_os = "macos")]
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "PascalCase")]
@@ -496,7 +393,7 @@ struct TargetDiskInfo {
     #[serde(rename = "Content")]
     part_type: String,
 
-    size: u64,
+    size: usize,
 
     #[serde(default = "Vec::new")]
     partitions: Vec<TargetDiskPartitionInfo>,
@@ -511,7 +408,7 @@ struct TargetDiskInfo {
     #[serde(rename = "type")]
     part_type: String,
 
-    size: u64,
+    size: usize,
 
     #[serde(default = "Vec::new", rename = "children")]
     partitions: Vec<TargetDiskPartitionInfo>,
@@ -548,7 +445,7 @@ struct TargetDiskPartitionInfo {
     #[serde(rename = "Content")]
     part_type: Option<String>,
 
-    size: u64,
+    size: usize,
 
     #[serde(rename = "VolumeName")]
     name: Option<String>,
@@ -563,7 +460,7 @@ struct TargetDiskPartitionInfo {
     #[serde(rename = "type")]
     part_type: Option<String>,
 
-    size: u64,
+    size: usize,
 
     #[serde(rename = "label")]
     name: Option<String>,
@@ -597,20 +494,20 @@ impl Display for TargetDiskPartitionInfo {
 
 #[derive(Debug, Clone)]
 struct SourceDiskInfo {
-    num_sectors: u64,
+    num_sectors: usize,
     partitions: Vec<SourceDiskPartitionInfo>,
 }
 
 #[derive(Clone, Debug, Default)]
 struct SourceDiskPartitionInfo {
     name: String,
-    num_sectors: u64,
-    sector_size: u64,
-    start_sector: u64,
+    num_sectors: usize,
+    sector_size: usize,
+    start_sector: usize,
 }
 
 impl SourceDiskPartitionInfo {
-    fn size(&self) -> u64 {
+    fn size(&self) -> usize {
         self.num_sectors * self.sector_size
     }
 }

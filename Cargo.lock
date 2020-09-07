@@ -522,9 +522,11 @@ dependencies = [
  "nom",
  "plist",
  "pretty_env_logger",
+ "rand",
  "reqwest",
  "serde",
  "serde_json",
+ "serde_yaml",
  "shiplift",
  "structopt",
  "strum",
@@ -1333,6 +1335,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "serde_yaml"
+version = "0.8.13"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ae3e2dd40a7cdc18ca80db804b7f461a39bb721160a85c9a1fa30134bf3c02a5"
+dependencies = [
+ "dtoa",
+ "linked-hash-map",
+ "serde",
+ "yaml-rust",
+]
+
+[[package]]
 name = "shiplift"
 version = "0.6.0"
 source = "git+https://github.com/softprops/shiplift.git#49afd94f8d084ac028920c1785b2ddb05c13bef3"
@@ -1891,6 +1905,15 @@ dependencies = [
  "futures 0.1.29",
  "lzma-sys",
  "tokio-io",
+]
+
+[[package]]
+name = "yaml-rust"
+version = "0.4.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "39f0c922f1a334134dc2f7a8b67dc5d25f0735263feec974345ff706bcf20b0d"
+dependencies = [
+ "linked-hash-map",
 ]
 
 [[package]]

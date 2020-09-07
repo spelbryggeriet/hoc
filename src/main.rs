@@ -3,7 +3,9 @@ extern crate log;
 #[macro_use]
 extern crate strum_macros;
 
+mod context;
 mod logger;
+mod file;
 
 mod build;
 mod deploy;
@@ -11,8 +13,7 @@ mod flash;
 
 mod prelude;
 
-use std::path::PathBuf;
-use std::{env, fs};
+use std::{env, path::PathBuf};
 
 use anyhow::Context;
 use lazy_static::lazy_static;
@@ -20,6 +21,7 @@ use logger::Logger;
 use structopt::StructOpt;
 
 use build::CmdBuild;
+use context::AppContext;
 use deploy::CmdDeploy;
 use flash::CmdFlash;
 
@@ -33,24 +35,7 @@ lazy_static! {
     static ref CACHE_DIR: PathBuf = HOME_DIR.join("cache");
 }
 
-fn configure_home_dir(log: &mut Logger) -> AppResult<()> {
-    if !is_home_dir_complete() {
-        log.status(format!(
-            "Configuring home directory at '{}'",
-            HOME_DIR.to_string_lossy()
-        ))?;
-    }
-
-    fs::create_dir_all(HOME_DIR.join("cache")).context("Creating cache directory")?;
-
-    Ok(())
-}
-
-fn is_home_dir_complete() -> bool {
-    CACHE_DIR.exists()
-}
-
-fn readable_size(size: u64) -> (f32, &'static str) {
+fn readable_size(size: usize) -> (f32, &'static str) {
     let mut order_10_bits = 0;
     let mut size = size as f32;
     while size >= 1024.0 && order_10_bits < 4 {
@@ -73,17 +58,35 @@ fn readable_size(size: u64) -> (f32, &'static str) {
 type AppResult<T> = anyhow::Result<T>;
 
 #[derive(StructOpt)]
-enum App {
+struct App {
+    /// Use cached image instead of fetching it.
+    #[structopt(short, long)]
+    cached: bool,
+
+    #[structopt(flatten)]
+    subcommand: Subcommand,
+}
+
+#[derive(StructOpt)]
+enum Subcommand {
     Build(CmdBuild),
     Deploy(CmdDeploy),
     Flash(CmdFlash),
 }
 
 async fn run(log: &mut Logger) -> AppResult<()> {
-    match App::from_args() {
-        App::Build(cmd) => cmd.run(log).await.context("Running build command")?,
-        App::Deploy(cmd) => cmd.run(log).await.context("Running deploy command")?,
-        App::Flash(cmd) => cmd.run(log).await.context("Running flash command")?,
+    pretty_env_logger::init();
+
+    let args = App::from_args();
+    let mut context = AppContext::configure(args.cached).context("Configuring app context")?;
+
+    match args.subcommand {
+        Subcommand::Build(cmd) => cmd.run(log).await.context("Running build command")?,
+        Subcommand::Deploy(cmd) => cmd.run(log).await.context("Running deploy command")?,
+        Subcommand::Flash(cmd) => cmd
+            .run(&mut context, log)
+            .await
+            .context("Running flash command")?,
     }
 
     Ok(())
@@ -91,8 +94,6 @@ async fn run(log: &mut Logger) -> AppResult<()> {
 
 #[tokio::main]
 async fn main() {
-    pretty_env_logger::init();
-
     let mut log = Logger::new();
 
     match run(&mut log).await {
