@@ -43,31 +43,40 @@ impl AppContext {
         })
     }
 
-    pub fn start_cache_processing(
+    pub fn start_cache_writing(
         &mut self,
         key: impl AsRef<str>,
-    ) -> AppResult<(Option<isize>, &mut NamedFile)> {
+    ) -> AppResult<(isize, &mut NamedFile)> {
         // Remove the state and flush the config file, so that we know the file will be corrupt
         // if the program gets interrupted in the middle of the cache file update operation.
-        let current_state = self.cache_config.states.remove(key.as_ref());
+        let current_state = self
+            .cache_config
+            .states
+            .remove(key.as_ref())
+            .unwrap_or_default();
         self.flush_config()
             .with_context(|| format!("Writing config file for '{}'", key.as_ref()))?;
 
         Ok((current_state, self.get_named_file(key.as_ref())?))
     }
 
-    pub fn stop_cache_processing(
+    pub fn stop_cache_writing(
         &mut self,
         key: impl AsRef<str>,
-        achieved_state: impl Into<isize>,
+        achieved_state: isize,
     ) -> AppResult<()> {
         // Change the current state to the desired state and flush the config file, so we can
         // continue work from this point if needed.
-        self.cache_config
+        let updated_state = self
+            .cache_config
             .states
-            .insert(key.as_ref().to_string(), achieved_state.into());
-        self.flush_config()
-            .with_context(|| format!("Writing config file for '{}'", key.as_ref()))?;
+            .insert(key.as_ref().to_string(), achieved_state);
+
+        // Only flush if the state was updated.
+        if updated_state != Some(achieved_state) {
+            self.flush_config()
+                .with_context(|| format!("Writing config file for '{}'", key.as_ref()))?;
+        }
 
         Ok(())
     }

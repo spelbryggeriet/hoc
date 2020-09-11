@@ -9,10 +9,10 @@ use rand::{distributions::Alphanumeric, Rng};
 use crate::prelude::*;
 
 fn temp_path() -> PathBuf {
-    let mut temp_path = env::temp_dir();
+    let mut temp_path = fs::canonicalize(env::temp_dir()).unwrap();
 
     temp_path.push(format!(
-        ".tmp{}",
+        ".tmp_{}",
         rand::thread_rng()
             .sample_iter(&Alphanumeric)
             .take(20)
@@ -53,11 +53,7 @@ impl NamedFile {
 
         let file = open_options.mode(0o666).open(&path)?;
 
-        Ok(Self {
-            path,
-            file,
-            temp,
-        })
+        Ok(Self { path, file, temp })
     }
 
     pub fn path(&self) -> &Path {
@@ -68,7 +64,6 @@ impl NamedFile {
         &self.file
     }
 
-    /// Get a mutable reference to the underlying file.
     pub fn as_file_mut(&mut self) -> &mut File {
         &mut self.file
     }
@@ -77,7 +72,7 @@ impl NamedFile {
 impl Drop for NamedFile {
     fn drop(&mut self) {
         if self.temp {
-            fs::remove_file(&self.path).expect("Failed removing temp file");
+            let _ = fs::remove_file(&self.path);
         }
     }
 }
@@ -123,5 +118,38 @@ impl Seek for NamedFile {
 impl<'a> Seek for &'a NamedFile {
     fn seek(&mut self, pos: SeekFrom) -> io::Result<u64> {
         self.as_file().seek(pos)
+    }
+}
+
+pub(crate) struct TempDir {
+    path: PathBuf,
+}
+
+impl TempDir {
+    pub fn new() -> AppResult<Self> {
+        Self::new_in(temp_path())
+    }
+
+    pub fn new_in(path: PathBuf) -> AppResult<Self> {
+        fs::create_dir(&path)?;
+
+        Ok(Self { path })
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl AsRef<Path> for TempDir {
+    fn as_ref(&self) -> &Path {
+        self.path()
+    }
+}
+
+impl Drop for TempDir {
+    fn drop(&mut self) {
+        println!("Dropping temp dir");
+        let _ = fs::remove_dir_all(&self.path);
     }
 }
