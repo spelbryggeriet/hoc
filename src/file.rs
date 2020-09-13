@@ -33,7 +33,7 @@ impl NamedFile {
         Self::create(temp_path(), true, true)
     }
 
-    pub fn new(path: PathBuf) -> AppResult<Self> {
+    pub fn _new(path: PathBuf) -> AppResult<Self> {
         Self::create(path, true, false)
     }
 
@@ -149,7 +149,6 @@ impl AsRef<Path> for TempDir {
 
 impl Drop for TempDir {
     fn drop(&mut self) {
-        println!("Dropping temp dir");
         let _ = fs::remove_dir_all(&self.path);
     }
 }

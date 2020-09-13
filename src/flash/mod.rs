@@ -40,7 +40,13 @@ pub(super) struct CmdFlash {}
 
 impl CmdFlash {
     pub(super) async fn run(self, context: &mut AppContext, log: &mut Logger) -> AppResult<()> {
-        let image = self.select_image(log).context("Selecting image")?;
+        let index = log.choose(
+            "Choose which operating system image to download",
+            Image::iter().map(|i| i.description()),
+            0,
+        )?;
+
+        let image = Image::iter().nth(index).unwrap();
 
         let image_key = image.description().to_snake_case();
 
@@ -85,19 +91,13 @@ impl CmdFlash {
                     self.mount_disk(log, &boot_disk_id, mount_dir.path())
                         .context("Mounting image disk")?;
 
-                    println!("{}", mount_dir.as_ref().to_string_lossy());
-
-                    log.prompt("Continue?")?;
-
                     log.status("Creating ssh file")?;
                     File::create(mount_dir.as_ref().join("ssh")).context("Creating ssh file")?;
 
-                    log.prompt("Continue?")?;
+                    self.sync_disk_writes(log).context("Syncing disk writes")?;
 
                     self.unmount_disk(log, &boot_disk_id)
                         .context("Unmounting image disk")?;
-
-                    log.prompt("Continue?")?;
 
                     self.detach_disk(log, &boot_disk_id)
                         .context("Detaching image disk")?;
@@ -142,7 +142,7 @@ impl CmdFlash {
                                     largest_partition_index,
                                 )?;
 
-                            let image_partition_info = image_info.remove(index);
+                            let _image_partition_info = image_info.remove(index);
                         }
 
                         Image::Raspbian => (),
@@ -180,16 +180,6 @@ impl CmdFlash {
             .with_context(|| format!("Flashing target disk '{}'", attached_disk_info_str))?;
 
         Ok(())
-    }
-
-    fn select_image(&self, log: &mut Logger) -> AppResult<Image> {
-        let index = log.choose(
-            "Choose which operating system image to download",
-            Image::iter().map(|i| i.description()),
-            0,
-        )?;
-
-        Ok(Image::iter().nth(index).unwrap())
     }
 
     async fn fetch_image<'a: 'b, 'b>(
@@ -317,7 +307,7 @@ impl CmdFlash {
                 .stdout;
 
             let output = String::from_utf8(stdout).context("Converting stdout to UTF-8")?;
-            let (_, mut disk_info) = parse::source_disk_info(&output)
+            let (_, _disk_info) = parse::fdisk_output(&output)
                 .map_err(|e| anyhow!(e.to_string()))
                 .context("Parsing disk info")?;
 
@@ -379,6 +369,25 @@ impl CmdFlash {
         anyhow::ensure!(
             output.status.success(),
             format!("{}", String::from_utf8_lossy(&output.stderr))
+        );
+
+        Ok(())
+    }
+
+    fn sync_disk_writes(&self, log: &mut Logger) -> AppResult<()> {
+        log.status("Syncing disk writes")?;
+
+        let output = if cfg!(target_family = "unix") {
+            Command::new("sync")
+                .output()
+                .context("Executing diskutil")?
+        } else {
+            anyhow::bail!("Windows not supported");
+        };
+
+        anyhow::ensure!(
+            output.status.success(),
+            String::from_utf8_lossy(&output.stderr).into_owned()
         );
 
         Ok(())

@@ -4,10 +4,11 @@ extern crate log;
 extern crate strum_macros;
 
 mod context;
-mod logger;
 mod file;
+mod logger;
 
 mod build;
+mod configure;
 mod deploy;
 mod flash;
 
@@ -21,6 +22,7 @@ use logger::Logger;
 use structopt::StructOpt;
 
 use build::CmdBuild;
+use configure::CmdConfigure;
 use context::AppContext;
 use deploy::CmdDeploy;
 use flash::CmdFlash;
@@ -72,6 +74,7 @@ enum Subcommand {
     Build(CmdBuild),
     Deploy(CmdDeploy),
     Flash(CmdFlash),
+    Configure(CmdConfigure),
 }
 
 async fn run(log: &mut Logger) -> AppResult<()> {
@@ -87,6 +90,7 @@ async fn run(log: &mut Logger) -> AppResult<()> {
             .run(&mut context, log)
             .await
             .context("Running flash command")?,
+        Subcommand::Configure(cmd) => cmd.run(&mut context, log).await.context("Running configure command")?,
     }
 
     Ok(())

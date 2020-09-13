@@ -1,6 +1,6 @@
 use anyhow::Context;
 use console::{Style, Term};
-use dialoguer::{Confirm, Select};
+use dialoguer::{Confirm, Input, Password, Select};
 use std::io::Write;
 
 use crate::prelude::*;
@@ -20,8 +20,7 @@ impl Logger {
         }
     }
 
-    #[cfg(target_os = "not used")]
-    pub fn new_line(&mut self) -> AppResult<()> {
+    pub fn _new_line(&mut self) -> AppResult<()> {
         self.stdout.write_line("")?;
         self.new_line_present = true;
 
@@ -51,8 +50,7 @@ impl Logger {
         Ok(())
     }
 
-    #[cfg(target_os = "not used")]
-    pub fn warning(&mut self, message: impl AsRef<str>) -> AppResult<()> {
+    pub fn _warning(&mut self, message: impl AsRef<str>) -> AppResult<()> {
         let yellow = Style::new().yellow();
         self.stderr
             .write(yellow.apply_to("! ").to_string().as_bytes())
@@ -78,8 +76,7 @@ impl Logger {
         Ok(())
     }
 
-    #[cfg(target_os = "not used")]
-    pub fn list(
+    pub fn _list(
         &mut self,
         message: Option<impl ToString>,
         items: impl IntoIterator<Item = impl AsRef<str>>,
@@ -101,7 +98,7 @@ impl Logger {
         let cyan = Style::new().cyan();
         let want_continue = Confirm::new()
             .with_prompt(
-                cyan.apply_to("> ".to_string() + message.as_ref())
+                cyan.apply_to("🤨 ".to_string() + message.as_ref())
                     .to_string(),
             )
             .interact_on(&self.stderr)
@@ -111,6 +108,30 @@ impl Logger {
         }
 
         Ok(())
+    }
+
+    pub fn input(&mut self, message: impl AsRef<str>) -> AppResult<String> {
+        Input::new()
+            .with_prompt(
+                Style::new()
+                    .cyan()
+                    .apply_to("🤓 ".to_string() + message.as_ref())
+                    .to_string(),
+            )
+            .interact_on(&self.stderr)
+            .context("Reading for input")
+    }
+
+    pub fn hidden_input(&mut self, message: impl AsRef<str>) -> AppResult<String> {
+        Password::new()
+            .with_prompt(
+                Style::new()
+                    .cyan()
+                    .apply_to("🤓 ".to_string() + message.as_ref())
+                    .to_string(),
+            )
+            .interact_on(&self.stderr)
+            .context("Reading for hidden input")
     }
 
     pub fn choose(
@@ -124,7 +145,7 @@ impl Logger {
         let cyan = Style::new().cyan();
         let index = Select::new()
             .with_prompt(
-                cyan.apply_to("# ".to_string() + message.as_ref())
+                cyan.apply_to("🤔 ".to_string() + message.as_ref())
                     .to_string(),
             )
             .items(&items)
@@ -139,10 +160,9 @@ impl Logger {
         }
     }
 
-    #[cfg(target_os = "not used")]
-    pub fn new_line_if_not_present(&mut self) -> AppResult<()> {
+    pub fn _new_line_if_not_present(&mut self) -> AppResult<()> {
         if !self.new_line_present {
-            self.new_line()?;
+            self._new_line()?;
         }
 
         Ok(())
