@@ -1,0 +1,3 @@
+set -e
+
+echo "{password}" | sudo -kS reboot now

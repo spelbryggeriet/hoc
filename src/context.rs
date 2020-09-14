@@ -7,15 +7,22 @@ use serde::{Deserialize, Serialize};
 
 use crate::prelude::*;
 
-#[derive(Serialize, Deserialize, Default)]
+#[derive(Serialize, Deserialize, Default, Debug)]
 struct CacheConfig {
     #[serde(flatten)]
     states: Map<String, isize>,
 }
 
-#[derive(Serialize, Deserialize, Default)]
-struct SshConfig {
-    identity_name: Option<String>,
+#[derive(Serialize, Deserialize, Default, Debug)]
+struct NodesConfig {
+    #[serde(flatten)]
+    nodes: Map<String, NodeConfig>,
+}
+
+#[derive(Serialize, Deserialize, Default, Debug)]
+#[serde(deny_unknown_fields)]
+struct NodeConfig {
+    ssh_identity_name: Option<String>,
     username: Option<String>,
 }
 
@@ -23,16 +30,14 @@ pub(super) struct AppContext {
     cached: bool,
     cache_config_file: File,
     cache_config: CacheConfig,
-    ssh_config_file: File,
-    ssh_config: SshConfig,
+    nodes_config_file: File,
+    nodes_config: NodesConfig,
     named_files: Map<String, NamedFile>,
 }
 
 fn flush_config(file: &mut File, config: &impl Serialize) -> AppResult<()> {
     file.seek(SeekFrom::Start(0))?;
-    file
-        .set_len(0)
-        .context("Clearing cache config file")?;
+    file.set_len(0).context("Clearing cache config file")?;
     serde_yaml::to_writer(file, config)?;
 
     Ok(())
@@ -50,26 +55,26 @@ impl AppContext {
             .open(CACHE_DIR.join("config.yml"))
             .context("Opening cache config file")?;
 
-        let ssh_config_file = OpenOptions::new()
+        let nodes_config_file = OpenOptions::new()
             .read(true)
             .write(true)
             .create(true)
             .mode(0o644)
-            .open(HOME_DIR.join("ssh_config.yml"))
-            .context("Opening SSH config file")?;
+            .open(HOME_DIR.join("nodes_config.yml"))
+            .context("Opening nodes config file")?;
 
         let cache_config: CacheConfig =
             serde_yaml::from_reader(&cache_config_file).unwrap_or_default();
 
-        let ssh_config: SshConfig =
-            serde_yaml::from_reader(&ssh_config_file).unwrap_or_default();
+        let nodes_config: NodesConfig =
+            serde_yaml::from_reader(&nodes_config_file).unwrap_or_default();
 
         Ok(Self {
             cached,
             cache_config_file,
             cache_config,
-            ssh_config_file,
-            ssh_config,
+            nodes_config_file,
+            nodes_config,
             named_files: Map::new(),
         })
     }
@@ -128,32 +133,50 @@ impl AppContext {
         Ok(named_file)
     }
 
-    pub fn update_ssh_identity_name(&mut self, identity_path: String) -> AppResult<()> {
-        self.ssh_config.identity_name.replace(identity_path);
+    pub fn clear_node_config(&mut self, node: &str) -> AppResult<()> {
+        self.nodes_config.nodes.remove(node);
         self.flush_configs()
     }
 
-    pub fn update_ssh_username(&mut self, username: String) -> AppResult<()> {
-        self.ssh_config.username.replace(username);
+    pub fn update_ssh_identity_name(&mut self, node: &str, identity_name: String) -> AppResult<()> {
+        self.nodes_config
+            .nodes
+            .entry(node.to_string())
+            .or_default()
+            .ssh_identity_name
+            .replace(identity_name);
         self.flush_configs()
     }
 
-    pub fn clear_ssh_config(&mut self) -> AppResult<()> {
-        self.ssh_config = SshConfig::default();
+    pub fn update_username(&mut self, node: &str, username: String) -> AppResult<()> {
+        self.nodes_config
+            .nodes
+            .entry(node.to_string())
+            .or_default()
+            .username
+            .replace(username);
         self.flush_configs()
     }
 
-    pub fn get_ssh_identity_name(&mut self) -> Option<&str> {
-        self.ssh_config.identity_name.as_ref().map(String::as_str)
+    pub fn get_ssh_identity_name(&mut self, node: &str) -> Option<&str> {
+        self.nodes_config
+            .nodes
+            .get(node)
+            .and_then(|v| v.ssh_identity_name.as_ref())
+            .map(String::as_str)
     }
 
-    pub fn get_ssh_username(&mut self) -> Option<&str> {
-        self.ssh_config.username.as_ref().map(String::as_str)
+    pub fn get_username(&mut self, node: &str) -> Option<&str> {
+        self.nodes_config
+            .nodes
+            .get(node)
+            .and_then(|v| v.username.as_ref())
+            .map(String::as_str)
     }
 
     fn flush_configs(&mut self) -> AppResult<()> {
         flush_config(&mut self.cache_config_file, &self.cache_config)?;
-        flush_config(&mut self.ssh_config_file, &self.ssh_config)?;
+        flush_config(&mut self.nodes_config_file, &self.nodes_config)?;
         Ok(())
     }
 }

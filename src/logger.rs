@@ -1,7 +1,8 @@
+use std::io::Write;
+
 use anyhow::Context;
 use console::{Style, Term};
 use dialoguer::{Confirm, Input, Password, Select};
-use std::io::Write;
 
 use crate::prelude::*;
 
@@ -14,14 +15,15 @@ pub(super) struct Logger {
 impl Logger {
     pub fn new() -> Self {
         Self {
-            stdout: Term::stdout(),
-            stderr: Term::stderr(),
+            stdout: Term::buffered_stdout(),
+            stderr: Term::buffered_stderr(),
             new_line_present: true,
         }
     }
 
     pub fn _new_line(&mut self) -> AppResult<()> {
         self.stdout.write_line("")?;
+        self.stdout.flush()?;
         self.new_line_present = true;
 
         Ok(())
@@ -32,6 +34,7 @@ impl Logger {
         self.stdout
             .write_line(message.as_ref())
             .context("Writing to stdout")?;
+        self.stdout.flush()?;
         self.set_new_line_present(message);
 
         Ok(())
@@ -45,6 +48,7 @@ impl Logger {
         self.stdout
             .write_line(" ...")
             .context("Writing to stdout")?;
+        self.stdout.flush()?;
         self.set_new_line_present(message);
 
         Ok(())
@@ -52,12 +56,13 @@ impl Logger {
 
     pub fn _warning(&mut self, message: impl AsRef<str>) -> AppResult<()> {
         let yellow = Style::new().yellow();
-        self.stderr
+        self.stdout
             .write(yellow.apply_to("! ").to_string().as_bytes())
-            .context("Writing to stderr")?;
-        self.stderr
+            .context("Writing to stdout")?;
+        self.stdout
             .write_line(&yellow.apply_to(message.as_ref()).to_string())
-            .context("Writing to stderr")?;
+            .context("Writing to stdout")?;
+        self.stdout.flush()?;
         self.set_new_line_present(message);
 
         Ok(())
@@ -71,25 +76,8 @@ impl Logger {
         self.stderr
             .write_line(&red.apply_to(message.as_ref()).to_string())
             .context("Writing to stderr")?;
+        self.stderr.flush()?;
         self.set_new_line_present(message);
-
-        Ok(())
-    }
-
-    pub fn _list(
-        &mut self,
-        message: Option<impl ToString>,
-        items: impl IntoIterator<Item = impl AsRef<str>>,
-    ) -> AppResult<()> {
-        if let Some(message) = message {
-            self.info(message.to_string() + ":")?;
-        }
-
-        for item in items.into_iter() {
-            self.stdout
-                .write_line(&("-   ".to_string() + item.as_ref()))
-                .context("Writing to stdout")?;
-        }
 
         Ok(())
     }
@@ -101,7 +89,7 @@ impl Logger {
                 cyan.apply_to("🤨 ".to_string() + message.as_ref())
                     .to_string(),
             )
-            .interact_on(&self.stderr)
+            .interact_on(&self.stdout)
             .context("Reading for input")?;
         if !want_continue {
             anyhow::bail!("User cancelled operation");
@@ -118,7 +106,7 @@ impl Logger {
                     .apply_to("🤓 ".to_string() + message.as_ref())
                     .to_string(),
             )
-            .interact_on(&self.stderr)
+            .interact_on(&self.stdout)
             .context("Reading for input")
     }
 
@@ -130,7 +118,7 @@ impl Logger {
                     .apply_to("🤓 ".to_string() + message.as_ref())
                     .to_string(),
             )
-            .interact_on(&self.stderr)
+            .interact_on(&self.stdout)
             .context("Reading for hidden input")
     }
 
@@ -150,7 +138,7 @@ impl Logger {
             )
             .items(&items)
             .default(default_index)
-            .interact_on_opt(&self.stderr)
+            .interact_on_opt(&self.stdout)
             .context("Reading for input")?;
 
         if let Some(index) = index {

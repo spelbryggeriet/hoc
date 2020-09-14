@@ -20,18 +20,18 @@ pub(super) struct CmdBuild {
 }
 
 impl CmdBuild {
-    pub(super) async fn run(self, log: &mut Logger) -> AppResult<()> {
-        log.status(format!("Building service '{}'", self.service))?;
+    pub(super) async fn run(self) -> AppResult<()> {
+        status!("Building service '{}'", self.service);
 
         let dir = tempfile::tempdir().context("Creating temporary directory")?;
 
-        let repo = self.clone_repo(log, dir.path())?;
+        let repo = self.clone_repo(dir.path())?;
         let build_dir = self.prepare_build_dir(repo)?;
 
-        self.build_docker_image(log, build_dir).await
+        self.build_docker_image(build_dir).await
     }
 
-    fn clone_repo(&self, log: &mut Logger, repo_path: &Path) -> AppResult<Repository> {
+    fn clone_repo(&self, repo_path: &Path) -> AppResult<Repository> {
         // Prepare callbacks.
         let mut callbacks = RemoteCallbacks::new();
         callbacks.credentials(|_url, username_from_url, _allowed_types| {
@@ -53,11 +53,11 @@ impl CmdBuild {
 
         // Clone the project.
         let url = format!("git@github.com:lidin/homepi-{}.git", self.service);
-        log.status(format!(
+        status!(
             "Cloning repository '{}' into directory '{}'",
             &url,
             repo_path.to_string_lossy()
-        ))?;
+        );
         builder
             .clone(&url, repo_path)
             .context(format!("Cloning repository '{}'", &url))
@@ -103,7 +103,7 @@ impl CmdBuild {
         Ok(build_dir.to_path_buf())
     }
 
-    async fn build_docker_image(&self, log: &mut Logger, build_dir: PathBuf) -> AppResult<()> {
+    async fn build_docker_image(&self, build_dir: PathBuf) -> AppResult<()> {
         let docker = Docker::new();
 
         // Prepare build options for Docker.
@@ -115,7 +115,7 @@ impl CmdBuild {
         let options = BuildOptions::builder(build_dir_str).tag(tag).build();
 
         // Start the Docker build process.
-        log.status(format!("Building Docker image '{}'", tag))?;
+        status!("Building Docker image '{}'", tag);
         let images = docker.images();
         let mut stream = images.build(&options);
 

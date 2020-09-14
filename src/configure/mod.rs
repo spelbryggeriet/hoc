@@ -3,24 +3,24 @@ mod parse;
 use std::env;
 use std::fmt::{self, Display, Formatter};
 use std::fs;
-use std::io::{Read, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{Ipv4Addr, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::anyhow;
-use ssh2::{ExtendedData, Session};
+use ssh2::Session;
 use structopt::StructOpt;
 
 use crate::prelude::*;
 
 macro_rules! shell_cmd {
     ($cmd:literal) => {{
-        format!(include_str!(concat!("shell/", $cmd, ".sh")))
+        format!(include_str!(concat!("shell/", $cmd, ".sh.fmt")))
     }};
 
     ($cmd:literal, $($args:tt)*) => {{
-        format!(include_str!(concat!("shell/", $cmd, ".sh")), $($args)*)
+        format!(include_str!(concat!("shell/", $cmd, ".sh.fmt")), $($args)*)
     }};
 }
 
@@ -28,7 +28,7 @@ macro_rules! ssh_cmd {
     ($ssh:expr, $context:expr, $($cmd:tt)+) => {{
         let context = $context;
         $ssh.run_command(shell_cmd!($($cmd)+))
-            .context(context)?
+            .context(context.clone())?
             .map_err(|(exit_status, output)| anyhow!(
                 "Command exited with status code {}: {}",
                 exit_status,
@@ -47,12 +47,17 @@ enum Authentication<S, P> {
 pub(super) struct CmdConfigure {
     #[structopt(long)]
     fresh: bool,
+
+    #[structopt(long)]
+    skip_dependencies: bool,
+
+    node_name: String,
 }
 
 impl CmdConfigure {
-    pub async fn run(self, context: &mut AppContext, log: &mut Logger) -> AppResult<()> {
+    pub async fn run(self, context: &mut AppContext) -> AppResult<()> {
         if self.fresh {
-            context.clear_ssh_config()?;
+            context.clear_node_config(&self.node_name)?;
         }
 
         let mut local_endpoints = self
@@ -64,31 +69,35 @@ impl CmdConfigure {
             .position(|e| {
                 e.hostname
                     .as_ref()
-                    .map(|v| v.contains("homepi"))
+                    .map(|v| v.contains(&self.node_name))
                     .unwrap_or_default()
             })
             .unwrap_or_default();
 
-        let index = log.choose(
+        let index = choose!(
             "Which endpoint do you want to configure?",
             local_endpoints.iter(),
             default_index,
-        )?;
+        );
         let local_endpoint = local_endpoints.remove(index);
 
-        let mut username = context.get_ssh_username().unwrap_or("pi").to_string();
+        let mut username = context
+            .get_username(&self.node_name)
+            .unwrap_or("pi")
+            .to_string();
         let mut password = if username == "pi" {
             "raspberry".to_string()
         } else {
-            log.hidden_input(format!("Password for {}", username))?
+            input!([hidden] "Password for {}", username)
         };
 
+        status!("Connecting to SSH host");
         let home_var = env::var("HOME")?;
         let mut ssh = SshClient::new(
             local_endpoint,
             &username,
-            context.get_ssh_identity_name().map_or_else(
-                || Authentication::Password(&password),
+            context.get_ssh_identity_name(&self.node_name).map_or(
+                Authentication::Password(&password),
                 |name| {
                     let base_path = PathBuf::from(format!("{}/.ssh", home_var));
                     Authentication::KeyBased {
@@ -101,18 +110,18 @@ impl CmdConfigure {
         .context("Creating new SSH client")?;
 
         if username == "pi" {
-            log.status("Migrating from the pi user")?;
+            status!("Migrating from the pi user");
 
-            username = log.input("Choose a new username")?;
-            context.update_ssh_username(username.clone())?;
+            username = input!("Choose a new username");
+            context.update_username(&self.node_name, username.clone())?;
 
-            password = log.hidden_input("Choose a new password")?;
-            let new_password_retype = log.hidden_input("Retype the new password")?;
+            password = input!([hidden] "Choose a new password");
+            let new_password_retype = input!([hidden] "Retype the new password");
             if password != new_password_retype {
                 anyhow::bail!("Passwords doesn't match");
             }
 
-            log.status("Creating new user")?;
+            status!("Creating new user");
             ssh_cmd!(
                 ssh,
                 "Creating new user",
@@ -121,14 +130,11 @@ impl CmdConfigure {
                 password = password
             );
 
-            log.status("Reconnecting with new credentials")?;
-            ssh.reconnect(
-                &username,
-                Authentication::Password::<_, PathBuf>(&password),
-            )
-            .context("Reconnecting SSH client with new credentials")?;
+            status!("Reconnecting with new credentials");
+            ssh.reconnect(&username, Authentication::Password::<_, PathBuf>(&password))
+                .context("Reconnecting SSH client with new credentials")?;
 
-            log.status("Deleting pi user")?;
+            status!("Deleting pi user");
             ssh_cmd!(
                 ssh,
                 "Deleting pi user",
@@ -138,7 +144,7 @@ impl CmdConfigure {
         }
 
         if !ssh.path_exists(format!("/home/{}/.ssh/authorized_keys", username))? {
-            log.status("Initializing SSH key-based authorization")?;
+            status!("Initializing SSH key-based authorization");
 
             let mut identities = self.get_ssh_identities()?;
             let default_index = identities
@@ -149,14 +155,15 @@ impl CmdConfigure {
                         .unwrap_or_default()
                 })
                 .unwrap_or_default();
-            let index = log.choose(
+            let index = choose!(
                 "Which SSH public identity file would you like to use",
                 identities.iter().map(|i| i.to_string_lossy()),
                 default_index,
-            )?;
+            );
             let identity_path = identities.remove(index);
 
             context.update_ssh_identity_name(
+                &self.node_name,
                 identity_path
                     .file_stem()
                     .and_then(|s| s.to_str())
@@ -164,28 +171,58 @@ impl CmdConfigure {
                     .context("Path could not be converted to UTF-8")?,
             )?;
 
-            log.status("Configuring SSH key-based authentication")?;
+            status!("Configuring SSH key-based authentication");
             ssh_cmd!(
                 ssh,
                 "Configuring SSH key-based authentication",
-                "Configure_ssh_key_based_authentication",
+                "configure_ssh",
                 username = username,
                 password = password
             );
 
-            ssh.send_file(identity_path)
+            ssh.send_file(identity_path, 0o600)
                 .context("Copying SSH public identity file")?;
         }
 
-        log.status("Installing dependencies")?;
-        ssh_cmd!(
-            ssh,
-            "Installing dependencies",
-            "install_dependencies",
-            password = password
-        );
+        if !self.skip_dependencies {
+            status!("Installing apt packages");
+            for package_name in &[
+                "openssh-server",
+                "ufw",
+                "pkg-config",
+                "libssl-dev",
+                "libx11-dev",
+                "libxcb-composite0-dev",
+                "docker.io",
+            ] {
+                let msg = format!("Installing {}", package_name);
+                status!(&msg);
+                ssh_cmd!(
+                    ssh,
+                    msg,
+                    "install_apt_package",
+                    password = password,
+                    package_name = package_name,
+                );
+            }
 
-        log.status("Configuring cron jobs")?;
+            status!("Installing Rust");
+            ssh_cmd!(ssh, "Installing Rust", "install_rust");
+
+            status!("Installing Rust packages");
+            for package_name in &["nu"] {
+                let msg = format!("Installing {}", package_name);
+                status!(&msg);
+                ssh_cmd!(
+                    ssh,
+                    msg,
+                    "install_rust_package",
+                    package_name = package_name,
+                );
+            }
+        }
+
+        status!("Configuring cron jobs");
         ssh_cmd!(
             ssh,
             "Configuring cron jobs",
@@ -193,13 +230,25 @@ impl CmdConfigure {
             password = password
         );
 
-        log.status("Configuring firewall")?;
+        status!("Configuring firewall");
         ssh_cmd!(
             ssh,
             "Configuring firewall",
             "configure_firewall",
             password = password
         );
+
+        status!("Configuring hostname");
+        ssh_cmd!(
+            ssh,
+            "Configuring hostname",
+            "configure_hostname",
+            password = password,
+            hostname = self.node_name,
+        );
+
+        status!("Rebooting the node");
+        ssh_cmd!(ssh, "Rebooting the node", "reboot", password = password,);
 
         Ok(())
     }
@@ -315,34 +364,44 @@ impl SshClient {
             .session
             .channel_session()
             .context("Opening SSH channel session")?;
-        channel.handle_extended_data(ExtendedData::Merge)?;
 
         channel
             .exec(cmd.as_ref())
             .context("Executing command over SSH")?;
 
-        let mut output = String::new();
-        channel
-            .read_to_string(&mut output)
-            .context("Reading SSH output")?;
+        let mut stdout = String::new();
+        let reader = BufReader::new(channel.stream(0));
+        for line in reader.lines() {
+            let line = line?;
+            info!(line);
 
+            if !stdout.is_empty() {
+                stdout.push('\n');
+            }
+            stdout.push_str(&line);
+        }
+
+        let mut stderr = String::new();
+        channel.stderr().read_to_string(&mut stderr)?;
+
+        channel.close()?;
         channel.wait_close()?;
 
         let exit_status = channel.exit_status()?;
         if exit_status == 0 {
-            Ok(Ok(output))
+            Ok(Ok(stdout))
         } else {
-            Ok(Err((exit_status, output)))
+            Ok(Err((exit_status, stderr)))
         }
     }
 
-    fn send_file(&self, file_path: impl AsRef<Path>) -> AppResult<()> {
+    fn send_file(&self, file_path: impl AsRef<Path>, mode: i32) -> AppResult<()> {
         let file_contents = fs::read(file_path)?;
         let mut remote_file = self
             .session
             .scp_send(
                 Path::new(".ssh/authorized_keys"),
-                0o644,
+                mode,
                 file_contents.len() as u64,
                 None,
             )

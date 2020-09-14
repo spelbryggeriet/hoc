@@ -39,12 +39,11 @@ impl Default for FlashCacheState {
 pub(super) struct CmdFlash {}
 
 impl CmdFlash {
-    pub(super) async fn run(self, context: &mut AppContext, log: &mut Logger) -> AppResult<()> {
-        let index = log.choose(
-            "Choose which operating system image to download",
+    pub(super) async fn run(self, context: &mut AppContext) -> AppResult<()> {
+        let index = choose!(
+            "Which image do you want to use?",
             Image::iter().map(|i| i.description()),
-            0,
-        )?;
+        );
 
         let image = Image::iter().nth(index).unwrap();
 
@@ -56,7 +55,7 @@ impl CmdFlash {
 
             let state = match FlashCacheState::try_from(current_state).unwrap_or_default() {
                 FlashCacheState::Initial => {
-                    self.fetch_image(log, image, temp_file.as_file_mut())
+                    self.fetch_image(image, temp_file.as_file_mut())
                         .await
                         .with_context(|| format!("Fetching image '{}'", image))?;
 
@@ -65,7 +64,7 @@ impl CmdFlash {
 
                 FlashCacheState::Downloaded => {
                     let image_size_value = self
-                        .decompress_image(log, image, temp_file.as_file_mut())
+                        .decompress_image(image, temp_file.as_file_mut())
                         .context("Decompressing image")?;
                     image_size.replace(image_size_value);
 
@@ -73,7 +72,7 @@ impl CmdFlash {
                 }
 
                 FlashCacheState::Decompressed => {
-                    self.attach_disk(log, temp_file.path())
+                    self.attach_disk(temp_file.path())
                         .context("Attaching image disk")?;
 
                     let attached_disk_info =
@@ -88,18 +87,18 @@ impl CmdFlash {
 
                     let mount_dir =
                         TempDir::new().context("Creating temporary mounting directory")?;
-                    self.mount_disk(log, &boot_disk_id, mount_dir.path())
+                    self.mount_disk(&boot_disk_id, mount_dir.path())
                         .context("Mounting image disk")?;
 
-                    log.status("Creating ssh file")?;
+                    status!("Creating ssh file");
                     File::create(mount_dir.as_ref().join("ssh")).context("Creating ssh file")?;
 
-                    self.sync_disk_writes(log).context("Syncing disk writes")?;
+                    self.sync_disk_writes().context("Syncing disk writes")?;
 
-                    self.unmount_disk(log, &boot_disk_id)
+                    self.unmount_disk(&boot_disk_id)
                         .context("Unmounting image disk")?;
 
-                    self.detach_disk(log, &boot_disk_id)
+                    self.detach_disk(&boot_disk_id)
                         .context("Detaching image disk")?;
 
                     FlashCacheState::Modified
@@ -136,11 +135,11 @@ impl CmdFlash {
                                 .map(|(i, _)| i)
                                 .unwrap_or_default();
 
-                            let index = log.choose(
+                            let index = choose!(
                                     "Choose the partition where the OS lives (most likely the largest one)",
                                     image_info.iter(),
                                     largest_partition_index,
-                                )?;
+                                );
 
                             let _image_partition_info = image_info.remove(index);
                         }
@@ -164,19 +163,19 @@ impl CmdFlash {
             anyhow::bail!("No external physical disks mounted");
         }
 
-        let index = log.choose("Choose which disk to flash", physical_disks_info.iter(), 0)?;
+        let index = choose!("Choose which disk to flash", physical_disks_info.iter());
         let attached_disk_info = physical_disks_info.remove(index);
 
         let attached_disk_info_str = attached_disk_info.to_string();
-        log.prompt(format!(
+        prompt!(
             "Do you want to flash target disk '{}'?",
             attached_disk_info_str
-        ))?;
+        );
 
-        self.unmount_disk(log, &attached_disk_info.id)
+        self.unmount_disk(&attached_disk_info.id)
             .context("Unmounting attached disk")?;
 
-        self.flash_target_disk(log, attached_disk_info, image_file.path())
+        self.flash_target_disk(attached_disk_info, image_file.path())
             .with_context(|| format!("Flashing target disk '{}'", attached_disk_info_str))?;
 
         Ok(())
@@ -184,14 +183,13 @@ impl CmdFlash {
 
     async fn fetch_image<'a: 'b, 'b>(
         &'a self,
-        log: &'b mut Logger,
         image: Image,
         dest: &mut File,
     ) -> AppResult<()> {
-        log.status(format!("Fetching image '{}' from '{}'", image, image.url()))?;
+        status!("Fetching image '{}' from '{}'", image, image.url());
         let bytes = reqwest::get(image.url()).await?.bytes().await?;
 
-        log.status(format!("Writing image '{}' to file", image))?;
+        status!("Writing image '{}' to file", image);
         dest.write(bytes.as_ref())
             .with_context(|| format!("Writing image '{}' to file", image))?;
 
@@ -200,22 +198,21 @@ impl CmdFlash {
 
     fn decompress_image(
         &self,
-        log: &mut Logger,
         image: Image,
         file: &mut File,
     ) -> AppResult<usize> {
         let size = match image.compression_type() {
-            CompressionType::Xz => self.decompress_xz_image(log, file)?,
-            CompressionType::Zip => self.decompress_zip_image(log, file)?,
+            CompressionType::Xz => self.decompress_xz_image(file)?,
+            CompressionType::Zip => self.decompress_zip_image(file)?,
         };
 
         Ok(size)
     }
 
-    fn decompress_xz_image(&self, log: &mut Logger, file: &mut File) -> AppResult<usize> {
+    fn decompress_xz_image(&self, file: &mut File) -> AppResult<usize> {
         let mut decompressor = XzDecoder::new(&*file);
 
-        log.status("Decompressing image")?;
+        status!("Decompressing image");
         let mut buf = Vec::new();
         decompressor
             .read_to_end(&mut buf)
@@ -226,14 +223,14 @@ impl CmdFlash {
             .context("Writing decompressed content back to file")
     }
 
-    fn decompress_zip_image(&self, log: &mut Logger, file: &mut File) -> AppResult<usize> {
+    fn decompress_zip_image(&self, file: &mut File) -> AppResult<usize> {
         let mut archive = ZipArchive::new(&*file).context("Reading Zip file")?;
 
         for i in 0..archive.len() {
             let mut archive_file = archive.by_index(i).context("Reading archive file")?;
 
             if archive_file.is_file() && archive_file.name().ends_with(".img") {
-                log.status("Decompressing image")?;
+                status!("Decompressing image");
                 let mut buf = Vec::new();
                 archive_file
                     .read_to_end(&mut buf)
@@ -317,8 +314,8 @@ impl CmdFlash {
         }
     }
 
-    fn attach_disk(&self, log: &mut Logger, image_path: impl AsRef<Path>) -> AppResult<()> {
-        log.status("Attaching disk")?;
+    fn attach_disk(&self, image_path: impl AsRef<Path>) -> AppResult<()> {
+        status!("Attaching disk");
 
         let output = if cfg!(target_os = "macos") {
             Command::new("hdiutil")
@@ -347,11 +344,10 @@ impl CmdFlash {
 
     fn mount_disk(
         &self,
-        log: &mut Logger,
         disk_id: impl AsRef<str>,
         mount_dir: impl AsRef<Path>,
     ) -> AppResult<()> {
-        log.status("Mounting disk")?;
+        status!("Mounting disk");
 
         let output = if cfg!(target_os = "macos") {
             Command::new("diskutil")
@@ -374,8 +370,8 @@ impl CmdFlash {
         Ok(())
     }
 
-    fn sync_disk_writes(&self, log: &mut Logger) -> AppResult<()> {
-        log.status("Syncing disk writes")?;
+    fn sync_disk_writes(&self) -> AppResult<()> {
+        status!("Syncing disk writes");
 
         let output = if cfg!(target_family = "unix") {
             Command::new("sync")
@@ -393,8 +389,8 @@ impl CmdFlash {
         Ok(())
     }
 
-    fn unmount_disk(&self, log: &mut Logger, disk_id: impl AsRef<str>) -> AppResult<()> {
-        log.status("Unmounting disk")?;
+    fn unmount_disk(&self, disk_id: impl AsRef<str>) -> AppResult<()> {
+        status!("Unmounting disk");
 
         let output = if cfg!(target_os = "macos") {
             Command::new("diskutil")
@@ -416,8 +412,8 @@ impl CmdFlash {
         Ok(())
     }
 
-    fn detach_disk(&self, log: &mut Logger, disk_id: impl AsRef<str>) -> AppResult<()> {
-        log.status("Detaching disk")?;
+    fn detach_disk(&self, disk_id: impl AsRef<str>) -> AppResult<()> {
+        status!("Detaching disk");
 
         let output = if cfg!(target_os = "macos") {
             Command::new("hdiutil")
@@ -502,13 +498,12 @@ impl CmdFlash {
 
     fn flash_target_disk(
         &self,
-        log: &mut Logger,
         disk_info: AttachedDiskInfo,
         image_path: impl AsRef<Path>,
     ) -> AppResult<()> {
         let disk_info_str = disk_info.to_string();
 
-        log.status(format!("Flashing disk '{}'", disk_info_str))?;
+        status!("Flashing disk '{}'", disk_info_str);
         let output = if cfg!(target_family = "unix") {
             let mut arg_if = OsString::from("if=");
             arg_if.push(image_path.as_ref());
@@ -532,11 +527,11 @@ impl CmdFlash {
             format!("{}", String::from_utf8_lossy(&output.stderr))
         );
 
-        log.info(format!(
+        info!(
             "Image '{}' flashed to target disk '{}'",
             image_path.as_ref().to_string_lossy(),
             disk_info_str
-        ))?;
+        );
         Ok(())
     }
 }

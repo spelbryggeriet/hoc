@@ -1,0 +1,4 @@
+set -e
+
+# Install apt package.
+echo "{password}" | sudo -kS apt -qqy install "{package_name}"

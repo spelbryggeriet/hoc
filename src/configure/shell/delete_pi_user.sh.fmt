@@ -1,0 +1,7 @@
+set -e
+
+# Kill all processes owned by pi user.
+echo "{password}" | sudo -kS pkill -u pi
+
+# Delete pi user.
+echo "{password}" | sudo -kS deluser --remove-home pi

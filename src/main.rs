@@ -1,7 +1,64 @@
 #[macro_use]
-extern crate log;
-#[macro_use]
 extern crate strum_macros;
+
+macro_rules! _log {
+    ([$label:literal, $method:ident] $msg:expr $(,)?) => {{
+        crate::LOG.lock()
+            .unwrap()
+            .$method(&$msg)
+            .unwrap_or_else(|e| panic!(concat!("failed printing to ", $label, ": {}"), e))
+    }};
+
+    ([$label:literal, $method:ident] $template:literal, $($args:tt)+) => {{
+        crate::LOG.lock()
+            .unwrap()
+            .$method(format!($template, $($args)+))
+            .unwrap_or_else(|e| panic!(concat!("failed printing to ", $label, ": {}"), e))
+    }};
+}
+
+macro_rules! info {
+    ($($args:tt)*) => {{
+        _log!(["stdout", info] $($args)*)
+    }};
+}
+
+macro_rules! status {
+    ($($args:tt)*) => {{
+        _log!(["stdout", status] $($args)*)
+    }};
+}
+
+macro_rules! error {
+    ($($args:tt)*) => {{
+        _log!(["stderr", error] $($args)*)
+    }};
+}
+
+macro_rules! prompt {
+    ($($args:tt)*) => {{
+        _log!(["stdout", prompt] $($args)*)
+    }};
+}
+
+macro_rules! input {
+    ([hidden] $($args:tt)*) => {{
+        _log!(["stdout", hidden_input] $($args)*)
+    }};
+
+    ($($args:tt)*) => {{
+        _log!(["stdout", input] $($args)*)
+    }};
+}
+
+macro_rules! choose {
+    ($msg:expr, $items:expr $(, $default_index:expr)? $(,)?) => {{
+        crate::LOG.lock()
+            .unwrap()
+            .choose($msg, $items, $( if true { $default_index } else )? { 0 })
+            .unwrap_or_else(|e| panic!("failed printing to stdout: {}", e))
+    }};
+}
 
 mod context;
 mod file;
@@ -14,6 +71,7 @@ mod flash;
 
 mod prelude;
 
+use std::sync::Mutex;
 use std::{env, path::PathBuf};
 
 use anyhow::Context;
@@ -28,13 +86,9 @@ use deploy::CmdDeploy;
 use flash::CmdFlash;
 
 lazy_static! {
-    static ref HOME_DIR: PathBuf = {
-        let mut home_dir = PathBuf::new();
-        home_dir.push(env::var("HOME").expect("HOME not set"));
-        home_dir.push(".h2t");
-        home_dir
-    };
+    static ref HOME_DIR: PathBuf = PathBuf::from(format!("{}/.h2t", env::var("HOME").unwrap()));
     static ref CACHE_DIR: PathBuf = HOME_DIR.join("cache");
+    static ref LOG: Mutex<Logger> = Mutex::new(Logger::new());
 }
 
 fn readable_size(size: usize) -> (f32, &'static str) {
@@ -77,20 +131,21 @@ enum Subcommand {
     Configure(CmdConfigure),
 }
 
-async fn run(log: &mut Logger) -> AppResult<()> {
-    pretty_env_logger::init();
-
+async fn run() -> AppResult<()> {
     let args = App::from_args();
     let mut context = AppContext::configure(args.cached).context("Configuring app context")?;
 
     match args.subcommand {
-        Subcommand::Build(cmd) => cmd.run(log).await.context("Running build command")?,
-        Subcommand::Deploy(cmd) => cmd.run(log).await.context("Running deploy command")?,
+        Subcommand::Build(cmd) => cmd.run().await.context("Running build command")?,
+        Subcommand::Deploy(cmd) => cmd.run().await.context("Running deploy command")?,
         Subcommand::Flash(cmd) => cmd
-            .run(&mut context, log)
+            .run(&mut context)
             .await
             .context("Running flash command")?,
-        Subcommand::Configure(cmd) => cmd.run(&mut context, log).await.context("Running configure command")?,
+        Subcommand::Configure(cmd) => cmd
+            .run(&mut context)
+            .await
+            .context("Running configure command")?,
     }
 
     Ok(())
@@ -98,17 +153,12 @@ async fn run(log: &mut Logger) -> AppResult<()> {
 
 #[tokio::main]
 async fn main() {
-    let mut log = Logger::new();
-
-    match run(&mut log).await {
-        Err(e) => log
-            .error(
-                e.chain()
-                    .map(ToString::to_string)
-                    .collect::<Vec<_>>()
-                    .join(": "),
-            )
-            .expect("Failed writing error log"),
+    match run().await {
+        Err(e) => error!(e
+            .chain()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(": ")),
         _ => (),
     }
 }

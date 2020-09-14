@@ -1,12 +1,12 @@
 set -e
 
 # Update hostname.
-cat <<EOT | sudo -S tee /etc/hostname >/dev/null
+cat <<EOT | sudo -kS tee /etc/hostname >/dev/null
 {password}
 {hostname}
 EOT
 
-cat <<EOT | sudo -S tee /etc/hosts >/dev/null
+cat <<EOT | sudo -kS tee /etc/hosts >/dev/null
 {password}
 127.0.0.1	localhost
 ::1		localhost ip6-localhost ip6-loopback

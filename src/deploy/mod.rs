@@ -10,11 +10,11 @@ pub(super) struct CmdDeploy {
 }
 
 impl CmdDeploy {
-    pub(super) async fn run(self, log: &mut Logger) -> AppResult<()> {
-        log.status(format!("Deploying service '{}'", self.service))?;
+    pub(super) async fn run(self) -> AppResult<()> {
+        status!(format!("Deploying service '{}'", self.service));
         let build_cmd = CmdBuild {
             service: self.service,
         };
-        build_cmd.run(log).await
+        build_cmd.run().await
     }
 }
