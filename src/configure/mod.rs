@@ -216,7 +216,7 @@ impl CmdConfigure {
             ssh_run!(
                 ssh,
                 "Configuring SSH key-based authentication",
-                "configure_ssh",
+                "configure/ssh",
                 username = username,
                 password = password
             )?;
@@ -258,7 +258,7 @@ impl CmdConfigure {
                 [no_status]
                 ssh,
                 "Installing apt packages",
-                "install_apt_packages",
+                "install/apt_packages",
                 password = password,
                 package_names = dirty_apt_packages.join(" "),
             )?;
@@ -275,7 +275,7 @@ impl CmdConfigure {
                 "Installing Rust"
             };
 
-            ssh_run!([no_status] ssh, msg, "install_rust")?;
+            ssh_run!([no_status] ssh, msg, "install/rust")?;
         } else if self.update {
             info!("Rust is already installed");
         }
@@ -325,7 +325,7 @@ impl CmdConfigure {
                             [no_status]
                             ssh,
                             format!("Installing {}", crate_name),
-                            "install_rust_crate",
+                            "install/rust_crate",
                             crate_name = crate_name,
                             flags = flags.join(" "),
                         )?;
@@ -338,21 +338,21 @@ impl CmdConfigure {
         ssh_run!(
             ssh,
             "Configuring cron jobs",
-            "configure_cron_jobs",
+            "configure/cron_jobs",
             password = password
         )?;
 
         ssh_run!(
             ssh,
             "Configuring firewall",
-            "configure_firewall",
+            "configure/firewall",
             password = password
         )?;
 
         ssh_run!(
             ssh,
             "Configuring hostname",
-            "configure_hostname",
+            "configure/hostname",
             password = password,
             hostname = self.node_name,
         )?;
