@@ -2,6 +2,13 @@
 extern crate strum_macros;
 
 macro_rules! _log {
+    ([$label:literal, $method:ident]) => {{
+        crate::LOG.lock()
+            .unwrap()
+            .$method("")
+            .unwrap_or_else(|e| panic!(concat!("failed printing to ", $label, ": {}"), e))
+    }};
+
     ([$label:literal, $method:ident] $msg:expr $(,)?) => {{
         crate::LOG.lock()
             .unwrap()

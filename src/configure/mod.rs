@@ -29,13 +29,12 @@ macro_rules! shell_deps {
         include_str!(concat!("shell/deps/", $name, ".txt"))
             .lines()
             .map(|l| l.split_ascii_whitespace().collect::<Vec<_>>())
-    }}
+    }};
 }
 
 macro_rules! ssh_run {
-    ($ssh:expr, $context:expr, $($cmd:tt)+) => {{
+    ([no_status] $ssh:expr, $context:expr, $($cmd:tt)+) => {{
         let context = $context;
-        status!(context);
         $ssh.run_command(shell_cmd!($($cmd)+), true)
             .context(context.clone())?
             .map(|_| ())
@@ -45,6 +44,12 @@ macro_rules! ssh_run {
                 output
             ))
             .context(context)
+    }};
+
+    ($ssh:expr, $context:expr, $($cmd:tt)+) => {{
+        let context = $context;
+        status!(context);
+        ssh_run!([no_status] $ssh, context, $($cmd)+)
     }};
 }
 
@@ -223,43 +228,45 @@ impl CmdConfigure {
         status!("Installing dependencies");
 
         // Install apt packages.
-        for package_names in shell_deps!("apt_packages") {
-            match &package_names[..] {
-                [package_name] => {
-                    let package_installed = ssh_test!(
-                        ssh,
-                        format!("Checking if {} is installed", package_name),
-                        "apt_package_installed",
-                        package_name = package_name
-                    )?;
+        status!("Installing apt packages");
+        let installed_apt_packages: Vec<_> = ssh_evaluate!(
+            ssh,
+            "Getting installed apt packages",
+            "get_installed_apt_packages"
+        )?
+        .lines()
+        .map(str::to_owned)
+        .collect();
 
-                    let msg = if !self.update && package_installed {
-                        info!("{} already installed", package_name);
-                        continue;
-                    } else if package_installed {
-                        format!("Updating {}", package_name)
-                    } else {
-                        format!("Installing {}", package_name)
-                    };
+        let dirty_apt_packages: Vec<_> = shell_deps!("apt_packages")
+            .flat_map(|args| args.get(0).cloned())
+            .filter(|p| self.update || installed_apt_packages.iter().all(|i| i != p))
+            .collect();
 
-                    ssh_run!(
-                        ssh,
-                        msg,
-                        "install_apt_package",
-                        password = password,
-                        package_name = package_name,
-                    )?;
-                }
-                _ => continue,
+        if dirty_apt_packages.is_empty() {
+            info!("All apt packages are already installed");
+        } else {
+            if !self.update {
+                info!("The following packages will be installed:")
+            } else {
+                info!("The following packages will be updated:")
             }
+            dirty_apt_packages.iter().for_each(|p| info!("    {}", p));
+            info!();
+
+            ssh_run!(
+                [no_status]
+                ssh,
+                "Installing apt packages",
+                "install_apt_packages",
+                password = password,
+                package_names = dirty_apt_packages.join(" "),
+            )?;
         }
 
         // Install Rust.
-        let rust_installed = ssh_test!(
-            ssh,
-            "Checking if Rust is installed",
-            "rust_installed"
-        )?;
+        status!("Installing Rust");
+        let rust_installed = ssh_test!(ssh, "Checking if Rust is installed", "rust_installed")?;
 
         if self.update || !rust_installed {
             let msg = if rust_installed {
@@ -268,41 +275,63 @@ impl CmdConfigure {
                 "Installing Rust"
             };
 
-            ssh_run!(ssh, msg, "install_rust")?;
-        } else {
-            info!("Rust already installed");
+            ssh_run!([no_status] ssh, msg, "install_rust")?;
+        } else if self.update {
+            info!("Rust is already installed");
         }
 
         // Install Rust crates.
-        for args in shell_deps!("rust_crates")
-        {
-            match &args[..] {
-                [crate_name, flags @ ..] => {
-                    let crate_installed = ssh_test!(
-                        ssh,
-                        format!("Checking if {} is installed", crate_name),
-                        "rust_crate_installed",
-                        crate_name = crate_name
-                    )?;
+        status!("Installing Rust crates");
+        let installed_rust_crates: Vec<_> = ssh_evaluate!(
+            ssh,
+            "Getting installed Rust crates",
+            "get_installed_rust_crates"
+        )?
+        .lines()
+        .map(str::to_owned)
+        .collect();
 
-                    let msg = if !self.update && crate_installed {
-                        info!("{} already installed", crate_name);
-                        continue;
-                    } else if crate_installed {
-                        format!("Updating {}", crate_name)
-                    } else {
-                        format!("Installing {}", crate_name)
-                    };
+        let dirty_rust_crates: Vec<_> = shell_deps!("rust_crates")
+            .flat_map(|args| {
+                let mut iter = args.iter().cloned();
+                iter.next()
+                    .map(|crate_name| (crate_name, iter.collect::<Vec<_>>()))
+            })
+            .filter(|(crate_name, _)| {
+                self.update
+                    || installed_rust_crates
+                        .iter()
+                        .all(|installed| installed != crate_name)
+            })
+            .collect();
 
-                    ssh_run!(
-                        ssh,
-                        msg,
-                        "install_rust_crate",
-                        crate_name = crate_name,
-                        flags = flags.join(" "),
-                    )?;
+        if dirty_rust_crates.is_empty() {
+            info!("All Rust crates are already installed");
+        } else {
+            if !self.update {
+                info!("The following crates will be installed:")
+            } else {
+                info!("The following crates will be updated:")
+            }
+            dirty_rust_crates
+                .iter()
+                .for_each(|(crate_name, _)| info!("    {}", crate_name));
+            info!();
+
+            for args in shell_deps!("rust_crates") {
+                match &args[..] {
+                    [crate_name, flags @ ..] => {
+                        ssh_run!(
+                            [no_status]
+                            ssh,
+                            format!("Installing {}", crate_name),
+                            "install_rust_crate",
+                            crate_name = crate_name,
+                            flags = flags.join(" "),
+                        )?;
+                    }
+                    _ => continue,
                 }
-                _ => continue,
             }
         }
 

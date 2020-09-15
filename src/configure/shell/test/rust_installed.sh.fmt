@@ -1,7 +1,6 @@
 set -e
 
 # Check if Rust is installed.
-. $HOME/.cargo/env
 if [ -e $HOME/.cargo/env ]
 then
     output=`. $HOME/.cargo/env 2>&1 1>/dev/null; command -v cargo`
