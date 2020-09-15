@@ -1,0 +1,11 @@
+set -e
+
+# Check if the package is install by apt.
+output=`apt list | grep '^{package_name}.*\[installed\]$'`
+if [ "$output" ]
+then
+    echo true
+    exit
+fi
+
+echo false

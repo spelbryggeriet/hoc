@@ -1,0 +1,12 @@
+set -e
+
+# Check if the crate is install by Cargo.
+. $HOME/.cargo/env
+output=`cargo install --list | grep '^{crate_name}.*:$'`
+if [ "$output" ]
+then
+    echo true
+    exit
+fi
+
+echo false

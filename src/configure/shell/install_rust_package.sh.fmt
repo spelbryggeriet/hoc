@@ -1,5 +1,0 @@
-set -e
-
-# Install Rust package.
-. $HOME/.cargo/env
-cargo install "{package_name}" 2>&1

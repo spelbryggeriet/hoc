@@ -15,26 +15,57 @@ use structopt::StructOpt;
 use crate::prelude::*;
 
 macro_rules! shell_cmd {
-    ($cmd:literal) => {{
+    ($cmd:expr) => {{
         format!(include_str!(concat!("shell/", $cmd, ".sh.fmt")))
     }};
 
-    ($cmd:literal, $($args:tt)*) => {{
-        format!(include_str!(concat!("shell/", $cmd, ".sh.fmt")), $($args)*)
+    ($cmd:expr, $($args:tt)+) => {{
+        format!(include_str!(concat!("shell/", $cmd, ".sh.fmt")), $($args)+)
     }};
 }
 
-macro_rules! ssh_cmd {
+macro_rules! shell_deps {
+    ($name:expr) => {{
+        include_str!(concat!("shell/deps/", $name, ".txt"))
+            .lines()
+            .map(|l| l.split_ascii_whitespace().collect::<Vec<_>>())
+    }}
+}
+
+macro_rules! ssh_run {
     ($ssh:expr, $context:expr, $($cmd:tt)+) => {{
         let context = $context;
-        $ssh.run_command(shell_cmd!($($cmd)+))
+        status!(context);
+        $ssh.run_command(shell_cmd!($($cmd)+), true)
+            .context(context.clone())?
+            .map(|_| ())
+            .map_err(|(exit_status, output)| anyhow!(
+                "Command exited with status code {}: {}",
+                exit_status,
+                output
+            ))
+            .context(context)
+    }};
+}
+
+macro_rules! ssh_evaluate {
+    ($ssh:expr, $context:expr, $($cmd:tt)+) => {{
+        let context = $context;
+        $ssh.run_command(shell_cmd!($($cmd)+), false)
             .context(context.clone())?
             .map_err(|(exit_status, output)| anyhow!(
                 "Command exited with status code {}: {}",
                 exit_status,
                 output
             ))
-            .context(context)?;
+            .context(context)
+    }};
+}
+
+macro_rules! ssh_test {
+    ($ssh:expr, $context:expr, $cmd:literal $($args:tt)*) => {{
+        let context = $context;
+        ssh_evaluate!($ssh, context.clone(), concat!("test/", $cmd) $($args)*).and_then(|s| s.parse::<bool>().context(context))
     }};
 }
 
@@ -48,8 +79,9 @@ pub(super) struct CmdConfigure {
     #[structopt(long)]
     fresh: bool,
 
+    /// Updating dependencies if they are out of date.
     #[structopt(long)]
-    skip_dependencies: bool,
+    update: bool,
 
     node_name: String,
 }
@@ -122,28 +154,33 @@ impl CmdConfigure {
             }
 
             status!("Creating new user");
-            ssh_cmd!(
+            ssh_run!(
                 ssh,
                 "Creating new user",
                 "add_user",
                 username = username,
                 password = password
-            );
+            )?;
 
             status!("Reconnecting with new credentials");
             ssh.reconnect(&username, Authentication::Password::<_, PathBuf>(&password))
                 .context("Reconnecting SSH client with new credentials")?;
 
             status!("Deleting pi user");
-            ssh_cmd!(
+            ssh_run!(
                 ssh,
                 "Deleting pi user",
                 "delete_pi_user",
                 password = password
-            );
+            )?;
         }
 
-        if !ssh.path_exists(format!("/home/{}/.ssh/authorized_keys", username))? {
+        if !ssh_test!(
+            ssh,
+            "Checking existance of authorized_keys",
+            "path_exists",
+            path = "$HOME/.ssh/authorized_keys",
+        )? {
             status!("Initializing SSH key-based authorization");
 
             let mut identities = self.get_ssh_identities()?;
@@ -171,84 +208,127 @@ impl CmdConfigure {
                     .context("Path could not be converted to UTF-8")?,
             )?;
 
-            status!("Configuring SSH key-based authentication");
-            ssh_cmd!(
+            ssh_run!(
                 ssh,
                 "Configuring SSH key-based authentication",
                 "configure_ssh",
                 username = username,
                 password = password
-            );
+            )?;
 
             ssh.send_file(identity_path, 0o600)
                 .context("Copying SSH public identity file")?;
         }
 
-        if !self.skip_dependencies {
-            status!("Installing apt packages");
-            for package_name in &[
-                "openssh-server",
-                "ufw",
-                "pkg-config",
-                "libssl-dev",
-                "libx11-dev",
-                "libxcb-composite0-dev",
-                "docker.io",
-            ] {
-                let msg = format!("Installing {}", package_name);
-                status!(&msg);
-                ssh_cmd!(
-                    ssh,
-                    msg,
-                    "install_apt_package",
-                    password = password,
-                    package_name = package_name,
-                );
-            }
+        status!("Installing dependencies");
 
-            status!("Installing Rust");
-            ssh_cmd!(ssh, "Installing Rust", "install_rust");
+        // Install apt packages.
+        for package_names in shell_deps!("apt_packages") {
+            match &package_names[..] {
+                [package_name] => {
+                    let package_installed = ssh_test!(
+                        ssh,
+                        format!("Checking if {} is installed", package_name),
+                        "apt_package_installed",
+                        package_name = package_name
+                    )?;
 
-            status!("Installing Rust packages");
-            for package_name in &["nu"] {
-                let msg = format!("Installing {}", package_name);
-                status!(&msg);
-                ssh_cmd!(
-                    ssh,
-                    msg,
-                    "install_rust_package",
-                    package_name = package_name,
-                );
+                    let msg = if !self.update && package_installed {
+                        info!("{} already installed", package_name);
+                        continue;
+                    } else if package_installed {
+                        format!("Updating {}", package_name)
+                    } else {
+                        format!("Installing {}", package_name)
+                    };
+
+                    ssh_run!(
+                        ssh,
+                        msg,
+                        "install_apt_package",
+                        password = password,
+                        package_name = package_name,
+                    )?;
+                }
+                _ => continue,
             }
         }
 
-        status!("Configuring cron jobs");
-        ssh_cmd!(
+        // Install Rust.
+        let rust_installed = ssh_test!(
+            ssh,
+            "Checking if Rust is installed",
+            "rust_installed"
+        )?;
+
+        if self.update || !rust_installed {
+            let msg = if rust_installed {
+                "Updating Rust"
+            } else {
+                "Installing Rust"
+            };
+
+            ssh_run!(ssh, msg, "install_rust")?;
+        } else {
+            info!("Rust already installed");
+        }
+
+        // Install Rust crates.
+        for args in shell_deps!("rust_crates")
+        {
+            match &args[..] {
+                [crate_name, flags @ ..] => {
+                    let crate_installed = ssh_test!(
+                        ssh,
+                        format!("Checking if {} is installed", crate_name),
+                        "rust_crate_installed",
+                        crate_name = crate_name
+                    )?;
+
+                    let msg = if !self.update && crate_installed {
+                        info!("{} already installed", crate_name);
+                        continue;
+                    } else if crate_installed {
+                        format!("Updating {}", crate_name)
+                    } else {
+                        format!("Installing {}", crate_name)
+                    };
+
+                    ssh_run!(
+                        ssh,
+                        msg,
+                        "install_rust_crate",
+                        crate_name = crate_name,
+                        flags = flags.join(" "),
+                    )?;
+                }
+                _ => continue,
+            }
+        }
+
+        ssh_run!(
             ssh,
             "Configuring cron jobs",
             "configure_cron_jobs",
             password = password
-        );
+        )?;
 
-        status!("Configuring firewall");
-        ssh_cmd!(
+        ssh_run!(
             ssh,
             "Configuring firewall",
             "configure_firewall",
             password = password
-        );
+        )?;
 
-        status!("Configuring hostname");
-        ssh_cmd!(
+        ssh_run!(
             ssh,
             "Configuring hostname",
             "configure_hostname",
             password = password,
             hostname = self.node_name,
-        );
+        )?;
 
-        status!("Rebooting the node");
-        ssh_cmd!(ssh, "Rebooting the node", "reboot", password = password,);
+        ssh_run!(ssh, "Rebooting the node", "reboot", password = password)?;
 
         Ok(())
     }
@@ -359,7 +439,11 @@ impl SshClient {
         Ok(())
     }
 
-    fn run_command(&self, cmd: impl AsRef<str>) -> AppResult<Result<String, (i32, String)>> {
+    fn run_command(
+        &self,
+        cmd: impl AsRef<str>,
+        logging: bool,
+    ) -> AppResult<Result<String, (i32, String)>> {
         let mut channel = self
             .session
             .channel_session()
@@ -373,7 +457,9 @@ impl SshClient {
         let reader = BufReader::new(channel.stream(0));
         for line in reader.lines() {
             let line = line?;
-            info!(line);
+            if logging {
+                info!(line);
+            }
 
             if !stdout.is_empty() {
                 stdout.push('\n');
@@ -409,13 +495,6 @@ impl SshClient {
         remote_file.write(&file_contents)?;
 
         Ok(())
-    }
-
-    fn path_exists(&self, path: impl AsRef<str>) -> AppResult<bool> {
-        Ok(self
-            .run_command(format!("test -e {}", path.as_ref()))
-            .context("Checking if path exists")?
-            .is_ok())
     }
 }
 
