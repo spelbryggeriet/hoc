@@ -1,20 +1,21 @@
 set -e
 
 # Disable firewall.
-echo "{password}" | sudo -kS ufw disable
+echo '{password}' | sudo -kSp '' ufw disable
 
 # Delete all previously user-defined firewall rules.
 OLD_IFS=IFS
 IFS=$'\n'
-for rule in `echo "{password}" | sudo -kS ufw show added | grep ^ufw`
+for rule in `echo '{password}' | sudo -kSp '' ufw show added | grep ^ufw`
 do
-    cmd=`echo "$rule" | awk '{{ gsub("ufw", "sudo -kS ufw delete", $0); print($0) }}'`
-    echo "{password}" | eval $cmd
+    args=`echo "$rule" | sed 's/ufw/ufw delete/'`
+    readarray -t -d '' args <<<`xargs printf '%s\n' <<<"$args"`
+    echo '{password}' | sudo -kSp '' ${{args[@]}}
 done
 IFS=OLD_IFS
 
 # Allow to connect to port 22 on local network only.
-echo "{password}" | sudo -kS ufw allow 22/tcp
+echo '{password}' | sudo -kSp '' ufw allow 22/tcp
 
 # Enable firewall.
-(echo "{password}"; yes) | sudo -kS ufw enable
+(echo '{password}'; yes) | sudo -kSp '' ufw enable

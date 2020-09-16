@@ -11,6 +11,7 @@ use std::process::Command;
 use anyhow::anyhow;
 use ssh2::Session;
 use structopt::StructOpt;
+use url::Url;
 
 use crate::prelude::*;
 
@@ -227,40 +228,92 @@ impl CmdConfigure {
 
         status!("Installing dependencies");
 
-        // Install apt packages.
-        status!("Installing apt packages");
-        let installed_apt_packages: Vec<_> = ssh_evaluate!(
+        // Install Debain packages.
+        status!("Installing Debian packages");
+        let installed_debian_packages: Vec<_> = ssh_evaluate!(
             ssh,
-            "Getting installed apt packages",
-            "get_installed_apt_packages"
+            "Getting installed Debian packages",
+            "get_installed_debian_packages"
         )?
         .lines()
         .map(str::to_owned)
         .collect();
 
-        let dirty_apt_packages: Vec<_> = shell_deps!("apt_packages")
-            .flat_map(|args| args.get(0).cloned())
-            .filter(|p| self.update || installed_apt_packages.iter().all(|i| i != p))
+        let dirty_debian_packages: Vec<_> = shell_deps!("debian_packages")
+            .filter_map(|args| {
+                let mut iter = args.into_iter();
+                iter.next().map(|package_name| (package_name, iter.next()))
+            })
+            .filter(|(package_name, _)| {
+                self.update
+                    || installed_debian_packages
+                        .iter()
+                        .all(|installed| installed != package_name)
+            })
             .collect();
 
-        if dirty_apt_packages.is_empty() {
-            info!("All apt packages are already installed");
+        if dirty_debian_packages.is_empty() {
+            info!("All Debian packages are already installed");
         } else {
             if !self.update {
                 info!("The following packages will be installed:")
             } else {
                 info!("The following packages will be updated:")
             }
-            dirty_apt_packages.iter().for_each(|p| info!("    {}", p));
+            dirty_debian_packages
+                .iter()
+                .for_each(|(package_name, _)| info!("    {}", package_name));
             info!();
+
+            for (package_name, repository) in dirty_debian_packages.iter() {
+                match repository {
+                    Some(repository) => {
+                        let mut urls: Vec<_> = ssh_evaluate!(
+                            ssh,
+                            format!("Finding packages for {}", package_name),
+                            "get_debian_package_urls",
+                            repository = repository,
+                        )?
+                        .lines()
+                        .filter_map(|s| Url::parse(s).ok().filter(Url::has_host))
+                        .collect();
+
+                        // We want to prioritize musl architecture packages, and `false` will be
+                        // sorted before `true`, which is why we invert the check.
+                        urls.sort_by_cached_key(|url| {
+                            !url.host_str().unwrap_or_default().contains("musl")
+                        });
+
+                        let url = match urls.get(0) {
+                            Some(url) => url,
+                            None => {
+                                anyhow::bail!("No URLs found for Debian package {}", package_name);
+                            }
+                        };
+
+                        ssh_run!(
+                            ssh,
+                            format!("Downloading {}", package_name),
+                            "promote_debian_package",
+                            password = password,
+                            url = url,
+                        )?;
+                    }
+                    _ => continue,
+                }
+            }
 
             ssh_run!(
                 [no_status]
                 ssh,
-                "Installing apt packages",
-                "install/apt_packages",
+                "Installing Debain packages",
+                "install/debian_packages",
                 password = password,
-                package_names = dirty_apt_packages.join(" "),
+                package_names = dirty_debian_packages
+                    .into_iter()
+                    .map(|(package_name, _)| package_name)
+                    .collect::<Vec<_>>()
+                    .join(" "),
             )?;
         }
 
@@ -276,7 +329,7 @@ impl CmdConfigure {
             };
 
             ssh_run!([no_status] ssh, msg, "install/rust")?;
-        } else if self.update {
+        } else {
             info!("Rust is already installed");
         }
 
@@ -293,7 +346,7 @@ impl CmdConfigure {
 
         let dirty_rust_crates: Vec<_> = shell_deps!("rust_crates")
             .flat_map(|args| {
-                let mut iter = args.iter().cloned();
+                let mut iter = args.into_iter();
                 iter.next()
                     .map(|crate_name| (crate_name, iter.collect::<Vec<_>>()))
             })
@@ -318,22 +371,25 @@ impl CmdConfigure {
                 .for_each(|(crate_name, _)| info!("    {}", crate_name));
             info!();
 
-            for args in shell_deps!("rust_crates") {
-                match &args[..] {
-                    [crate_name, flags @ ..] => {
-                        ssh_run!(
-                            [no_status]
-                            ssh,
-                            format!("Installing {}", crate_name),
-                            "install/rust_crate",
-                            crate_name = crate_name,
-                            flags = flags.join(" "),
-                        )?;
-                    }
-                    _ => continue,
-                }
+            for (crate_name, flags) in dirty_rust_crates {
+                ssh_run!(
+                    [no_status]
+                    ssh,
+                    format!("Installing {}", crate_name),
+                    "install/rust_crate",
+                    crate_name = crate_name,
+                    flags = flags.join(" ") + " --locked",
+                )?;
             }
         }
+
+        ssh_run!(
+            ssh,
+            "Configuring Raspberry Pi",
+            "configure/raspi_config",
+            password = password,
+            hostname = self.node_name,
+        )?;
 
         ssh_run!(
             ssh,
@@ -347,14 +403,6 @@ impl CmdConfigure {
             "Configuring firewall",
             "configure/firewall",
             password = password
-        )?;
-
-        ssh_run!(
-            ssh,
-            "Configuring hostname",
-            "configure/hostname",
-            password = password,
-            hostname = self.node_name,
         )?;
 
         ssh_run!(ssh, "Rebooting the node", "reboot", password = password)?;

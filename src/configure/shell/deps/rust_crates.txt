@@ -1,1 +1,2 @@
-nu --features default,binaryview,tree,clipboard-cli,trash-support,start,bson,sqlite,s3 --git https://github.com/nushell/nushell.git --rev 232aca76a42836141e6ebfeebe9c6f207483d007
+exa
+starship

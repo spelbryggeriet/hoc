@@ -1,7 +1,7 @@
 set -e
 
 # Setup crontab to update opnessh-server every day.
-cat <<EOT | sudo -kS crontab -
+cat <<EOT | sudo -kSp '' crontab -
 {password}
 0 3 * * * apt install -y openssh-server
 EOT

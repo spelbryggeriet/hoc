@@ -181,11 +181,7 @@ impl CmdFlash {
         Ok(())
     }
 
-    async fn fetch_image<'a: 'b, 'b>(
-        &'a self,
-        image: Image,
-        dest: &mut File,
-    ) -> AppResult<()> {
+    async fn fetch_image<'a: 'b, 'b>(&'a self, image: Image, dest: &mut File) -> AppResult<()> {
         status!("Fetching image '{}' from '{}'", image, image.url());
         let bytes = reqwest::get(image.url()).await?.bytes().await?;
 
@@ -196,11 +192,7 @@ impl CmdFlash {
         Ok(())
     }
 
-    fn decompress_image(
-        &self,
-        image: Image,
-        file: &mut File,
-    ) -> AppResult<usize> {
+    fn decompress_image(&self, image: Image, file: &mut File) -> AppResult<usize> {
         let size = match image.compression_type() {
             CompressionType::Xz => self.decompress_xz_image(file)?,
             CompressionType::Zip => self.decompress_zip_image(file)?,
@@ -342,11 +334,7 @@ impl CmdFlash {
         Ok(())
     }
 
-    fn mount_disk(
-        &self,
-        disk_id: impl AsRef<str>,
-        mount_dir: impl AsRef<Path>,
-    ) -> AppResult<()> {
+    fn mount_disk(&self, disk_id: impl AsRef<str>, mount_dir: impl AsRef<Path>) -> AppResult<()> {
         status!("Mounting disk");
 
         let output = if cfg!(target_os = "macos") {

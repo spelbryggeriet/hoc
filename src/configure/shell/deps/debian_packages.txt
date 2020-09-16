@@ -1,0 +1,9 @@
+bat sharkdp/bat
+docker.io
+fd-find sharkdp/fd
+libssl-dev
+libx11-dev
+libxcb-composite0-dev
+openssh-server
+pkg-config
+ufw

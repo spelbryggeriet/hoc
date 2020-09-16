@@ -1,7 +1,0 @@
-openssh-server
-ufw
-pkg-config
-libssl-dev
-libx11-dev
-libxcb-composite0-dev
-docker.io
