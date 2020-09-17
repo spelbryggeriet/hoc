@@ -14,3 +14,6 @@ echo '{password}' | sudo -kSp '' raspi-config nonint do_change_timezone UTC 2>&1
 
 # Update hostname.
 echo '{password}' | sudo -kSp '' raspi-config nonint do_hostname {hostname} 2>&1
+
+# Remove `needrestart` if present.
+echo '{password}' | sudo -kSp '' apt remove -qqy needrestart

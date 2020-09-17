@@ -407,8 +407,9 @@ impl CmdConfigure {
 
         ssh_run!(
             ssh,
-            "Configuring Bash",
-            "configure/bash",
+            "Configuring Fish",
+            "configure/fish",
+            password = password,
         )?;
 
         ssh_run!(ssh, "Rebooting the node", "reboot", password = password)?;

@@ -1,0 +1,23 @@
+set -e
+
+# Create Fish profile.
+mkdir -p $HOME/.config/fish
+cat <<EOT >$HOME/.config/fish/config.fish
+# Source cargo.
+. $HOME/.cargo/env
+
+# Define some aliases.
+alias fd=fdfind
+
+# Initiate Starship prompt.
+eval (starship init fish)
+EOT
+
+# Create Starship config.
+cat <<EOT >$HOME/.config/starship.toml
+[character]
+style_success = "bold purple"
+EOT
+
+# Change default shell.
+echo '{password}' | chsh -s `which fish` 2>&1 1>/dev/null

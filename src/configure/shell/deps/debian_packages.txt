@@ -1,6 +1,7 @@
 bat sharkdp/bat
 docker.io
 fd-find sharkdp/fd
+fish
 libssl-dev
 libx11-dev
 libxcb-composite0-dev
