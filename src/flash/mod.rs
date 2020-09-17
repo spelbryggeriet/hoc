@@ -574,7 +574,7 @@ struct AttachedDiskInfo {
     #[serde(rename = "Content")]
     part_type: String,
 
-    #[serde(default = "String::new")]
+    #[serde(skip_deserializing, default = "String::new")]
     disk_type: String,
 
     #[serde(rename = "VolumeName", default = "String::new")]
@@ -592,8 +592,11 @@ struct AttachedDiskInfo {
     #[serde(rename = "name")]
     id: String,
 
-    #[serde(rename = "type")]
+    #[serde(rename = "fstype")]
     part_type: String,
+
+    #[serde(skip_deserializing, default = "String::new")]
+    disk_type: String,
 
     #[serde(rename = "kname", default = "String::new")]
     name: String,
