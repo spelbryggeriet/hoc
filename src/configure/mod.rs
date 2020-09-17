@@ -16,7 +16,7 @@ use url::Url;
 use crate::prelude::*;
 
 macro_rules! shell_cmd {
-    ($cmd:expr) => {{
+    ($cmd:expr $(,)?) => {{
         format!(include_str!(concat!("shell/", $cmd, ".sh.fmt")))
     }};
 
@@ -403,6 +403,12 @@ impl CmdConfigure {
             "Configuring firewall",
             "configure/firewall",
             password = password
+        )?;
+
+        ssh_run!(
+            ssh,
+            "Configuring Bash",
+            "configure/bash",
         )?;
 
         ssh_run!(ssh, "Rebooting the node", "reboot", password = password)?;
