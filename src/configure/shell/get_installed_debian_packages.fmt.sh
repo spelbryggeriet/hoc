@@ -1,3 +1,5 @@
+#!/usr/bin/env bash
+
 set -e
 
 # Get the list of installed apt packages.

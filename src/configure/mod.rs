@@ -9,34 +9,171 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::anyhow;
-use ssh2::Session;
+use ssh2::{Channel, Session};
 use structopt::StructOpt;
 use url::Url;
 
 use crate::prelude::*;
 
-macro_rules! shell_cmd {
-    ($cmd:expr $(,)?) => {{
-        format!(include_str!(concat!("shell/", $cmd, ".sh.fmt")))
-    }};
+macro_rules! shell_path {
+    ($cmd:expr $(,)?) => {
+        shell_path!($cmd, ".fmt.sh")
+    };
 
-    ($cmd:expr, $($args:tt)+) => {{
-        format!(include_str!(concat!("shell/", $cmd, ".sh.fmt")), $($args)+)
-    }};
+    ($cmd:expr, $ext:expr $(,)?) => {
+        concat!("shell/", $cmd, $ext)
+    };
+}
+
+macro_rules! shell_cmd {
+    ($cmd:expr $(,)?) => {
+        format!(include_str!(shell_path!($cmd)))
+    };
+
+    ($cmd:expr, $($args:tt)+) => {
+        format!(include_str!(shell_path!($cmd)), $($args)+)
+    };
 }
 
 macro_rules! shell_deps {
-    ($name:expr) => {{
-        include_str!(concat!("shell/deps/", $name, ".txt"))
+    ($name:expr) => {
+        include_str!(shell_path!(concat!("deps/", $name), ".txt"))
             .lines()
             .map(|l| l.split_ascii_whitespace().collect::<Vec<_>>())
+    };
+}
+
+macro_rules! ssh_args_exe_mode {
+    () => {
+        ExecutionMode::Normal
+    };
+
+    (sudo = $password:expr $(, $($args:tt)* )?) => {{
+        ssh_args_sudo_ensure_complete!($($($args)*)?);
+        ExecutionMode::Sudo { password: &$password }
     }};
+
+    ($ident:ident = $value:expr $(, $($args:tt)* )?) => {
+        ssh_args_exe_mode!($($($args)*)?)
+    };
+}
+
+macro_rules! ssh_args_sudo_ensure_complete {
+    () => {};
+
+    (sudo = $password:expr $(, $($args:tt)* )?) => {
+        compile_error!("duplicate named argument `sudo`")
+    };
+
+    ($ident:ident = $value:expr $(, $($args:tt)* )?) => {
+        ssh_args_sudo_ensure_complete!($($($args)*)?)
+    };
+}
+
+macro_rules! ssh_args_context {
+    () => {
+        compile_error!("missing named argument `context` or `status`")
+    };
+
+    (context = $value:expr $(, $($args:tt)* )?) => {{
+        ssh_args_context_ensure_complete!($($($args)*)?);
+        $value
+    }};
+
+    (status = $value:expr $(, $($args:tt)* )?) => {{
+        ssh_args_status_ensure_complete!($($($args)*)?);
+        $value
+    }};
+
+    ($ident:ident = $value:expr $(, $($args:tt)* )?) => {
+        ssh_args_context!($($($args)*)?)
+    };
+}
+
+macro_rules! ssh_args_context_ensure_complete {
+    () => {};
+
+    (context = $value:expr $(, $($args:tt)* )?) => {
+        compile_error!("duplicate named argument `context`")
+    };
+
+    (status = $value:expr $(, $($args:tt)* )?) => {
+        compile_error!("named arguments `context` and `status` are mutually exclusive")
+    };
+
+    ($ident:ident = $value:expr $(, $($args:tt)* )?) => {
+        ssh_args_context_ensure_complete!($($($args)*)?)
+    };
+}
+
+macro_rules! ssh_args_status_ensure_complete {
+    () => {};
+
+    (status = $value:expr $(, $($args:tt)* )?) => {
+        compile_error!("duplicate named argument `status`")
+    };
+
+    (context = $value:expr $(, $($args:tt)* )?) => {
+        compile_error!("named arguments `context` and `status` are mutually exclusive")
+    };
+
+    ($ident:ident = $value:expr $(, $($args:tt)* )?) => {
+        ssh_args_status_ensure_complete!($($($args)*)?)
+    };
+}
+
+macro_rules! ssh_args_show_status {
+    () => {
+        ssh_args_show_status!()
+    };
+
+    (context = $value:expr $(, $($args:tt)* )?) => {
+        false
+    };
+
+    (status = $value:expr $(, $($args:tt)* )?) => {
+        true
+    };
+
+    ($ident:ident = $value:expr $(, $($args:tt)* )?) => {
+        ssh_args_show_status!($($($args)*)?)
+    };
+}
+
+macro_rules! shell_filtered_cmd {
+    ($cmd:expr, [] => [$($filtered:tt)*]) => {
+        shell_cmd!($cmd $($filtered)*)
+    };
+
+    ($cmd:expr, [sudo = $value:expr $(, $($args:tt)*)?] => [$($filtered:tt)*]) => {
+        shell_filtered_cmd!($cmd, [$($($args)*)?] => [$($filtered)*])
+    };
+
+    ($cmd:expr, [context = $value:expr $(, $($args:tt)*)?] => [$($filtered:tt)*]) => {
+        shell_filtered_cmd!($cmd, [$($($args)*)?] => [$($filtered)*])
+    };
+
+    ($cmd:expr, [status = $value:expr $(, $($args:tt)*)?] => [$($filtered:tt)*]) => {
+        shell_filtered_cmd!($cmd, [$($($args)*)?] => [$($filtered)*])
+    };
+
+    ($cmd:expr, [$ident:ident = $value:expr $(, $($args:tt)*)?] => [$($filtered:tt)*]) => {
+        shell_filtered_cmd!($cmd, [$($($args)*)?] => [$($filtered)*, $ident = $value])
+    };
 }
 
 macro_rules! ssh_run {
-    ([no_status] $ssh:expr, $context:expr, $($cmd:tt)+) => {{
-        let context = $context;
-        $ssh.run_command(shell_cmd!($($cmd)+), true)
+    ($ssh:expr, $cmd:expr, $($args:tt)*) => {{
+        let exe_mode = ssh_args_exe_mode!($($args)*);
+        let context = ssh_args_context!($($args)*);
+
+        if ssh_args_show_status!($($args)*) {
+            status!(context);
+        }
+
+        let cmd_data = shell_filtered_cmd!($cmd, [$($args)*] => []);
+        let cmd_path = shell_path!($cmd);
+        $ssh.run_command(cmd_data, cmd_path, exe_mode, true)
             .context(context.clone())?
             .map(|_| ())
             .map_err(|(exit_status, output)| anyhow!(
@@ -47,17 +184,23 @@ macro_rules! ssh_run {
             .context(context)
     }};
 
-    ($ssh:expr, $context:expr, $($cmd:tt)+) => {{
-        let context = $context;
-        status!(context);
-        ssh_run!([no_status] $ssh, context, $($cmd)+)
-    }};
+    ($ssh:expr, $cmd:expr) => {
+        ssh_run!($ssh, $cmd,)
+    };
 }
 
 macro_rules! ssh_evaluate {
-    ($ssh:expr, $context:expr, $($cmd:tt)+) => {{
-        let context = $context;
-        $ssh.run_command(shell_cmd!($($cmd)+), false)
+    ($ssh:expr, $cmd:expr, $($args:tt)*) => {{
+        let exe_mode = ssh_args_exe_mode!($($args)*);
+        let context = ssh_args_context!($($args)*);
+
+        if ssh_args_show_status!($($args)*) {
+            status!(context);
+        }
+
+        let cmd_data = shell_filtered_cmd!($cmd, [$($args)*] => []);
+        let cmd_path = shell_path!($cmd);
+        $ssh.run_command(cmd_data, cmd_path, exe_mode, false)
             .context(context.clone())?
             .map_err(|(exit_status, output)| anyhow!(
                 "Command exited with status code {}: {}",
@@ -66,13 +209,22 @@ macro_rules! ssh_evaluate {
             ))
             .context(context)
     }};
+
+    ($ssh:expr, $cmd:expr) => {
+        ssh_evaluate!($ssh, $cmd,)
+    };
 }
 
 macro_rules! ssh_test {
-    ($ssh:expr, $context:expr, $cmd:literal $($args:tt)*) => {{
-        let context = $context;
-        ssh_evaluate!($ssh, context.clone(), concat!("test/", $cmd) $($args)*).and_then(|s| s.parse::<bool>().context(context))
-    }};
+    ($ssh:expr, $cmd:expr, $($args:tt)*) => {
+        ssh_evaluate!($ssh, concat!("test/", $cmd), $($args)*)
+            .and_then(|s| s.parse::<bool>()
+                .with_context(|| ssh_args_context!($($args)*).clone()))
+    };
+
+    ($ssh:expr, $cmd:expr) => {
+        ssh_test!($ssh, $cmd,)
+    };
 }
 
 enum Authentication<S, P> {
@@ -160,12 +312,14 @@ impl CmdConfigure {
             }
 
             status!("Creating new user");
+
             ssh_run!(
                 ssh,
-                "Creating new user",
                 "add_user",
+                status = "Creating new user",
+                sudo = "password",
                 username = username,
-                password = password
+                password = password,
             )?;
 
             status!("Reconnecting with new credentials");
@@ -175,16 +329,16 @@ impl CmdConfigure {
             status!("Deleting pi user");
             ssh_run!(
                 ssh,
-                "Deleting pi user",
                 "delete_pi_user",
-                password = password
+                status = "Deleting pi user",
+                sudo = password
             )?;
         }
 
         if !ssh_test!(
             ssh,
-            "Checking existance of authorized_keys",
             "path_exists",
+            context = "Checking existance of authorized_keys",
             path = "$HOME/.ssh/authorized_keys",
         )? {
             status!("Initializing SSH key-based authorization");
@@ -216,13 +370,13 @@ impl CmdConfigure {
 
             ssh_run!(
                 ssh,
-                "Configuring SSH key-based authentication",
                 "configure/ssh",
+                status = "Configuring SSH key-based authentication",
+                sudo = password,
                 username = username,
-                password = password
             )?;
 
-            ssh.send_file(identity_path, 0o600)
+            ssh.send_file(fs::read(identity_path)?, ".ssh/authorized_keys", 0o600)
                 .context("Copying SSH public identity file")?;
         }
 
@@ -232,8 +386,8 @@ impl CmdConfigure {
         status!("Installing Debian packages");
         let installed_debian_packages: Vec<_> = ssh_evaluate!(
             ssh,
-            "Getting installed Debian packages",
-            "get_installed_debian_packages"
+            "get_installed_debian_packages",
+            context = "Getting installed Debian packages",
         )?
         .lines()
         .map(str::to_owned)
@@ -270,8 +424,8 @@ impl CmdConfigure {
                     Some(repository) => {
                         let mut urls: Vec<_> = ssh_evaluate!(
                             ssh,
-                            format!("Finding packages for {}", package_name),
                             "get_debian_package_urls",
+                            context = format!("Finding packages for {}", package_name),
                             repository = repository,
                         )?
                         .lines()
@@ -293,9 +447,9 @@ impl CmdConfigure {
 
                         ssh_run!(
                             ssh,
-                            format!("Downloading {}", package_name),
                             "promote_debian_package",
-                            password = password,
+                            status = format!("Downloading {}", package_name),
+                            sudo = password,
                             url = url,
                         )?;
                     }
@@ -304,11 +458,10 @@ impl CmdConfigure {
             }
 
             ssh_run!(
-                [no_status]
                 ssh,
-                "Installing Debain packages",
                 "install/debian_packages",
-                password = password,
+                context = "Installing Debain packages",
+                sudo = password,
                 package_names = dirty_debian_packages
                     .into_iter()
                     .map(|(package_name, _)| package_name)
@@ -319,7 +472,11 @@ impl CmdConfigure {
 
         // Install Rust.
         status!("Installing Rust");
-        let rust_installed = ssh_test!(ssh, "Checking if Rust is installed", "rust_installed")?;
+        let rust_installed = ssh_test!(
+            ssh,
+            "rust_installed",
+            context = "Checking if Rust is installed",
+        )?;
 
         if self.update || !rust_installed {
             let msg = if rust_installed {
@@ -328,7 +485,7 @@ impl CmdConfigure {
                 "Installing Rust"
             };
 
-            ssh_run!([no_status] ssh, msg, "install/rust")?;
+            ssh_run!(ssh, "install/rust", context = msg)?;
         } else {
             info!("Rust is already installed");
         }
@@ -337,8 +494,8 @@ impl CmdConfigure {
         status!("Installing Rust crates");
         let installed_rust_crates: Vec<_> = ssh_evaluate!(
             ssh,
-            "Getting installed Rust crates",
-            "get_installed_rust_crates"
+            "get_installed_rust_crates",
+            context = "Getting installed Rust crates",
         )?
         .lines()
         .map(str::to_owned)
@@ -373,10 +530,9 @@ impl CmdConfigure {
 
             for (crate_name, flags) in dirty_rust_crates {
                 ssh_run!(
-                    [no_status]
                     ssh,
-                    format!("Installing {}", crate_name),
                     "install/rust_crate",
+                    context = format!("Installing {}", crate_name),
                     crate_name = crate_name,
                     flags = flags.join(" ") + " --locked",
                 )?;
@@ -385,34 +541,24 @@ impl CmdConfigure {
 
         ssh_run!(
             ssh,
-            "Configuring Raspberry Pi",
             "configure/raspi_config",
-            password = password,
+            status = "Configuring Raspberry Pi",
+            sudo = password,
             hostname = self.node_name,
         )?;
 
         ssh_run!(
             ssh,
-            "Configuring cron jobs",
             "configure/cron_jobs",
-            password = password
+            status = "Configuring cron jobs",
+            sudo = password,
         )?;
 
-        ssh_run!(
-            ssh,
-            "Configuring firewall",
-            "configure/firewall",
-            password = password
-        )?;
+        ssh_run!(ssh, "configure/firewall", status = "Configuring firewall", sudo = password)?;
 
-        ssh_run!(
-            ssh,
-            "Configuring Fish",
-            "configure/fish",
-            password = password,
-        )?;
+        ssh_run!(ssh, "configure/fish", status = "Configuring Fish", sudo = password)?;
 
-        ssh_run!(ssh, "Rebooting the node", "reboot", password = password)?;
+        ssh_run!(ssh, "reboot", status = "Rebooting the node", sudo = password)?;
 
         Ok(())
     }
@@ -525,17 +671,41 @@ impl SshClient {
 
     fn run_command(
         &self,
-        cmd: impl AsRef<str>,
+        cmd_data: impl AsRef<[u8]>,
+        cmd_path: impl AsRef<Path>,
+        exe_mode: ExecutionMode,
         logging: bool,
     ) -> AppResult<Result<String, (i32, String)>> {
-        let mut channel = self
-            .session
-            .channel_session()
-            .context("Opening SSH channel session")?;
+        let tmp_cmd_path = PathBuf::from("/tmp").join(cmd_path.as_ref());
 
-        channel
-            .exec(cmd.as_ref())
-            .context("Executing command over SSH")?;
+        // Create intermediary directoris for the command file.
+        let cmd = format!(
+            r#"mkdir -p "{}""#,
+            tmp_cmd_path
+                .parent()
+                .context("Invalid command path")?
+                .display()
+        );
+        let mut channel = self.exec_cmd(cmd, ExecutionMode::Normal)?;
+
+        let mut stderr = String::new();
+        channel.stderr().read_to_string(&mut stderr)?;
+
+        channel.close()?;
+        channel.wait_close()?;
+
+        anyhow::ensure!(
+            channel.exit_status()? == 0,
+            "Failed setting up for command execution: {}",
+            stderr
+        );
+
+        // Send the file over.
+        self.send_file(cmd_data, &tmp_cmd_path, 0o700)
+            .context("Sending command file to node")?;
+
+        // Execute the command.
+        channel = self.exec_cmd(format!("{}", tmp_cmd_path.display()), exe_mode)?;
 
         let mut stdout = String::new();
         let reader = BufReader::new(channel.stream(0));
@@ -565,21 +735,47 @@ impl SshClient {
         }
     }
 
-    fn send_file(&self, file_path: impl AsRef<Path>, mode: i32) -> AppResult<()> {
-        let file_contents = fs::read(file_path)?;
+    fn exec_cmd(&self, cmd: impl ToString, exe_mode: ExecutionMode) -> AppResult<Channel> {
+        let mut channel = self
+            .session
+            .channel_session()
+            .context("Opening SSH channel session")?;
+
+        let cmd = if let ExecutionMode::Sudo { password } = exe_mode {
+            format!("echo '{}' | sudo -kSp '' {}", password, cmd.to_string())
+        } else {
+            cmd.to_string()
+        };
+
+        channel.exec(&cmd).context("Executing command over SSH")?;
+
+        Ok(channel)
+    }
+
+    fn send_file(
+        &self,
+        data: impl AsRef<[u8]>,
+        remote_file_path: impl AsRef<Path>,
+        mode: i32,
+    ) -> AppResult<()> {
         let mut remote_file = self
             .session
             .scp_send(
-                Path::new(".ssh/authorized_keys"),
+                remote_file_path.as_ref(),
                 mode,
-                file_contents.len() as u64,
+                data.as_ref().len() as u64,
                 None,
-            )
-            .unwrap();
-        remote_file.write(&file_contents)?;
+            )?;
+        remote_file.write(data.as_ref())?;
 
         Ok(())
     }
+}
+
+#[derive(Clone, Copy)]
+enum ExecutionMode<'a> {
+    Normal,
+    Sudo { password: &'a str },
 }
 
 struct LocalEndpoint {

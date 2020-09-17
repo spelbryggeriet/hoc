@@ -1,3 +1,5 @@
+#!/usr/bin/env bash
+
 set -e
 
 # Create Fish profile.
@@ -20,4 +22,4 @@ style_success = "bold purple"
 EOT
 
 # Change default shell.
-echo '{password}' | chsh -s `which fish` 2>&1 1>/dev/null
+chsh -s `which fish`

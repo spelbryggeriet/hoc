@@ -2,69 +2,69 @@
 extern crate strum_macros;
 
 macro_rules! _log {
-    ([$label:literal, $method:ident]) => {{
+    ([$label:literal, $method:ident]) => {
         crate::LOG.lock()
             .unwrap()
             .$method("")
             .unwrap_or_else(|e| panic!(concat!("failed printing to ", $label, ": {}"), e))
-    }};
+    };
 
-    ([$label:literal, $method:ident] $msg:expr $(,)?) => {{
+    ([$label:literal, $method:ident] $msg:expr $(,)?) => {
         crate::LOG.lock()
             .unwrap()
             .$method(&$msg)
             .unwrap_or_else(|e| panic!(concat!("failed printing to ", $label, ": {}"), e))
-    }};
+    };
 
-    ([$label:literal, $method:ident] $template:literal, $($args:tt)+) => {{
+    ([$label:literal, $method:ident] $template:literal, $($args:tt)+) => {
         crate::LOG.lock()
             .unwrap()
             .$method(format!($template, $($args)+))
             .unwrap_or_else(|e| panic!(concat!("failed printing to ", $label, ": {}"), e))
-    }};
+    };
 }
 
 macro_rules! info {
-    ($($args:tt)*) => {{
+    ($($args:tt)*) => {
         _log!(["stdout", info] $($args)*)
-    }};
+    };
 }
 
 macro_rules! status {
-    ($($args:tt)*) => {{
+    ($($args:tt)*) => {
         _log!(["stdout", status] $($args)*)
-    }};
+    };
 }
 
 macro_rules! error {
-    ($($args:tt)*) => {{
+    ($($args:tt)*) => {
         _log!(["stderr", error] $($args)*)
-    }};
+    };
 }
 
 macro_rules! prompt {
-    ($($args:tt)*) => {{
+    ($($args:tt)*) => {
         _log!(["stdout", prompt] $($args)*)
-    }};
+    };
 }
 
 macro_rules! input {
-    ([hidden] $($args:tt)*) => {{
+    ([hidden] $($args:tt)*) => {
         _log!(["stdout", hidden_input] $($args)*)
-    }};
+    };
 
-    ($($args:tt)*) => {{
+    ($($args:tt)*) => {
         _log!(["stdout", input] $($args)*)
-    }};
+    };
 }
 
 macro_rules! choose {
-    ($msg:expr, $items:expr $(, $default_index:expr)? $(,)?) => {{
+    ($msg:expr, $items:expr $(, $default_index:expr)? $(,)?) => {
         crate::LOG.lock()
             .unwrap()
             .choose($msg, $items, $( if true { $default_index } else )? { 0 })
             .unwrap_or_else(|e| panic!("failed printing to stdout: {}", e))
-    }};
+    };
 }
 
 mod context;

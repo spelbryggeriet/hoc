@@ -1,3 +1,0 @@
-set -e
-
-echo '{password}' | sudo -kSp '' reboot now

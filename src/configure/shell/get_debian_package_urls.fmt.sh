@@ -1,3 +1,5 @@
+#!/usr/bin/env bash
+
 set -e
 
 # Get a list of URLs over the available armhf Debian packages from GitHub.

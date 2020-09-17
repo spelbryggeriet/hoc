@@ -7,4 +7,5 @@ libx11-dev
 libxcb-composite0-dev
 openssh-server
 pkg-config
+tmpreaper
 ufw

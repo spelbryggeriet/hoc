@@ -1,3 +1,5 @@
+#!/usr/bin/env bash
+
 set -e
 
 # Check if path exists.
