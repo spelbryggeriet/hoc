@@ -562,6 +562,13 @@ impl CmdConfigure {
             sudo = password
         )?;
 
+        ssh_run!(
+            ssh,
+            "configure/fish",
+            status = "Configuring Fish",
+            sudo = password
+        )?;
+
         // Configure kernal.
         let cmdline = ssh_evaluate!(
             ssh,
@@ -618,6 +625,7 @@ impl CmdConfigure {
             content = cmdline_content,
         )?;
 
+        // Configure Docker
         ssh_run!(
             ssh,
             "configure/docker",
@@ -625,13 +633,15 @@ impl CmdConfigure {
             sudo = password
         )?;
 
+        // Configure iptbles.
         ssh_run!(
             ssh,
-            "configure/fish",
-            status = "Configuring Fish",
+            "configure/iptables",
+            status = "Configuring iptables",
             sudo = password
         )?;
 
+        // Reboot the node.
         ssh_run!(
             ssh,
             "reboot",
