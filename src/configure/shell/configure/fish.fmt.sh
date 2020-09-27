@@ -4,7 +4,7 @@ set -e
 
 # Create Fish profile.
 mkdir -p $HOME/.config/fish
-cat <<EOT >$HOME/.config/fish/config.fish
+cat >$HOME/.config/fish/config.fish <<EOT
 # Source cargo.
 . $HOME/.cargo/env
 
@@ -16,7 +16,7 @@ eval (starship init fish)
 EOT
 
 # Create Starship config.
-cat <<EOT >$HOME/.config/starship.toml
+cat >$HOME/.config/starship.toml <<EOT
 [character]
 style_success = "bold purple"
 EOT

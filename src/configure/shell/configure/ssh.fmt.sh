@@ -6,7 +6,7 @@ set -e
 mkdir -m 700 $HOME/.ssh
 
 # Update SSHD config file to disallow password authentication and other things.
-cat <<EOT | tee /etc/ssh/sshd_config >/dev/null
+cat >/etc/ssh/sshd_config <<EOT
 ChallengeResponseAuthentication no
 UsePAM no
 PasswordAuthentication no

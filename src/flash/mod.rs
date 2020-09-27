@@ -46,10 +46,8 @@ impl CmdFlash {
         );
 
         let image = Image::iter().nth(index).unwrap();
-
         let image_key = image.description().to_snake_case();
 
-        let mut image_size = None;
         loop {
             let (current_state, temp_file) = context.start_cache_writing(&image_key)?;
 
@@ -63,10 +61,9 @@ impl CmdFlash {
                 }
 
                 FlashCacheState::Downloaded => {
-                    let image_size_value = self
+                    self
                         .decompress_image(image, temp_file.as_file_mut())
                         .context("Decompressing image")?;
-                    image_size.replace(image_size_value);
 
                     FlashCacheState::Decompressed
                 }
@@ -119,10 +116,7 @@ impl CmdFlash {
 
                     match image {
                         Image::Fedora => {
-                            let _image_size =
-                                image_size.map(|v| AppResult::Ok(v)).unwrap_or_else(|| {
-                                    Ok(image_file.as_file().metadata()?.len() as usize)
-                                })?;
+                            let _image_size = image_file.as_file().metadata()?.len();
 
                             let mut image_info = self
                                 .get_image_info(image_file.path())
@@ -145,6 +139,7 @@ impl CmdFlash {
                         }
 
                         Image::Raspbian => (),
+                        Image::Debian => (),
                     }
                 }
                 FlashCacheState::Modified => break,
@@ -192,16 +187,17 @@ impl CmdFlash {
         Ok(())
     }
 
-    fn decompress_image(&self, image: Image, file: &mut File) -> AppResult<usize> {
-        let size = match image.compression_type() {
-            CompressionType::Xz => self.decompress_xz_image(file)?,
-            CompressionType::Zip => self.decompress_zip_image(file)?,
+    fn decompress_image(&self, image: Image, file: &mut File) -> AppResult<()> {
+        match image.compression_type() {
+            Some(CompressionType::Xz) => self.decompress_xz_image(file)?,
+            Some(CompressionType::Zip) => self.decompress_zip_image(file)?,
+            None => (),
         };
 
-        Ok(size)
+        Ok(())
     }
 
-    fn decompress_xz_image(&self, file: &mut File) -> AppResult<usize> {
+    fn decompress_xz_image(&self, file: &mut File) -> AppResult<()> {
         let mut decompressor = XzDecoder::new(&*file);
 
         status!("Decompressing image");
@@ -212,10 +208,12 @@ impl CmdFlash {
 
         file.seek(SeekFrom::Start(0))?;
         file.write(&buf)
-            .context("Writing decompressed content back to file")
+            .context("Writing decompressed content back to file")?;
+
+        Ok(())
     }
 
-    fn decompress_zip_image(&self, file: &mut File) -> AppResult<usize> {
+    fn decompress_zip_image(&self, file: &mut File) -> AppResult<()> {
         let mut archive = ZipArchive::new(&*file).context("Reading Zip file")?;
 
         for i in 0..archive.len() {
@@ -230,9 +228,11 @@ impl CmdFlash {
                 drop(archive_file);
 
                 file.seek(SeekFrom::Start(0))?;
-                return file
+                file
                     .write(&buf)
-                    .context("Writing decompressed content back to file");
+                    .context("Writing decompressed content back to file")?;
+
+                return Ok(());
             }
         }
 
@@ -528,6 +528,7 @@ impl CmdFlash {
 enum Image {
     Fedora,
     Raspbian,
+    Debian,
 }
 
 impl Image {
@@ -535,6 +536,7 @@ impl Image {
         match self {
             Self::Fedora => "Fedora 32",
             Self::Raspbian => "Raspbian Latest",
+            Self::Debian => "Debian 20",
         }
     }
 
@@ -542,13 +544,15 @@ impl Image {
         match self {
             Self::Fedora => "https://download.fedoraproject.org/pub/fedora/linux/releases/32/Server/armhfp/images/Fedora-Server-armhfp-32-1.6-sda.raw.xz",
             Self::Raspbian => "https://downloads.raspberrypi.org/raspios_lite_armhf_latest",
+            Self::Debian => "https://cdimage.ubuntu.com/releases/20.04/release/ubuntu-20.04.1-live-server-arm64.iso",
         }
     }
 
-    pub const fn compression_type(&self) -> CompressionType {
+    pub const fn compression_type(&self) -> Option<CompressionType> {
         match self {
-            Self::Fedora => CompressionType::Xz,
-            Self::Raspbian => CompressionType::Zip,
+            Self::Fedora => Some(CompressionType::Xz),
+            Self::Raspbian => Some(CompressionType::Zip),
+            Self::Debian => None,
         }
     }
 }

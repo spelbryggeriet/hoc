@@ -8,6 +8,7 @@ use std::net::{Ipv4Addr, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use indexmap::IndexMap;
 use anyhow::anyhow;
 use ssh2::{Channel, Session};
 use structopt::StructOpt;
@@ -549,16 +550,94 @@ impl CmdConfigure {
 
         ssh_run!(
             ssh,
-            "configure/cron_jobs",
+            "configure/crontab",
             status = "Configuring cron jobs",
             sudo = password,
         )?;
 
-        ssh_run!(ssh, "configure/firewall", status = "Configuring firewall", sudo = password)?;
+        ssh_run!(
+            ssh,
+            "configure/ufw",
+            status = "Configuring firewall",
+            sudo = password
+        )?;
 
-        ssh_run!(ssh, "configure/fish", status = "Configuring Fish", sudo = password)?;
+        // Configure kernal.
+        let cmdline = ssh_evaluate!(
+            ssh,
+            "print_file_output",
+            context = "Printing kernal command line options",
+            filepath = "/boot/cmdline.txt",
+        )?;
 
-        ssh_run!(ssh, "reboot", status = "Rebooting the node", sudo = password)?;
+        let mut cmdline_options = cmdline
+            .split_ascii_whitespace()
+            .fold(Ok(IndexMap::<(&str, usize), Option<&str>>::new()), |acc, key_value_pair| {
+                let mut acc = acc?;
+
+                let mut components = key_value_pair.splitn(2, '=');
+                let (key, value) = (components.next(), components.next());
+
+                if let (Some(key), value) = (key, value) {
+                    let key_count = acc.keys().filter(|(name, _)| *name == key).count();
+                    acc.insert((key, key_count), value);
+                    Ok(acc)
+                } else {
+                    Err(anyhow!(
+                        "invalid command line format '{}': expected format '<key>[=<value>]'",
+                        key_value_pair,
+                    ))
+                }
+            })?;
+
+        cmdline_options.insert(("cgroup_enable", 0), Some("cpuset"));
+        cmdline_options.insert(("cgroup_enable", 0), Some("memory"));
+        cmdline_options.insert(("cgroup_memory", 0), Some("1"));
+        cmdline_options.insert(("swapaccount", 0), Some("1"));
+
+        let cmdline_content = cmdline_options
+            .into_iter()
+            .map(|((key, _), value)| {
+                if let Some(value) = value {
+                    format!(" {}={}", key, value)
+                } else {
+                    format!(" {}", key)
+                }
+            })
+            .fold(String::new(), |mut s, item| {
+                s.push_str(&item);
+                s
+            });
+        let cmdline_content = cmdline_content.trim();
+
+        ssh_run!(
+            ssh,
+            "configure/kernel",
+            status = "Configuring kernel",
+            sudo = password,
+            content = cmdline_content,
+        )?;
+
+        ssh_run!(
+            ssh,
+            "configure/docker",
+            status = "Configuring Docker",
+            sudo = password
+        )?;
+
+        ssh_run!(
+            ssh,
+            "configure/fish",
+            status = "Configuring Fish",
+            sudo = password
+        )?;
+
+        ssh_run!(
+            ssh,
+            "reboot",
+            status = "Rebooting the node",
+            sudo = password
+        )?;
 
         Ok(())
     }
@@ -663,8 +742,7 @@ impl SshClient {
         username: &str,
         auth: Authentication<impl AsRef<str>, impl AsRef<Path>>,
     ) -> AppResult<()> {
-        let session = create_session(&self.local_endpoint, username, auth)?;
-        self.session = session;
+        self.session = create_session(&self.local_endpoint, username, auth)?;
 
         Ok(())
     }
@@ -758,14 +836,12 @@ impl SshClient {
         remote_file_path: impl AsRef<Path>,
         mode: i32,
     ) -> AppResult<()> {
-        let mut remote_file = self
-            .session
-            .scp_send(
-                remote_file_path.as_ref(),
-                mode,
-                data.as_ref().len() as u64,
-                None,
-            )?;
+        let mut remote_file = self.session.scp_send(
+            remote_file_path.as_ref(),
+            mode,
+            data.as_ref().len() as u64,
+            None,
+        )?;
         remote_file.write(data.as_ref())?;
 
         Ok(())
