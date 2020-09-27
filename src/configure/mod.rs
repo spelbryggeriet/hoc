@@ -8,8 +8,8 @@ use std::net::{Ipv4Addr, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use indexmap::IndexMap;
 use anyhow::anyhow;
+use indexmap::IndexMap;
 use ssh2::{Channel, Session};
 use structopt::StructOpt;
 use url::Url;
@@ -40,7 +40,7 @@ macro_rules! shell_deps {
     ($name:expr) => {
         include_str!(shell_path!(concat!("deps/", $name), ".txt"))
             .lines()
-            .map(|l| l.split_ascii_whitespace().collect::<Vec<_>>())
+            .map(|l| l.trim().split_ascii_whitespace())
     };
 }
 
@@ -383,6 +383,14 @@ impl CmdConfigure {
 
         status!("Installing dependencies");
 
+        // Configure extra Debian packages sources.
+        ssh_run!(
+            ssh,
+            "configure/k8s_source",
+            status = "Configuring kubernetes Debian packages source",
+            sudo = password,
+        )?;
+
         // Install Debain packages.
         status!("Installing Debian packages");
         let installed_debian_packages: Vec<_> = ssh_evaluate!(
@@ -394,16 +402,33 @@ impl CmdConfigure {
         .map(str::to_owned)
         .collect();
 
-        let dirty_debian_packages: Vec<_> = shell_deps!("debian_packages")
-            .filter_map(|args| {
-                let mut iter = args.into_iter();
-                iter.next().map(|package_name| (package_name, iter.next()))
+        let debian_packages: Vec<_> = shell_deps!("debian_packages")
+            .filter_map(|mut args| {
+                let first_arg = args.next()?;
+                let holding = first_arg == "[hold]";
+
+                let package_name = if !holding {
+                    first_arg
+                } else {
+                    let package_name_arg = args
+                        .next()
+                        .context("unexpected end of arguments list: expected second argument to specify package name");
+                    match package_name_arg {
+                        Ok(arg) => arg,
+                        Err(err) => return Some(Err(err)),
+                    }
+                };
+
+                Some(Ok((holding, package_name, args.next())))
             })
-            .filter(|(package_name, _)| {
-                self.update
-                    || installed_debian_packages
-                        .iter()
-                        .all(|installed| installed != package_name)
+            .collect::<Result<_, _>>()?;
+        let dirty_debian_packages: Vec<_> = debian_packages
+            .iter()
+            .filter(|(holding, package_name, _)| {
+                let is_installed = installed_debian_packages
+                    .iter()
+                    .any(|installed| installed == package_name);
+                !is_installed || self.update && !holding
             })
             .collect();
 
@@ -417,10 +442,10 @@ impl CmdConfigure {
             }
             dirty_debian_packages
                 .iter()
-                .for_each(|(package_name, _)| info!("    {}", package_name));
+                .for_each(|(_, package_name, _)| info!("    {}", package_name));
             info!();
 
-            for (package_name, repository) in dirty_debian_packages.iter() {
+            for (_, package_name, repository) in dirty_debian_packages.iter() {
                 match repository {
                     Some(repository) => {
                         let mut urls: Vec<_> = ssh_evaluate!(
@@ -465,7 +490,12 @@ impl CmdConfigure {
                 sudo = password,
                 package_names = dirty_debian_packages
                     .into_iter()
-                    .map(|(package_name, _)| package_name)
+                    .map(|(_, package_name, _)| *package_name)
+                    .collect::<Vec<_>>()
+                    .join(" "),
+                held_packages = debian_packages
+                    .into_iter()
+                    .filter_map(|(holding, package_name, _)| Some(package_name).filter(|_| holding))
                     .collect::<Vec<_>>()
                     .join(" "),
             )?;
@@ -503,10 +533,9 @@ impl CmdConfigure {
         .collect();
 
         let dirty_rust_crates: Vec<_> = shell_deps!("rust_crates")
-            .flat_map(|args| {
-                let mut iter = args.into_iter();
-                iter.next()
-                    .map(|crate_name| (crate_name, iter.collect::<Vec<_>>()))
+            .flat_map(|mut args| {
+                args.next()
+                    .map(|crate_name| (crate_name, args.collect::<Vec<_>>()))
             })
             .filter(|(crate_name, _)| {
                 self.update
@@ -577,9 +606,9 @@ impl CmdConfigure {
             filepath = "/boot/cmdline.txt",
         )?;
 
-        let mut cmdline_options = cmdline
-            .split_ascii_whitespace()
-            .fold(Ok(IndexMap::<(&str, usize), Option<&str>>::new()), |acc, key_value_pair| {
+        let mut cmdline_options = cmdline.split_ascii_whitespace().fold(
+            Ok(IndexMap::<(&str, usize), Option<&str>>::new()),
+            |acc, key_value_pair| {
                 let mut acc = acc?;
 
                 let mut components = key_value_pair.splitn(2, '=');
@@ -595,7 +624,8 @@ impl CmdConfigure {
                         key_value_pair,
                     ))
                 }
-            })?;
+            },
+        )?;
 
         cmdline_options.insert(("cgroup_enable", 0), Some("cpuset"));
         cmdline_options.insert(("cgroup_enable", 0), Some("memory"));
