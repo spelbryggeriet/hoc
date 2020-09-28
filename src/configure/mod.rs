@@ -3,6 +3,7 @@ mod parse;
 use std::env;
 use std::fmt::{self, Display, Formatter};
 use std::fs;
+use std::mem;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{Ipv4Addr, TcpStream};
 use std::path::{Path, PathBuf};
@@ -228,6 +229,27 @@ macro_rules! ssh_test {
     };
 }
 
+macro_rules! ssh_test_successful {
+    ($ssh:expr, $cmd:expr, $($args:tt)*) => {{
+        let exe_mode = ssh_args_exe_mode!($($args)*);
+        let context = ssh_args_context!($($args)*);
+
+        if ssh_args_show_status!($($args)*) {
+            status!(context);
+        }
+
+        let cmd_data = shell_filtered_cmd!(concat!("test_successful/", $cmd), [$($args)*] => []);
+        let cmd_path = shell_path!(concat!("test_successful/", $cmd));
+        $ssh.run_command(cmd_data, cmd_path, exe_mode, false)
+            .context(context)?
+            .is_ok()
+    }};
+
+    ($ssh:expr, $cmd:expr) => {
+        ssh_test_successful!($ssh, $cmd,)
+    };
+}
+
 enum Authentication<S, P> {
     Password(S),
     KeyBased { pub_key: P, priv_key: P },
@@ -235,6 +257,8 @@ enum Authentication<S, P> {
 
 #[derive(StructOpt)]
 pub(super) struct CmdConfigure {
+    node_name: String,
+
     #[structopt(long)]
     fresh: bool,
 
@@ -242,7 +266,11 @@ pub(super) struct CmdConfigure {
     #[structopt(long)]
     update: bool,
 
-    node_name: String,
+    #[structopt(long)]
+    cidr: String,
+
+    #[structopt(long)]
+    control_plane: bool,
 }
 
 impl CmdConfigure {
@@ -606,46 +634,42 @@ impl CmdConfigure {
             filepath = "/boot/cmdline.txt",
         )?;
 
-        let mut cmdline_options = cmdline.split_ascii_whitespace().fold(
-            Ok(IndexMap::<(&str, usize), Option<&str>>::new()),
-            |acc, key_value_pair| {
-                let mut acc = acc?;
+        let mut cmdline_options =
+            cmdline
+                .split_ascii_whitespace()
+                .fold(Ok(IndexMap::new()), |acc, key_value_pair| {
+                    let mut acc = acc?;
 
-                let mut components = key_value_pair.splitn(2, '=');
-                let (key, value) = (components.next(), components.next());
+                    let mut components = key_value_pair.splitn(2, '=');
+                    let (key, value) = (components.next(), components.next());
 
-                if let (Some(key), value) = (key, value) {
-                    let key_count = acc.keys().filter(|(name, _)| *name == key).count();
-                    acc.insert((key, key_count), value);
-                    Ok(acc)
-                } else {
-                    Err(anyhow!(
-                        "invalid command line format '{}': expected format '<key>[=<value>]'",
-                        key_value_pair,
-                    ))
-                }
-            },
-        )?;
+                    if let (Some(key), value) = (key, value) {
+                        let key_count = acc.keys().filter(|(name, _)| *name == key).count();
+                        acc.insert((key, key_count), value);
+                        Ok(acc)
+                    } else {
+                        Err(anyhow!(
+                            "invalid command line format '{}': expected format '<key>[=<value>]'",
+                            key_value_pair,
+                        ))
+                    }
+                })?;
 
         cmdline_options.insert(("cgroup_enable", 0), Some("cpuset"));
-        cmdline_options.insert(("cgroup_enable", 0), Some("memory"));
+        cmdline_options.insert(("cgroup_enable", 1), Some("memory"));
         cmdline_options.insert(("cgroup_memory", 0), Some("1"));
         cmdline_options.insert(("swapaccount", 0), Some("1"));
 
-        let cmdline_content = cmdline_options
+        let cmdline_content: String = cmdline_options
             .into_iter()
             .map(|((key, _), value)| {
                 if let Some(value) = value {
-                    format!(" {}={}", key, value)
+                    format!("{}={} ", key, value)
                 } else {
-                    format!(" {}", key)
+                    format!("{} ", key)
                 }
             })
-            .fold(String::new(), |mut s, item| {
-                s.push_str(&item);
-                s
-            });
-        let cmdline_content = cmdline_content.trim();
+            .collect();
 
         ssh_run!(
             ssh,
@@ -653,6 +677,59 @@ impl CmdConfigure {
             status = "Configuring kernel",
             sudo = password,
             content = cmdline_content,
+        )?;
+
+        // Configure swap files.
+        let swapfile_config = ssh_evaluate!(
+            ssh,
+            "print_file_output",
+            context = "Printing dphys-swapfile config",
+            filepath = "/etc/dphys-swapfile",
+        )?;
+
+        let (mut remaining_comments, mut swapfile_config_options) =
+            swapfile_config
+                .lines()
+                .fold(Ok((String::new(), IndexMap::new())), |acc, line| {
+                    let (mut comments, mut map) = acc?;
+
+                    if line.trim().is_empty() || line.trim().starts_with('#') {
+                        comments.push_str(line);
+                        comments.push('\n');
+                        return Ok((comments, map));
+                    }
+
+                    let mut components = line.splitn(2, '=');
+                    let (key, value) = (components.next(), components.next());
+
+                    if let (Some(key), Some(value)) = (key, value) {
+                        map.insert(key, (comments, value));
+                        Ok((String::new(), map))
+                    } else {
+                        Err(anyhow!(
+                            "invalid format '{}': expected format '<key>[=<value>]'",
+                            line.trim(),
+                        ))
+                    }
+                })?;
+
+        swapfile_config_options
+            .entry("CONF_SWAPSIZE")
+            .and_modify(|(_, value)| *value = "0")
+            .or_insert_with(|| (mem::take(&mut remaining_comments), "0"));
+
+        let mut swapfile_config_content: String = swapfile_config_options
+            .into_iter()
+            .map(|(key, (comments, value))| format!("{}{}={}\n", comments, key, value))
+            .collect();
+        swapfile_config_content.push_str(&remaining_comments);
+
+        ssh_run!(
+            ssh,
+            "configure/swap",
+            status = "Configuring swap files",
+            sudo = password,
+            content = swapfile_config_content,
         )?;
 
         // Configure Docker
@@ -670,6 +747,19 @@ impl CmdConfigure {
             status = "Configuring iptables",
             sudo = password
         )?;
+
+        let cluster_ok =
+            ssh_test_successful!(ssh, "k8s_cluster", context = "Checking kubernetes cluster");
+        if self.control_plane && !cluster_ok {
+            // Configure kubernetes.
+            ssh_run!(
+                ssh,
+                "configure/k8s",
+                status = "Configuring kubernetes",
+                sudo = password,
+                cidr = self.cidr,
+            )?;
+        }
 
         // Reboot the node.
         ssh_run!(

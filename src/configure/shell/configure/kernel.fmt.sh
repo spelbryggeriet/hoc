@@ -2,5 +2,7 @@
 
 set -e
 
-# Append the cgroups and swap options to the kernel command line.
-echo '{content}' >/boot/cmdline.txt
+# Update the kernel command line.
+cat >/boot/cmdline.txt <<EOT
+{content}
+EOT
