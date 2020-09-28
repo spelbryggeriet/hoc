@@ -761,6 +761,13 @@ impl CmdConfigure {
             )?;
         }
 
+        // Apply flannel CNI.
+        ssh_run!(
+            ssh,
+            "configure/flannel",
+            status = "Applying flannel CNI",
+        )?;
+
         // Reboot the node.
         ssh_run!(
             ssh,
