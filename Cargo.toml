@@ -10,6 +10,7 @@ path = "./src/main.rs"
 
 [dependencies]
 anyhow = "1.0"
+bollard = { git = "https://github.com/fussybeaver/bollard.git", rev = "e50137a37b1b7ddc17a4047cee7f5041418c06a7" }
 console = "0.11"
 dialoguer = "0.6"
 futures = "0.3"
@@ -25,11 +26,11 @@ reqwest = "0.10"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 serde_yaml = "0.8"
-shiplift = { git = "https://github.com/softprops/shiplift.git", branch = "master" }
 ssh2 = "0.8"
 structopt = "0.3"
 strum = "0.19"
 strum_macros = "0.19"
+tar = "0.4.30"
 tempfile = "3.1"
 tokio = { version = "0.2", features = ["macros"] }
 url = "2.1.1"

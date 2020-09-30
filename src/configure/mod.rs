@@ -3,8 +3,8 @@ mod parse;
 use std::env;
 use std::fmt::{self, Display, Formatter};
 use std::fs;
-use std::mem;
 use std::io::{BufRead, BufReader, Read, Write};
+use std::mem;
 use std::net::{Ipv4Addr, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -762,11 +762,7 @@ impl CmdConfigure {
         }
 
         // Apply flannel CNI.
-        ssh_run!(
-            ssh,
-            "configure/flannel",
-            status = "Applying flannel CNI",
-        )?;
+        ssh_run!(ssh, "configure/flannel", status = "Applying flannel CNI",)?;
 
         // Reboot the node.
         ssh_run!(

@@ -61,8 +61,7 @@ impl CmdFlash {
                 }
 
                 FlashCacheState::Downloaded => {
-                    self
-                        .decompress_image(image, temp_file.as_file_mut())
+                    self.decompress_image(image, temp_file.as_file_mut())
                         .context("Decompressing image")?;
 
                     FlashCacheState::Decompressed
@@ -228,8 +227,7 @@ impl CmdFlash {
                 drop(archive_file);
 
                 file.seek(SeekFrom::Start(0))?;
-                file
-                    .write(&buf)
+                file.write(&buf)
                     .context("Writing decompressed content back to file")?;
 
                 return Ok(());
