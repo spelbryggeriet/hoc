@@ -36,10 +36,10 @@ impl Default for FlashCacheState {
 }
 
 #[derive(StructOpt)]
-pub(super) struct CmdFlash {}
+pub struct CmdFlash {}
 
 impl CmdFlash {
-    pub(super) async fn run(self, context: &mut AppContext) -> AppResult<()> {
+    pub async fn run(self, context: &mut AppContext) -> AppResult<()> {
         let index = choose!(
             "Which image do you want to use?",
             Image::iter().map(|i| i.description()),
@@ -676,7 +676,7 @@ impl Display for AttachedDiskPartitionInfo {
 }
 
 #[derive(Debug, Clone)]
-struct SourceDiskInfo {
+pub struct SourceDiskInfo {
     num_sectors: usize,
     partitions: Vec<SourceDiskPartitionInfo>,
 }

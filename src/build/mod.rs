@@ -1,111 +1,35 @@
 mod parse;
 
 use std::collections::HashMap;
-use std::fmt::{self, Display, Formatter};
-use std::path::{Path, PathBuf};
-use std::{env, fs, io};
+use std::path::PathBuf;
+use std::{fs, io};
 
 use anyhow::Context;
-use bollard::{image::BuildImageOptions, service::ProgressDetail, Docker};
+use bollard::{image::BuildImageOptions, Docker};
 use futures::stream::StreamExt;
-use git2::{Cred, RemoteCallbacks, Repository};
-use serde::Deserialize;
+use git2::Repository;
 use structopt::StructOpt;
 use tar::Builder;
 
 use crate::prelude::*;
+use crate::service::{self, ci::prelude::*};
 
 const DOCKERFILE_BUILDER: &str = include_str!("../../docker/Dockerfile");
 
-fn format_tag(service: &str, tag: &str) -> String {
-    format!("registry.gitlab.com/lidin-homepi/{}:{}", service, tag)
-}
-
-#[derive(Deserialize, Clone)]
-struct CiConfig {
-    build: Option<CiBuildStage>,
-}
-
-impl Default for CiConfig {
-    fn default() -> Self {
-        CiConfig { build: None }
-    }
-}
-
-#[derive(Deserialize, Clone)]
-struct CiBuildStage {
-    #[serde(rename = "type")]
-    build_type: CiBuildType,
-    images: Vec<CiImage>,
-}
-
-#[serde(rename_all = "snake_case")]
-#[derive(Deserialize, Copy, Clone)]
-enum CiBuildType {
-    Docker,
-}
-
-#[derive(Deserialize, Clone)]
-struct CiImage {
-    path: PathBuf,
-
-    #[serde(default = "Vec::new")]
-    tags: Vec<String>,
-
-    #[serde(default = "Vec::new")]
-    args: Vec<CiImageArgument>,
-
-    #[serde(default = "Vec::new")]
-    platforms: Vec<CiImagePlatform>,
-}
-
-#[derive(Deserialize, Clone)]
-struct CiImageArgument {
-    name: String,
-    value: String,
-}
-
-#[derive(Deserialize, Clone)]
-struct CiImagePlatform {
-    os: String,
-
-    #[serde(flatten)]
-    arch_variant: Option<CiImagePlatformArchVariant>,
-}
-
-#[derive(Deserialize, Clone)]
-struct CiImagePlatformArchVariant {
-    arch: String,
-    variant: Option<String>,
-}
-
-impl Display for CiImagePlatform {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.os)?;
-        if let Some(arch_variant) = self.arch_variant.as_ref() {
-            write!(f, "/{}", arch_variant.arch)?;
-            if let Some(variant) = arch_variant.variant.as_ref() {
-                write!(f, "/{}", variant)?;
-            }
-        }
-        Ok(())
-    }
-}
-
 #[derive(StructOpt)]
-pub(super) struct CmdBuild {
+pub struct CmdBuild {
     #[structopt(long, short)]
-    pub(super) service: String,
+    pub service: String,
 }
 
 impl CmdBuild {
-    pub(super) async fn run(self) -> AppResult<()> {
+    pub async fn run(self) -> AppResult<()> {
         status!("Building service '{}'", self.service);
 
         let dir = tempfile::tempdir().context("Creating temporary directory")?;
 
-        let repo = self.clone_repo(dir.path())?;
-        let ci_config = self.get_ci_config(&repo)?;
+        let repo = service::clone_repo(&self.service, dir.path())?;
+        let ci_config = service::ci::get_config(&repo)?;
         let build_dir = self.prepare_build_dir(&repo, &ci_config)?;
 
         match ci_config.build {
@@ -126,50 +50,6 @@ impl CmdBuild {
                 self.build_docker_image(build_dir, Vec::default(), Vec::default(), None)
                     .await
             }
-        }
-    }
-
-    fn clone_repo(&self, repo_path: &Path) -> AppResult<Repository> {
-        // Prepare callbacks.
-        let mut callbacks = RemoteCallbacks::new();
-        callbacks.credentials(|_url, username_from_url, _allowed_types| {
-            Cred::ssh_key(
-                username_from_url.unwrap(),
-                None,
-                std::path::Path::new(&format!("{}/.ssh/id_rsa", env::var("HOME").unwrap())),
-                None,
-            )
-        });
-
-        // Prepare fetch options.
-        let mut fo = git2::FetchOptions::new();
-        fo.remote_callbacks(callbacks);
-
-        // Prepare builder.
-        let mut builder = git2::build::RepoBuilder::new();
-        builder.fetch_options(fo);
-
-        // Clone the project.
-        let url = format!("git@gitlab.com:lidin-homepi/{}.git", self.service);
-        status!(
-            "Cloning repository '{}' into directory '{}'",
-            &url,
-            repo_path.to_string_lossy()
-        );
-        builder
-            .clone(&url, repo_path)
-            .context(format!("Cloning repository '{}'", &url))
-    }
-
-    fn get_ci_config(&self, repo: &Repository) -> AppResult<CiConfig> {
-        let config_path = repo.path().join("../.h2t-ci.yaml");
-        if config_path.exists() {
-            let config_str =
-                fs::read_to_string(config_path).context("Reading h2t CI config file")?;
-            Ok(serde_yaml::from_str(&config_str)?)
-        } else {
-            info!("No h2t CI config file found, using default");
-            Ok(CiConfig::default())
         }
     }
 
@@ -229,22 +109,23 @@ impl CmdBuild {
             args.into_iter().map(|arg| (arg.name, arg.value)).collect();
 
         let t = if let Some((first_tag, rest_tags)) = tags.split_first() {
+            let first_full_image_name = service::full_image_name(&self.service, first_tag);
             if rest_tags.len() == 0 {
-                format_tag(&self.service, first_tag)
+                first_full_image_name
             } else {
                 format!(
                     "{}&{}",
-                    format_tag(&self.service, first_tag),
-                    rest_tags.iter().map(|t| format_tag(&self.service, t)).fold(
-                        String::new(),
-                        |mut acc, t| {
+                    first_full_image_name,
+                    rest_tags
+                        .iter()
+                        .map(|t| service::full_image_name(&self.service, t))
+                        .fold(String::new(), |mut acc, t| {
                             if !acc.is_empty() {
                                 acc.push_str("&")
                             }
                             acc.push_str(&t);
                             acc
-                        }
-                    )
+                        })
                 )
             }
         } else {
@@ -267,22 +148,22 @@ impl CmdBuild {
 
         // Start the Docker build process.
         status!("Building Docker image");
-        let mut build = docker.build_image(build_image_options, None, Some(tar.into()));
+        let mut stream = docker.build_image(build_image_options, None, Some(tar.into()));
 
         let mut line = String::new();
         let mut current_escape_code = None;
-        while let Some(object) = build.next().await {
-            match object {
-                Ok(v) => {
-                    if let Some(stream) = v.stream {
-                        let mut chunks = stream.split('\n');
+        while let Some(chunk) = stream.next().await {
+            match chunk {
+                Ok(chunk) => {
+                    if let Some(docker_stream) = chunk.stream {
+                        let mut docker_stream_chunks = docker_stream.split('\n');
 
                         // Always append the first chunk unconditionally.
-                        if let Some(chunk) = chunks.next() {
+                        if let Some(chunk) = docker_stream_chunks.next() {
                             line += chunk;
                         }
 
-                        for chunk in chunks {
+                        for docker_stream_chunk in docker_stream_chunks {
                             info!(
                                 "{}{}\u{1b}[0m",
                                 current_escape_code.as_ref().unwrap_or(&String::new()),
@@ -294,7 +175,7 @@ impl CmdBuild {
                             }
 
                             line.clear();
-                            line += chunk;
+                            line += docker_stream_chunk;
                         }
                     }
                 }

@@ -6,7 +6,7 @@ use dialoguer::{Confirm, Input, Password, Select};
 
 use crate::prelude::*;
 
-pub(super) struct Logger {
+pub struct Logger {
     stdout: Term,
     stderr: Term,
     new_line_present: bool,

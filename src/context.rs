@@ -26,7 +26,7 @@ struct NodeConfig {
     username: Option<String>,
 }
 
-pub(super) struct AppContext {
+pub struct AppContext {
     cached: bool,
     cache_config_file: File,
     cache_config: CacheConfig,

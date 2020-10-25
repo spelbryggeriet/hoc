@@ -4,11 +4,11 @@ use nom::IResult;
 
 use super::LocalEndpoint;
 
-pub(super) fn arp_output(s: &str) -> IResult<&str, Vec<LocalEndpoint>> {
+pub fn arp_output(s: &str) -> IResult<&str, Vec<LocalEndpoint>> {
     nom::multi::many0(local_endpoint)(s)
 }
 
-pub(super) fn local_endpoint(s: &str) -> IResult<&str, LocalEndpoint> {
+pub fn local_endpoint(s: &str) -> IResult<&str, LocalEndpoint> {
     if cfg!(target_os = "macos") {
         use nom::bytes::complete::{tag, take_until, take_while};
         use nom::character::complete::multispace1;

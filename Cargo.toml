@@ -10,7 +10,7 @@ path = "./src/main.rs"
 
 [dependencies]
 anyhow = "1.0"
-bollard = { git = "https://github.com/fussybeaver/bollard.git", rev = "e50137a37b1b7ddc17a4047cee7f5041418c06a7" }
+bollard = { git = "https://github.com/fussybeaver/bollard.git", rev = "7fd2ea7b67f627d283902be2aea630c3202a81fd" }
 console = "0.11"
 dialoguer = "0.6"
 futures = "0.3"

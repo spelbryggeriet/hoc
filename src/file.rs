@@ -22,7 +22,7 @@ fn temp_path() -> PathBuf {
     temp_path
 }
 
-pub(crate) struct NamedFile {
+pub struct NamedFile {
     path: PathBuf,
     file: File,
     temp: bool,
@@ -121,7 +121,7 @@ impl<'a> Seek for &'a NamedFile {
     }
 }
 
-pub(crate) struct TempDir {
+pub struct TempDir {
     path: PathBuf,
 }
 

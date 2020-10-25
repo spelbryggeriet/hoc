@@ -1,6 +1,6 @@
 use nom::IResult;
 
-pub(super) fn last_ansi_escape_code(s: &str) -> Option<String> {
+pub fn last_ansi_escape_code(s: &str) -> Option<String> {
     use nom::multi::many0;
 
     many0(next_ansi_escape_code)(s)

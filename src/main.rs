@@ -48,6 +48,14 @@ macro_rules! prompt {
     };
 }
 
+/// Ask for user input.
+///
+/// # Examples
+///
+/// ```rust
+/// let name     = input!("Give me your name");
+/// let password = input!([hidden] "Give me your password");
+/// ```
 macro_rules! input {
     ([hidden] $($args:tt)*) => {
         _log!(["stdout", hidden_input] $($args)*)
@@ -70,13 +78,19 @@ macro_rules! choose {
 mod context;
 mod file;
 mod logger;
+mod service;
 
 mod build;
 mod configure;
 mod deploy;
 mod flash;
+mod publish;
 
-mod prelude;
+mod prelude {
+    pub use anyhow::Context;
+    pub use crate::file::{NamedFile, TempDir};
+    pub use crate::{context::AppContext, AppResult, CACHE_DIR, HOME_DIR};
+}
 
 use std::sync::Mutex;
 use std::{env, path::PathBuf};
@@ -91,11 +105,12 @@ use configure::CmdConfigure;
 use context::AppContext;
 use deploy::CmdDeploy;
 use flash::CmdFlash;
+use publish::CmdPublish;
 
 lazy_static! {
-    static ref HOME_DIR: PathBuf = PathBuf::from(format!("{}/.h2t", env::var("HOME").unwrap()));
-    static ref CACHE_DIR: PathBuf = HOME_DIR.join("cache");
-    static ref LOG: Mutex<Logger> = Mutex::new(Logger::new());
+    pub static ref HOME_DIR: PathBuf = PathBuf::from(format!("{}/.h2t", env::var("HOME").unwrap()));
+    pub static ref CACHE_DIR: PathBuf = HOME_DIR.join("cache");
+    pub static ref LOG: Mutex<Logger> = Mutex::new(Logger::new());
 }
 
 fn readable_size(size: usize) -> (f32, &'static str) {
@@ -118,7 +133,7 @@ fn readable_size(size: usize) -> (f32, &'static str) {
     (size, unit)
 }
 
-type AppResult<T> = anyhow::Result<T>;
+pub type AppResult<T> = anyhow::Result<T>;
 
 #[derive(StructOpt)]
 struct App {
@@ -132,10 +147,11 @@ struct App {
 
 #[derive(StructOpt)]
 enum Subcommand {
-    Build(CmdBuild),
-    Deploy(CmdDeploy),
     Flash(CmdFlash),
     Configure(CmdConfigure),
+    Build(CmdBuild),
+    Publish(CmdPublish),
+    Deploy(CmdDeploy),
 }
 
 async fn run() -> AppResult<()> {
@@ -143,19 +159,12 @@ async fn run() -> AppResult<()> {
     let mut context = AppContext::configure(args.cached).context("Configuring app context")?;
 
     match args.subcommand {
-        Subcommand::Build(cmd) => cmd.run().await.context("Running build command")?,
-        Subcommand::Deploy(cmd) => cmd.run().await.context("Running deploy command")?,
-        Subcommand::Flash(cmd) => cmd
-            .run(&mut context)
-            .await
-            .context("Running flash command")?,
-        Subcommand::Configure(cmd) => cmd
-            .run(&mut context)
-            .await
-            .context("Running configure command")?,
+        Subcommand::Flash(cmd) => cmd.run(&mut context).await.context("flash command"),
+        Subcommand::Configure(cmd) => cmd.run(&mut context).await.context("configure command"),
+        Subcommand::Build(cmd) => cmd.run().await.context("build command"),
+        Subcommand::Publish(cmd) => cmd.run().await.context("publish command"),
+        Subcommand::Deploy(cmd) => cmd.run().await.context("deploy command"),
     }
-
-    Ok(())
 }
 
 #[tokio::main]

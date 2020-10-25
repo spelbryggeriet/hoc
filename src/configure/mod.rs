@@ -256,7 +256,7 @@ enum Authentication<S, P> {
 }
 
 #[derive(StructOpt)]
-pub(super) struct CmdConfigure {
+pub struct CmdConfigure {
     node_name: String,
 
     #[structopt(long)]
@@ -987,7 +987,7 @@ enum ExecutionMode<'a> {
     Sudo { password: &'a str },
 }
 
-struct LocalEndpoint {
+pub struct LocalEndpoint {
     hostname: Option<String>,
     ip_address: Ipv4Addr,
     interface: String,

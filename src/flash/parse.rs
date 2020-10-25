@@ -2,7 +2,7 @@ use super::{SourceDiskInfo, SourceDiskPartitionInfo};
 
 use nom::IResult;
 
-pub(super) fn fdisk_output(s: &str) -> IResult<&str, SourceDiskInfo> {
+pub fn fdisk_output(s: &str) -> IResult<&str, SourceDiskInfo> {
     use nom::bytes::complete::{tag, take_until};
     use nom::character::complete::{digit1, multispace1};
     use nom::combinator::map_res;
