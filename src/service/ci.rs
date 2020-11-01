@@ -7,9 +7,11 @@ pub mod prelude {
 
 use std::fmt::{self, Display, Formatter};
 use std::fs;
+use std::num::NonZeroU32;
 use std::path::PathBuf;
 
 use git2::Repository;
+use serde::de::{self, Deserializer, Visitor};
 use serde::Deserialize;
 
 use crate::prelude::*;
@@ -27,6 +29,7 @@ pub fn get_config(repo: &Repository) -> AppResult<CiConfig> {
 
 #[derive(Deserialize, Clone)]
 pub struct CiConfig {
+    pub version: CiVersion,
     pub build: Option<CiBuildStage>,
 }
 
@@ -42,7 +45,71 @@ impl CiConfig {
 
 impl Default for CiConfig {
     fn default() -> Self {
-        CiConfig { build: None }
+        CiConfig {
+            version: CiVersion {
+                version: NonZeroU32::new(1).unwrap(),
+                beta: true,
+            },
+            build: None,
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+pub struct CiVersion {
+    pub version: NonZeroU32,
+    pub beta: bool,
+}
+
+impl<'de> Deserialize<'de> for CiVersion {
+    fn deserialize<D>(deserializer: D) -> Result<CiVersion, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct CiVersionVisitor;
+
+        impl<'de> Visitor<'de> for CiVersionVisitor {
+            type Value = CiVersion;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+                formatter.write_str("a valid version in the format `vX` or `vX_beta`, where `X` is an integer larger than 0")
+            }
+
+            fn visit_str<E>(self, s: &str) -> Result<CiVersion, E>
+            where
+                E: de::Error,
+            {
+                use nom::bytes::complete::tag;
+                use nom::character::complete::digit1;
+                use nom::combinator::{map_res, opt};
+
+                let parse_err = |e: nom::Err<(&str, nom::error::ErrorKind)>| {
+                    E::custom(format!("failed parsing version: {}", e))
+                };
+
+                let (s, _) = tag("v")(s).map_err(parse_err)?;
+                let (s, version) =
+                    map_res(digit1, |s| str::parse::<NonZeroU32>(s))(s).map_err(parse_err)?;
+                let (_, beta) = opt(tag("_beta"))(s).map_err(parse_err)?;
+
+                Ok(CiVersion {
+                    version,
+                    beta: beta.is_some(),
+                })
+            }
+        }
+
+        deserializer.deserialize_str(CiVersionVisitor)
+    }
+}
+
+impl Display for CiVersion {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        write!(f, "v{}", self.version)?;
+        if self.beta {
+            write!(f, "_beta")?;
+        }
+        Ok(())
     }
 }
 
