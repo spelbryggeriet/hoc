@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::{fs, io};
 
 use anyhow::Context;
-use bollard::{image::BuildImageOptions, Docker};
+use bollard::{service::BuildInfo, image::BuildImageOptions, auth::DockerCredentials, Docker};
 use futures::stream::StreamExt;
 use git2::Repository;
 use structopt::StructOpt;
@@ -146,14 +146,29 @@ impl CmdBuild {
         tar_builder.append_dir_all(".", build_dir)?;
         let tar = tar_builder.into_inner()?;
 
+        let registry = format!("https://{}", service::REGISTRY_DOMAIN);
+        let username = input!("Username");
+        let password = input!([hidden] "Password");
+        let mut credentials = HashMap::new();
+        credentials.insert(service::REGISTRY_DOMAIN.to_string(), DockerCredentials {
+            username: Some(username),
+            password: Some(password),
+            serveraddress: Some(registry),
+            ..Default::default()
+        });
+
         // Start the Docker build process.
         status!("Building Docker image");
-        let mut stream = docker.build_image(build_image_options, None, Some(tar.into()));
+        let mut stream = docker.build_image(build_image_options, Some(credentials), Some(tar.into()));
 
         let mut line = String::new();
         let mut current_escape_code = None;
         while let Some(chunk) = stream.next().await {
             match chunk {
+                Ok(BuildInfo {
+                    error: Some(error),
+                    ..
+                }) => error!("{}", error),
                 Ok(chunk) => {
                     if let Some(docker_stream) = chunk.stream {
                         let mut docker_stream_chunks = docker_stream.split('\n');
@@ -178,8 +193,8 @@ impl CmdBuild {
                             line += docker_stream_chunk;
                         }
                     }
-                }
-                Err(e) => error!("{}", e),
+                },
+                Err(error) => error!("{}", error),
             }
         }
 

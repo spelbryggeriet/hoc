@@ -1,4 +1,4 @@
-FROM rustlang/rust:nightly AS builder
+FROM registry.gitlab.com/lidin-homepi/docker-rust-nightly:nightly AS builder
 ARG APP_NAME=homepi-stream-manager
 
 RUN curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh

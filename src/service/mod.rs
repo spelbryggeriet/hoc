@@ -46,6 +46,7 @@ pub fn clone_repo(service: &str, repo_path: &Path) -> AppResult<Repository> {
         repo_path.to_string_lossy()
     );
     builder
+        .branch("develop")
         .clone(&url, repo_path)
         .context(format!("Cloning repository '{}'", &url))
 }
