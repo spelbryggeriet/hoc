@@ -1,6 +1,6 @@
 pub mod prelude {
     pub use super::{
-        CiBuildStage, CiBuildType, CiConfig, CiImage, CiImageArgument, CiImagePlatform,
+        CiBuildStage, CiConfig, CiImage, CiImageArgument, CiImagePlatform,
         CiImagePlatformArchVariant,
     };
 }
@@ -116,14 +116,7 @@ impl Display for CiVersion {
 #[derive(Deserialize, Clone)]
 pub struct CiBuildStage {
     #[serde(rename = "type")]
-    pub build_type: CiBuildType,
     pub images: Vec<CiImage>,
-}
-
-#[serde(rename_all = "snake_case")]
-#[derive(Deserialize, Copy, Clone)]
-pub enum CiBuildType {
-    Docker,
 }
 
 #[derive(Deserialize, Clone)]

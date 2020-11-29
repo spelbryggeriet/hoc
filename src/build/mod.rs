@@ -34,7 +34,6 @@ impl CmdBuild {
 
         match ci_config.build {
             Some(CiBuildStage {
-                build_type: CiBuildType::Docker,
                 mut images,
             }) => {
                 let image = images.remove(0);
