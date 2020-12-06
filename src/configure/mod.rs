@@ -3,9 +3,11 @@ mod parse;
 use std::env;
 use std::fmt::{self, Display, Formatter};
 use std::fs;
-use std::io::{BufRead, BufReader, Read, Write};
+use std::fs::OpenOptions;
+use std::io::{self, BufRead, BufReader, Read, Write};
 use std::mem;
 use std::net::{Ipv4Addr, TcpStream};
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -761,6 +763,18 @@ impl CmdConfigure {
             )?;
         }
 
+        // Copy kubeconfig file to temporary directory.
+        let temp_location = ssh_evaluate!(
+            ssh,
+            "configure/k8s_copy_config_to_temp",
+            status = "Copy kubeconfig file to temporary directory",
+            sudo = password,
+        )?;
+
+        // Receive kubeconfig file.
+        ssh.recv_file(temp_location, KUBE_DIR.join("config"))
+            .context("Copying kube config file")?;
+
         // Apply flannel CNI.
         ssh_run!(ssh, "configure/flannel", status = "Applying flannel CNI",)?;
 
@@ -976,6 +990,36 @@ impl SshClient {
             None,
         )?;
         remote_file.write(data.as_ref())?;
+
+        Ok(())
+    }
+
+    fn recv_file(
+        &self,
+        remote_file_path: impl AsRef<Path>,
+        local_file_path: impl AsRef<Path>,
+    ) -> AppResult<()> {
+        let (mut remote_file, _) = self
+            .session
+            .scp_recv(remote_file_path.as_ref())
+            .with_context(|| {
+                format!(
+                    "Opening remote file '{}'",
+                    remote_file_path.as_ref().display()
+                )
+            })?;
+        let mut local_file = OpenOptions::new()
+            .write(true)
+            .create(true)
+            .mode(0o644)
+            .open(local_file_path.as_ref())
+            .with_context(|| {
+                format!(
+                    "Opening local file '{}'",
+                    local_file_path.as_ref().display()
+                )
+            })?;
+        io::copy(&mut remote_file, &mut local_file).context("Sending data from remote file")?;
 
         Ok(())
     }

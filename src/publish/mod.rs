@@ -9,6 +9,9 @@ use crate::service;
 pub struct CmdPublish {
     #[structopt(long, short)]
     pub service: String,
+
+    #[structopt(long, short, default_value = "master")]
+    pub branch: String,
 }
 
 impl CmdPublish {
@@ -17,7 +20,7 @@ impl CmdPublish {
 
         let dir = tempfile::tempdir().context("Creating temporary directory")?;
 
-        let repo = service::clone_repo(&self.service, dir.path())?;
+        let repo = service::clone_repo(&self.service, &self.branch, dir.path())?;
         let ci_config = service::ci::get_config(&repo)?;
 
         let registry = format!("https://{}", service::REGISTRY_DOMAIN);

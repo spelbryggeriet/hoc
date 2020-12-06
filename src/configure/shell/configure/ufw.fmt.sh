@@ -16,8 +16,10 @@ do
 done
 IFS=OLD_IFS
 
-# Allow to connect to port 22 on local network only.
+# Allow connections to ports 22 (SSH) and 6443 (Kubernetes) on local network
+# only.
 ufw allow 22/tcp
+ufw allow 6443/tcp
 
 # Enable firewall.
 yes | ufw enable

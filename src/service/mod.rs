@@ -18,7 +18,7 @@ pub fn full_image_name(service: &str, tag: &str) -> String {
     format!("{}/{}/{}:{}", REGISTRY_DOMAIN, PROJECT_NAME, service, tag)
 }
 
-pub fn clone_repo(service: &str, repo_path: &Path) -> AppResult<Repository> {
+pub fn clone_repo(service: &str, branch: &str, repo_path: &Path) -> AppResult<Repository> {
     // Prepare callbacks.
     let mut callbacks = RemoteCallbacks::new();
     callbacks.credentials(|_url, username_from_url, _allowed_types| {
@@ -46,7 +46,7 @@ pub fn clone_repo(service: &str, repo_path: &Path) -> AppResult<Repository> {
         repo_path.to_string_lossy()
     );
     builder
-        .branch("develop")
+        .branch(branch)
         .clone(&url, repo_path)
         .context(format!("Cloning repository '{}'", &url))
 }

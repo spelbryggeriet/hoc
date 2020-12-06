@@ -17,17 +17,15 @@ use serde::Deserialize;
 use crate::prelude::*;
 
 pub fn get_config(repo: &Repository) -> AppResult<CiConfig> {
-    let config_path = repo.path().join("../.h2t-ci.yaml");
-    if config_path.exists() {
-        let config_str = fs::read_to_string(config_path).context("Reading h2t CI config file")?;
-        Ok(serde_yaml::from_str(&config_str)?)
-    } else {
-        info!("No h2t CI config file found, using default");
-        Ok(CiConfig::default())
-    }
+    let config_path = repo.path().join("../.hoc.yaml");
+    anyhow::ensure!(config_path.exists(), "No Hoc config file found");
+
+    let config_str = fs::read_to_string(config_path).context("Reading Hoc config file")?;
+
+    Ok(serde_yaml::from_str(&config_str)?)
 }
 
-#[derive(Deserialize, Clone)]
+#[derive(Deserialize, Clone, Debug)]
 pub struct CiConfig {
     pub version: CiVersion,
     pub build: Option<CiBuildStage>,
@@ -55,7 +53,7 @@ impl Default for CiConfig {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub struct CiVersion {
     pub version: NonZeroU32,
     pub beta: bool,
@@ -113,15 +111,17 @@ impl Display for CiVersion {
     }
 }
 
-#[derive(Deserialize, Clone)]
+#[derive(Deserialize, Clone, Debug)]
 pub struct CiBuildStage {
     #[serde(rename = "type")]
     pub images: Vec<CiImage>,
 }
 
-#[derive(Deserialize, Clone)]
+#[derive(Deserialize, Clone, Debug)]
 pub struct CiImage {
     pub path: PathBuf,
+
+    pub lockfile: Option<String>,
 
     #[serde(default = "Vec::new")]
     pub tags: Vec<String>,
@@ -133,13 +133,13 @@ pub struct CiImage {
     pub platforms: Vec<CiImagePlatform>,
 }
 
-#[derive(Deserialize, Clone)]
+#[derive(Deserialize, Clone, Debug)]
 pub struct CiImageArgument {
     pub name: String,
     pub value: String,
 }
 
-#[derive(Deserialize, Clone)]
+#[derive(Deserialize, Clone, Debug)]
 pub struct CiImagePlatform {
     pub os: String,
 
@@ -147,7 +147,19 @@ pub struct CiImagePlatform {
     pub arch_variant: Option<CiImagePlatformArchVariant>,
 }
 
-#[derive(Deserialize, Clone)]
+impl Default for CiImagePlatform {
+    fn default() -> Self {
+        Self {
+            os: "linux".into(),
+            arch_variant: Some(CiImagePlatformArchVariant {
+                arch: "arm".into(),
+                variant: Some("v7".into()),
+            })
+        }
+    }
+}
+
+#[derive(Deserialize, Clone, Debug)]
 pub struct CiImagePlatformArchVariant {
     pub arch: String,
     pub variant: Option<String>,

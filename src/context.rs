@@ -2,6 +2,7 @@ use std::collections::HashMap as Map;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Seek, SeekFrom};
 use std::os::unix::fs::OpenOptionsExt;
+use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
@@ -45,7 +46,8 @@ fn flush_config(file: &mut File, config: &impl Serialize) -> AppResult<()> {
 
 impl AppContext {
     pub fn configure(cached: bool) -> AppResult<Self> {
-        fs::create_dir_all(HOME_DIR.join("cache")).context("Creating cache directory")?;
+        fs::create_dir_all::<&Path>(CACHE_DIR.as_ref()).context("Creating cache directory")?;
+        fs::create_dir_all::<&Path>(KUBE_DIR.as_ref()).context("Creating cache directory")?;
 
         let cache_config_file = OpenOptions::new()
             .read(true)

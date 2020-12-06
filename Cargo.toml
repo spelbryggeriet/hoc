@@ -5,7 +5,7 @@ authors = ["Hampus Lidin <hampuslidin@gmail.com>"]
 edition = "2018"
 
 [[bin]]
-name = "h2t"
+name = "hoc"
 path = "./src/main.rs"
 
 [dependencies]
@@ -17,6 +17,9 @@ futures = "0.3"
 git2 = "0.13"
 heck = "0.3"
 indexmap = "1.6.0"
+k8s-openapi = { version = "0.10.0", default-features = false, features = ["v1_19"] }
+kube = { git = "https://github.com/clux/kube-rs.git", rev = "f49fcc4b64ca53091efe15f570e38c6ab3789567" }
+kube-runtime = { git = "https://github.com/clux/kube-rs.git", rev = "f49fcc4b64ca53091efe15f570e38c6ab3789567" }
 lazy_static = "1.4"
 nom = "5.1"
 num_enum = "0.5"

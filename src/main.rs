@@ -89,7 +89,7 @@ mod publish;
 mod prelude {
     pub use anyhow::Context;
     pub use crate::file::{NamedFile, TempDir};
-    pub use crate::{context::AppContext, AppResult, CACHE_DIR, HOME_DIR};
+    pub use crate::{context::AppContext, AppResult, CACHE_DIR, HOME_DIR, KUBE_DIR};
 }
 
 use std::sync::Mutex;
@@ -108,8 +108,9 @@ use flash::CmdFlash;
 use publish::CmdPublish;
 
 lazy_static! {
-    pub static ref HOME_DIR: PathBuf = PathBuf::from(format!("{}/.h2t", env::var("HOME").unwrap()));
+    pub static ref HOME_DIR: PathBuf = PathBuf::from(format!("{}/.hoc", env::var("HOME").unwrap()));
     pub static ref CACHE_DIR: PathBuf = HOME_DIR.join("cache");
+    pub static ref KUBE_DIR: PathBuf = HOME_DIR.join("kube");
     pub static ref LOG: Mutex<Logger> = Mutex::new(Logger::new());
 }
 

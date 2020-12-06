@@ -20,6 +20,9 @@ const DOCKERFILE_BUILDER: &str = include_str!("../../docker/Dockerfile");
 pub struct CmdBuild {
     #[structopt(long, short)]
     pub service: String,
+
+    #[structopt(long, short, default_value = "master")]
+    pub branch: String,
 }
 
 impl CmdBuild {
@@ -28,7 +31,7 @@ impl CmdBuild {
 
         let dir = tempfile::tempdir().context("Creating temporary directory")?;
 
-        let repo = service::clone_repo(&self.service, dir.path())?;
+        let repo = service::clone_repo(&self.service, &self.branch, dir.path())?;
         let ci_config = service::ci::get_config(&repo)?;
         let build_dir = self.prepare_build_dir(&repo, &ci_config)?;
 
@@ -82,14 +85,31 @@ impl CmdBuild {
             }
         }
 
-        if ci_config.build.is_none() {
+        if let Some(build) = &ci_config.build {
+            for image in build.images.iter() {
+                if let Some(lockfile) = &image.lockfile {
+                    let msg = format!(
+                        "Copying Cargo.lock file from '{}'",
+                        lockfile
+                    );
+                    info!(msg);
+
+                    let image_dir = build_dir.join(&image.path);
+                    let lockfile_dir = image_dir.join(lockfile);
+
+                    fs::copy(&lockfile_dir, image_dir).context(msg)?;
+                }
+            }
+        } else {
             // Add Dockerfile.
+            info!("Adding default Dockerfile");
             let dockerfile_path = build_dir.join("Dockerfile");
             fs::write(&dockerfile_path, DOCKERFILE_BUILDER).context(format!(
                 "Writing file '{}'",
-                dockerfile_path.to_string_lossy()
+                dockerfile_path.display()
             ))?;
         }
+
 
         Ok(build_dir.to_path_buf())
     }
@@ -135,7 +155,7 @@ impl CmdBuild {
             t,
             pull: true,
             buildargs: build_image_args,
-            platform: platform.map(|p| p.to_string()).unwrap_or_default(),
+            platform: platform.unwrap_or_default().to_string(),
             ..Default::default()
         };
 
