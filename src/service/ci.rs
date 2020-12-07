@@ -113,7 +113,6 @@ impl Display for CiVersion {
 
 #[derive(Deserialize, Clone, Debug)]
 pub struct CiBuildStage {
-    #[serde(rename = "type")]
     pub images: Vec<CiImage>,
 }
 
