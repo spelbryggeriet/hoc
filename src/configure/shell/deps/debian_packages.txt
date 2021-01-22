@@ -2,9 +2,9 @@ bat sharkdp/bat
 docker.io
 fd-find sharkdp/fd
 fish
-[hold] kubeadm
-[hold] kubectl
-[hold] kubelet
+[hold] kubeadm=1.19.0-00
+[hold] kubectl=1.19.0-00
+[hold] kubelet=1.19.0-00
 libssl-dev
 libx11-dev
 libxcb-composite0-dev

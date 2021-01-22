@@ -117,8 +117,11 @@ pub struct CiBuildStage {
 }
 
 #[derive(Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
 pub struct CiImage {
     pub path: PathBuf,
+
+    pub architecture_arg_name: String,
 
     pub lockfile: Option<String>,
 

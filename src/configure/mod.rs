@@ -333,31 +333,31 @@ impl CmdConfigure {
         if username == "pi" {
             status!("Migrating from the pi user");
 
-            username = input!("Choose a new username");
-            context.update_username(&self.node_name, username.clone())?;
-
-            password = input!([hidden] "Choose a new password");
+            let new_username = input!("Choose a new username");
+            let new_password = input!([hidden] "Choose a new password");
             let new_password_retype = input!([hidden] "Retype the new password");
-            if password != new_password_retype {
+            if new_password != new_password_retype {
                 anyhow::bail!("Passwords doesn't match");
             }
-
-            status!("Creating new user");
 
             ssh_run!(
                 ssh,
                 "add_user",
                 status = "Creating new user",
-                sudo = "password",
-                username = username,
-                password = password,
+                sudo = password,
+                username = new_username,
+                password = new_password,
             )?;
+
+            username = new_username;
+            password = new_password;
 
             status!("Reconnecting with new credentials");
             ssh.reconnect(&username, Authentication::Password::<_, PathBuf>(&password))
                 .context("Reconnecting SSH client with new credentials")?;
 
-            status!("Deleting pi user");
+            context.update_username(&self.node_name, username.clone())?;
+
             ssh_run!(
                 ssh,
                 "delete_pi_user",
@@ -390,15 +390,6 @@ impl CmdConfigure {
             );
             let identity_path = identities.remove(index);
 
-            context.update_ssh_identity_name(
-                &self.node_name,
-                identity_path
-                    .file_stem()
-                    .and_then(|s| s.to_str())
-                    .map(str::to_string)
-                    .context("Path could not be converted to UTF-8")?,
-            )?;
-
             ssh_run!(
                 ssh,
                 "configure/ssh",
@@ -407,8 +398,17 @@ impl CmdConfigure {
                 username = username,
             )?;
 
-            ssh.send_file(fs::read(identity_path)?, ".ssh/authorized_keys", 0o600)
+            ssh.send_file(fs::read(&identity_path)?, format!("/home/{}/.ssh/authorized_keys", username), 0o600)
                 .context("Copying SSH public identity file")?;
+
+            context.update_ssh_identity_name(
+                &self.node_name,
+                identity_path
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .map(str::to_string)
+                    .context("Path could not be converted to UTF-8")?,
+            )?;
         }
 
         status!("Installing dependencies");
@@ -589,13 +589,13 @@ impl CmdConfigure {
             info!();
 
             for (crate_name, flags) in dirty_rust_crates {
-                ssh_run!(
-                    ssh,
-                    "install/rust_crate",
-                    context = format!("Installing {}", crate_name),
-                    crate_name = crate_name,
-                    flags = flags.join(" ") + " --locked",
-                )?;
+                // ssh_run!(
+                //     ssh,
+                //     "install/rust_crate",
+                //     context = format!("Installing {}", crate_name),
+                //     crate_name = crate_name,
+                //     flags = flags.join(" ") + " --locked",
+                // )?;
             }
         }
 
@@ -614,12 +614,12 @@ impl CmdConfigure {
             sudo = password,
         )?;
 
-        ssh_run!(
-            ssh,
-            "configure/ufw",
-            status = "Configuring firewall",
-            sudo = password
-        )?;
+        // ssh_run!(
+        //     ssh,
+        //     "configure/ufw",
+        //     status = "Configuring firewall",
+        //     sudo = password
+        // )?;
 
         ssh_run!(
             ssh,
@@ -764,19 +764,19 @@ impl CmdConfigure {
         }
 
         // Copy kubeconfig file to temporary directory.
-        let temp_location = ssh_evaluate!(
-            ssh,
-            "configure/k8s_copy_config_to_temp",
-            status = "Copy kubeconfig file to temporary directory",
-            sudo = password,
-        )?;
+        // let temp_location = ssh_evaluate!(
+        //     ssh,
+        //     "configure/k8s_copy_config_to_temp",
+        //     status = "Copy kubeconfig file to temporary directory",
+        //     sudo = password,
+        // )?;
 
         // Receive kubeconfig file.
-        ssh.recv_file(temp_location, KUBE_DIR.join("config"))
-            .context("Copying kube config file")?;
+        // ssh.recv_file(temp_location, KUBE_DIR.join(&self.node_name))
+        //     .context("Copying kube config file")?;
 
         // Apply flannel CNI.
-        ssh_run!(ssh, "configure/flannel", status = "Applying flannel CNI",)?;
+        // ssh_run!(ssh, "configure/flannel", status = "Applying flannel CNI",)?;
 
         // Reboot the node.
         ssh_run!(
@@ -988,8 +988,8 @@ impl SshClient {
             mode,
             data.as_ref().len() as u64,
             None,
-        )?;
-        remote_file.write(data.as_ref())?;
+        ).context("Initiating send command")?;
+        remote_file.write(data.as_ref()).context("Writing data")?;
 
         Ok(())
     }

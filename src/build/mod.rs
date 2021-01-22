@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::{fs, io};
 
 use anyhow::Context;
-use bollard::{service::BuildInfo, image::BuildImageOptions, auth::DockerCredentials, Docker};
+use bollard::{auth::DockerCredentials, image::BuildImageOptions, service::BuildInfo, Docker};
 use futures::stream::StreamExt;
 use git2::Repository;
 use structopt::StructOpt;
@@ -36,20 +36,24 @@ impl CmdBuild {
         let build_dir = self.prepare_build_dir(&repo, &ci_config)?;
 
         match ci_config.build {
-            Some(CiBuildStage {
-                mut images,
-            }) => {
+            Some(CiBuildStage { mut images }) => {
                 let image = images.remove(0);
-                self.build_docker_image(
-                    build_dir.join(&image.path),
-                    image.tags.clone(),
-                    image.args.clone(),
-                    image.platforms.get(0).cloned(),
-                )
-                .await
+
+                let mut args = image.args;
+                args.push(CiImageArgument {
+                    name: image.architecture_arg_name,
+                    value: image
+                        .platforms
+                        .get(0)
+                        .map(|p| p.to_string())
+                        .unwrap_or_default(),
+                });
+
+                self.build_docker_image(build_dir.join(&image.path), image.tags.clone(), args)
+                    .await
             }
             None => {
-                self.build_docker_image(build_dir, Vec::default(), Vec::default(), None)
+                self.build_docker_image(build_dir, Vec::default(), Vec::default())
                     .await
             }
         }
@@ -88,10 +92,7 @@ impl CmdBuild {
         if let Some(build) = &ci_config.build {
             for image in build.images.iter() {
                 if let Some(lockfile) = &image.lockfile {
-                    let msg = format!(
-                        "Copying Cargo.lock file from '{}'",
-                        lockfile
-                    );
+                    let msg = format!("Copying Cargo.lock file from '{}'", lockfile);
                     info!(msg);
 
                     let image_dir = build_dir.join(&image.path);
@@ -104,12 +105,9 @@ impl CmdBuild {
             // Add Dockerfile.
             info!("Adding default Dockerfile");
             let dockerfile_path = build_dir.join("Dockerfile");
-            fs::write(&dockerfile_path, DOCKERFILE_BUILDER).context(format!(
-                "Writing file '{}'",
-                dockerfile_path.display()
-            ))?;
+            fs::write(&dockerfile_path, DOCKERFILE_BUILDER)
+                .context(format!("Writing file '{}'", dockerfile_path.display()))?;
         }
-
 
         Ok(build_dir.to_path_buf())
     }
@@ -119,7 +117,6 @@ impl CmdBuild {
         build_dir: PathBuf,
         tags: Vec<String>,
         args: Vec<CiImageArgument>,
-        platform: Option<CiImagePlatform>,
     ) -> AppResult<()> {
         let docker = Docker::connect_with_unix_defaults()?;
 
@@ -154,8 +151,7 @@ impl CmdBuild {
         let build_image_options = BuildImageOptions {
             t,
             pull: true,
-            buildargs: build_image_args,
-            platform: platform.unwrap_or_default().to_string(),
+            buildargs: build_image_args, // TODO: fix correct platform //platform.unwrap_or_default().to_string(),
             ..Default::default()
         };
 
@@ -169,25 +165,30 @@ impl CmdBuild {
         let username = input!("Username");
         let password = input!([hidden] "Password");
         let mut credentials = HashMap::new();
-        credentials.insert(service::REGISTRY_DOMAIN.to_string(), DockerCredentials {
-            username: Some(username),
-            password: Some(password),
-            serveraddress: Some(registry),
-            ..Default::default()
-        });
+        credentials.insert(
+            service::REGISTRY_DOMAIN.to_string(),
+            DockerCredentials {
+                username: Some(username),
+                password: Some(password),
+                serveraddress: Some(registry),
+                ..Default::default()
+            },
+        );
 
         // Start the Docker build process.
         status!("Building Docker image");
-        let mut stream = docker.build_image(build_image_options, Some(credentials), Some(tar.into()));
+        let mut stream =
+            docker.build_image(build_image_options, Some(credentials), Some(tar.into()));
 
         let mut line = String::new();
         let mut current_escape_code = None;
         while let Some(chunk) = stream.next().await {
             match chunk {
                 Ok(BuildInfo {
-                    error: Some(error),
-                    ..
-                }) => error!("{}", error),
+                    error: Some(error), ..
+                }) => {
+                    error!("{}", error)
+                }
                 Ok(chunk) => {
                     if let Some(docker_stream) = chunk.stream {
                         let mut docker_stream_chunks = docker_stream.split('\n');
@@ -212,8 +213,10 @@ impl CmdBuild {
                             line += docker_stream_chunk;
                         }
                     }
-                },
-                Err(error) => error!("{}", error),
+                }
+                Err(error) => {
+                    error!("{}", error)
+                }
             }
         }
 
