@@ -1,7 +1,7 @@
 pub mod ci;
 
-use std::path::Path;
 use std::env;
+use std::path::Path;
 
 use git2::{Cred, RemoteCallbacks, Repository};
 
@@ -19,6 +19,12 @@ pub fn full_image_name(service: &str, tag: &str) -> String {
 }
 
 pub fn clone_repo(service: &str, branch: &str, repo_path: &Path) -> AppResult<Repository> {
+    let url = format!("git@gitlab.com:lidin-homepi/{}.git", service);
+
+    status!("Cloning repository");
+    info!("Origin URL:        {}", url);
+    info!("Destionation path: {}", repo_path.display());
+
     // Prepare callbacks.
     let mut callbacks = RemoteCallbacks::new();
     callbacks.credentials(|_url, username_from_url, _allowed_types| {
@@ -39,12 +45,6 @@ pub fn clone_repo(service: &str, branch: &str, repo_path: &Path) -> AppResult<Re
     builder.fetch_options(fo);
 
     // Clone the project.
-    let url = format!("git@gitlab.com:lidin-homepi/{}.git", service);
-    status!(
-        "Cloning repository '{}' into directory '{}'",
-        &url,
-        repo_path.to_string_lossy()
-    );
     builder
         .branch(branch)
         .clone(&url, repo_path)

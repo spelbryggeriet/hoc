@@ -27,7 +27,8 @@ pub struct CmdBuild {
 
 impl CmdBuild {
     pub async fn run(self) -> AppResult<()> {
-        status!("Building service '{}'", self.service);
+        status!("Building service");
+        info!("Name: {}", self.service);
 
         let dir = tempfile::tempdir().context("Creating temporary directory")?;
 

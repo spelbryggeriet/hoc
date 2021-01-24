@@ -156,7 +156,7 @@ impl Default for CiImagePlatform {
             arch_variant: Some(CiImagePlatformArchVariant {
                 arch: "arm".into(),
                 variant: Some("v7".into()),
-            })
+            }),
         }
     }
 }

@@ -6,21 +6,18 @@ macro_rules! _log {
         crate::LOG.lock()
             .unwrap()
             .$method("")
-            .unwrap_or_else(|e| panic!(concat!("failed printing to ", $label, ": {}"), e))
     };
 
     ([$label:literal, $method:ident] $msg:expr $(,)?) => {
         crate::LOG.lock()
             .unwrap()
             .$method(&$msg)
-            .unwrap_or_else(|e| panic!(concat!("failed printing to ", $label, ": {}"), e))
     };
 
     ([$label:literal, $method:ident] $template:literal, $($args:tt)+) => {
         crate::LOG.lock()
             .unwrap()
             .$method(format!($template, $($args)+))
-            .unwrap_or_else(|e| panic!(concat!("failed printing to ", $label, ": {}"), e))
     };
 }
 
@@ -32,7 +29,7 @@ macro_rules! info {
 
 macro_rules! status {
     ($($args:tt)*) => {
-        _log!(["stdout", status] $($args)*)
+        let _status = _log!(["stdout", status] $($args)*);
     };
 }
 
@@ -71,7 +68,6 @@ macro_rules! choose {
         crate::LOG.lock()
             .unwrap()
             .choose($msg, $items, $( if true { $default_index } else )? { 0 })
-            .unwrap_or_else(|e| panic!("failed printing to stdout: {}", e))
     };
 }
 
@@ -87,9 +83,9 @@ mod flash;
 mod publish;
 
 mod prelude {
-    pub use anyhow::Context;
     pub use crate::file::{NamedFile, TempDir};
     pub use crate::{context::AppContext, AppResult, CACHE_DIR, HOME_DIR, KUBE_DIR};
+    pub use anyhow::Context;
 }
 
 use std::sync::Mutex;

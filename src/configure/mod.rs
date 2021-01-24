@@ -398,8 +398,12 @@ impl CmdConfigure {
                 username = username,
             )?;
 
-            ssh.send_file(fs::read(&identity_path)?, format!("/home/{}/.ssh/authorized_keys", username), 0o600)
-                .context("Copying SSH public identity file")?;
+            ssh.send_file(
+                fs::read(&identity_path)?,
+                format!("/home/{}/.ssh/authorized_keys", username),
+                0o600,
+            )
+            .context("Copying SSH public identity file")?;
 
             context.update_ssh_identity_name(
                 &self.node_name,
@@ -983,12 +987,15 @@ impl SshClient {
         remote_file_path: impl AsRef<Path>,
         mode: i32,
     ) -> AppResult<()> {
-        let mut remote_file = self.session.scp_send(
-            remote_file_path.as_ref(),
-            mode,
-            data.as_ref().len() as u64,
-            None,
-        ).context("Initiating send command")?;
+        let mut remote_file = self
+            .session
+            .scp_send(
+                remote_file_path.as_ref(),
+                mode,
+                data.as_ref().len() as u64,
+                None,
+            )
+            .context("Initiating send command")?;
         remote_file.write(data.as_ref()).context("Writing data")?;
 
         Ok(())
