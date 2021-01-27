@@ -309,7 +309,7 @@ impl CmdConfigure {
         let mut password = if username == "pi" {
             "raspberry".to_string()
         } else {
-            input!([hidden] "Password for {}", username)
+            hidden_input!("Password for {}", username)
         };
 
         status!("Connecting to SSH host");
@@ -334,8 +334,8 @@ impl CmdConfigure {
             status!("Migrating from the pi user");
 
             let new_username = input!("Choose a new username");
-            let new_password = input!([hidden] "Choose a new password");
-            let new_password_retype = input!([hidden] "Retype the new password");
+            let new_password = hidden_input!("Choose a new password");
+            let new_password_retype = hidden_input!("Retype the new password");
             if new_password != new_password_retype {
                 anyhow::bail!("Passwords doesn't match");
             }
@@ -592,7 +592,7 @@ impl CmdConfigure {
                 .for_each(|(crate_name, _)| info!("    {}", crate_name));
             info!();
 
-            for (crate_name, flags) in dirty_rust_crates {
+            for (_crate_name, _flags) in dirty_rust_crates {
                 // ssh_run!(
                 //     ssh,
                 //     "install/rust_crate",
@@ -1001,7 +1001,7 @@ impl SshClient {
         Ok(())
     }
 
-    fn recv_file(
+    fn _recv_file(
         &self,
         remote_file_path: impl AsRef<Path>,
         local_file_path: impl AsRef<Path>,

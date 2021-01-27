@@ -27,7 +27,7 @@ impl CmdPublish {
         status!("Pushing images into {}", registry);
 
         let username = input!("Username");
-        let password = input!([hidden] "Password");
+        let password = hidden_input!("Password");
         let credentials = DockerCredentials {
             username: Some(username),
             password: Some(password),

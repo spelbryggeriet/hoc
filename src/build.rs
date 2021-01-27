@@ -1,5 +1,3 @@
-mod parse;
-
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::{fs, io};
@@ -14,7 +12,7 @@ use tar::Builder;
 use crate::prelude::*;
 use crate::service::{self, ci::prelude::*};
 
-const DOCKERFILE_BUILDER: &str = include_str!("../../docker/Dockerfile");
+const DOCKERFILE_BUILDER: &str = include_str!("../docker/Dockerfile");
 
 #[derive(StructOpt)]
 pub struct CmdBuild {
@@ -28,7 +26,7 @@ pub struct CmdBuild {
 impl CmdBuild {
     pub async fn run(self) -> AppResult<()> {
         status!("Building service");
-        info!("Name: {}", self.service);
+        labelled_info!("Name", self.service);
 
         let dir = tempfile::tempdir().context("Creating temporary directory")?;
 
@@ -164,7 +162,7 @@ impl CmdBuild {
 
         let registry = format!("https://{}", service::REGISTRY_DOMAIN);
         let username = input!("Username");
-        let password = input!([hidden] "Password");
+        let password = hidden_input!("Password");
         let mut credentials = HashMap::new();
         credentials.insert(
             service::REGISTRY_DOMAIN.to_string(),
@@ -181,8 +179,7 @@ impl CmdBuild {
         let mut stream =
             docker.build_image(build_image_options, Some(credentials), Some(tar.into()));
 
-        let mut line = String::new();
-        let mut current_escape_code = None;
+        let log_stream = LOG.stream();
         while let Some(chunk) = stream.next().await {
             match chunk {
                 Ok(BuildInfo {
@@ -191,38 +188,14 @@ impl CmdBuild {
                     error!("{}", error)
                 }
                 Ok(chunk) => {
-                    if let Some(docker_stream) = chunk.stream {
-                        let mut docker_stream_chunks = docker_stream.split('\n');
-
-                        // Always append the first chunk unconditionally.
-                        if let Some(chunk) = docker_stream_chunks.next() {
-                            line += chunk;
-                        }
-
-                        for docker_stream_chunk in docker_stream_chunks {
-                            info!(
-                                "{}{}\u{1b}[0m",
-                                current_escape_code.as_ref().unwrap_or(&String::new()),
-                                line
-                            );
-                            if let Some(escape_code) = parse::last_ansi_escape_code(&line) {
-                                current_escape_code =
-                                    Some(escape_code).filter(|t| t != "\u{1b}[0m");
-                            }
-
-                            line.clear();
-                            line += docker_stream_chunk;
-                        }
+                    if let Some(s) = chunk.stream {
+                        log_stream.process(s)
                     }
                 }
                 Err(error) => {
                     error!("{}", error)
                 }
             }
-        }
-
-        if line.len() > 0 {
-            info!("{}", line);
         }
 
         Ok(())

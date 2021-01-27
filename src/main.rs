@@ -1,79 +1,11 @@
 #[macro_use]
 extern crate strum_macros;
 
-macro_rules! _log {
-    ([$label:literal, $method:ident]) => {
-        crate::LOG.lock()
-            .unwrap()
-            .$method("")
-    };
-
-    ([$label:literal, $method:ident] $msg:expr $(,)?) => {
-        crate::LOG.lock()
-            .unwrap()
-            .$method(&$msg)
-    };
-
-    ([$label:literal, $method:ident] $template:literal, $($args:tt)+) => {
-        crate::LOG.lock()
-            .unwrap()
-            .$method(format!($template, $($args)+))
-    };
-}
-
-macro_rules! info {
-    ($($args:tt)*) => {
-        _log!(["stdout", info] $($args)*)
-    };
-}
-
-macro_rules! status {
-    ($($args:tt)*) => {
-        let _status = _log!(["stdout", status] $($args)*);
-    };
-}
-
-macro_rules! error {
-    ($($args:tt)*) => {
-        _log!(["stderr", error] $($args)*)
-    };
-}
-
-macro_rules! prompt {
-    ($($args:tt)*) => {
-        _log!(["stdout", prompt] $($args)*)
-    };
-}
-
-/// Ask for user input.
-///
-/// # Examples
-///
-/// ```rust
-/// let name     = input!("Give me your name");
-/// let password = input!([hidden] "Give me your password");
-/// ```
-macro_rules! input {
-    ([hidden] $($args:tt)*) => {
-        _log!(["stdout", hidden_input] $($args)*)
-    };
-
-    ($($args:tt)*) => {
-        _log!(["stdout", input] $($args)*)
-    };
-}
-
-macro_rules! choose {
-    ($msg:expr, $items:expr $(, $default_index:expr)? $(,)?) => {
-        crate::LOG.lock()
-            .unwrap()
-            .choose($msg, $items, $( if true { $default_index } else )? { 0 })
-    };
-}
+#[macro_use]
+mod log;
 
 mod context;
 mod file;
-mod logger;
 mod service;
 
 mod build;
@@ -84,16 +16,17 @@ mod publish;
 
 mod prelude {
     pub use crate::file::{NamedFile, TempDir};
+    pub use crate::log::{Styling, Wrapping};
+    pub use crate::LOG;
     pub use crate::{context::AppContext, AppResult, CACHE_DIR, HOME_DIR, KUBE_DIR};
     pub use anyhow::Context;
 }
 
-use std::sync::Mutex;
 use std::{env, path::PathBuf};
 
 use anyhow::Context;
 use lazy_static::lazy_static;
-use logger::Logger;
+use log::Log;
 use structopt::StructOpt;
 
 use build::CmdBuild;
@@ -107,7 +40,7 @@ lazy_static! {
     pub static ref HOME_DIR: PathBuf = PathBuf::from(format!("{}/.hoc", env::var("HOME").unwrap()));
     pub static ref CACHE_DIR: PathBuf = HOME_DIR.join("cache");
     pub static ref KUBE_DIR: PathBuf = HOME_DIR.join("kube");
-    pub static ref LOG: Mutex<Logger> = Mutex::new(Logger::new());
+    pub static ref LOG: Log = Log::new();
 }
 
 fn readable_size(size: usize) -> (f32, &'static str) {

@@ -22,8 +22,8 @@ pub fn clone_repo(service: &str, branch: &str, repo_path: &Path) -> AppResult<Re
     let url = format!("git@gitlab.com:lidin-homepi/{}.git", service);
 
     status!("Cloning repository");
-    info!("Origin URL:        {}", url);
-    info!("Destionation path: {}", repo_path.display());
+    labelled_info!("Origin URL      ", url);
+    labelled_info!("Destination path", repo_path.display());
 
     // Prepare callbacks.
     let mut callbacks = RemoteCallbacks::new();

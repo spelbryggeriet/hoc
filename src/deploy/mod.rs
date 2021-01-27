@@ -11,7 +11,7 @@ pub struct CmdDeploy {
     service: String,
 
     #[structopt(long, short, default_value = "master")]
-    branch: String,
+    _branch: String,
 }
 
 impl CmdDeploy {
