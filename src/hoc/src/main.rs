@@ -38,10 +38,7 @@ use structopt::StructOpt;
 
 use configure::CmdConfigure;
 use context::AppContext;
-use deploy::CmdDeploy;
-use flash::CmdFlash;
 use hocfile::Hocfile;
-use publish::CmdPublish;
 
 lazy_static! {
     pub static ref HOME_DIR: PathBuf = PathBuf::from(format!("{}/.hoc", env::var("HOME").unwrap()));
@@ -84,10 +81,7 @@ struct App {
 
 #[derive(StructOpt)]
 enum Subcommand {
-    Flash(CmdFlash),
     Configure(CmdConfigure),
-    Publish(CmdPublish),
-    Deploy(CmdDeploy),
 }
 
 async fn run() -> AppResult<()> {
@@ -215,6 +209,18 @@ async fn run() -> AppResult<()> {
                     );
 
                     match built_in_fn {
+                        BuiltInFn::RpiFlash => {
+                            let cached = optionals
+                                .remove("cached")
+                                .and_then(|s| s.parse().ok())
+                                .unwrap();
+                            let mut context =
+                                AppContext::configure(cached).context("Configuring app context")?;
+                            let cmd_flash = crate::flash::FnFlashRpi {};
+
+                            cmd_flash.run(&mut context).await?;
+                        }
+
                         BuiltInFn::DockerBuild => {
                             let cmd_build = crate::build::FnDockerBuild {
                                 service: arguments.remove("service").unwrap(),
@@ -222,6 +228,24 @@ async fn run() -> AppResult<()> {
                             };
 
                             cmd_build.run().await?;
+                        }
+
+                        BuiltInFn::GitlabPublish => {
+                            let cmd_publish = crate::publish::FnGitlabPublish {
+                                service: arguments.remove("service").unwrap(),
+                                branch: optionals.remove("branch").unwrap(),
+                            };
+
+                            cmd_publish.run().await?;
+                        }
+
+                        BuiltInFn::K8sDeploy => {
+                            let cmd_deploy = crate::deploy::FnK8sDeploy {
+                                service: arguments.remove("service").unwrap(),
+                                branch: optionals.remove("branch").unwrap(),
+                            };
+
+                            cmd_deploy.run().await?;
                         }
                     }
 
@@ -302,10 +326,7 @@ async fn run() -> AppResult<()> {
     let mut context = AppContext::configure(args.cached).context("Configuring app context")?;
 
     match args.subcommand {
-        Subcommand::Flash(cmd) => cmd.run(&mut context).await.context("flash command"),
         Subcommand::Configure(cmd) => cmd.run(&mut context).await.context("configure command"),
-        Subcommand::Publish(cmd) => cmd.run().await.context("publish command"),
-        Subcommand::Deploy(cmd) => cmd.run().await.context("deploy command"),
     }
 }
 

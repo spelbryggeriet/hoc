@@ -1,13 +1,35 @@
 commands:
+  - name: flash
+    optionals:
+      - name: cached
+        default: "false"
+    arguments: []
+    procedure:
+      - builtIn: RpiFlash
+
   - name: build
     arguments:
       - name: service
     optionals:
       - fromOptionalSet: git
     procedure:
-      - fromScript: echoHello
-      - script: echo "Bye"
       - builtIn: DockerBuild
+
+  - name: publish
+    arguments:
+      - name: service
+    optionals:
+      - fromOptionalSet: git
+    procedure:
+      - builtIn: GitlabPublish
+
+  - name: deploy
+    arguments:
+      - name: service
+    optionals:
+      - fromOptionalSet: git
+    procedure:
+      - builtIn: K8sDeploy
 
 optionalSets:
   - name: git
@@ -21,9 +43,4 @@ optionalSets:
       - name: project
         default: lidin-homepi
 
-scripts:
-  - name: echoHello
-    source: |
-      echo "Hello"
-      echo $BAJSKORV
-      echo "World"
+scripts: []

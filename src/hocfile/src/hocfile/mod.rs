@@ -267,7 +267,10 @@ impl ProcedureStep {
 
 #[derive(Debug, Deserialize, Clone, Copy)]
 pub enum BuiltInFn {
+    RpiFlash,
     DockerBuild,
+    GitlabPublish,
+    K8sDeploy,
 }
 
 #[derive(Debug, Deserialize)]

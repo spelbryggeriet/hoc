@@ -13,7 +13,6 @@ use anyhow::{anyhow, Context};
 use heck::SnakeCase;
 use num_enum::TryFromPrimitive;
 use serde::Deserialize;
-use structopt::StructOpt;
 use strum::IntoEnumIterator;
 use xz2::read::XzDecoder;
 use zip::ZipArchive;
@@ -35,10 +34,9 @@ impl Default for FlashCacheState {
     }
 }
 
-#[derive(StructOpt)]
-pub struct CmdFlash {}
+pub struct FnFlashRpi {}
 
-impl CmdFlash {
+impl FnFlashRpi {
     pub async fn run(self, context: &mut AppContext) -> AppResult<()> {
         status!("Flashing image");
 

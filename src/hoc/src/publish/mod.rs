@@ -1,20 +1,15 @@
 use bollard::{auth::DockerCredentials, image::PushImageOptions, Docker};
 use futures::stream::StreamExt;
-use structopt::StructOpt;
 
 use crate::prelude::*;
 use crate::service;
 
-#[derive(StructOpt)]
-pub struct CmdPublish {
-    #[structopt(long, short)]
-    pub service: String,
-
-    #[structopt(long, short, default_value = "master")]
-    pub branch: String,
+pub struct FnGitlabPublish<'a> {
+    pub service: &'a str,
+    pub branch: &'a str,
 }
 
-impl CmdPublish {
+impl FnGitlabPublish<'_> {
     pub async fn run(self) -> AppResult<()> {
         let docker = Docker::connect_with_unix_defaults()?;
 

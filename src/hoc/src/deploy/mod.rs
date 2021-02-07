@@ -1,20 +1,15 @@
 use k8s_openapi::api::core::v1::Node;
 use kube::api::{Api, Meta};
 use kube::{Client, Config};
-use structopt::StructOpt;
 
 use crate::prelude::*;
 
-#[derive(StructOpt)]
-pub struct CmdDeploy {
-    #[structopt(long, short)]
-    service: String,
-
-    #[structopt(long, short, default_value = "master")]
-    _branch: String,
+pub struct FnK8sDeploy<'a> {
+    pub service: &'a str,
+    pub branch: &'a str,
 }
 
-impl CmdDeploy {
+impl FnK8sDeploy<'_> {
     pub async fn run(self) -> AppResult<()> {
         status!(format!("Deploying service '{}'", self.service));
 
