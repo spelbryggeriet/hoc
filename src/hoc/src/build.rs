@@ -6,24 +6,19 @@ use anyhow::Context;
 use bollard::{auth::DockerCredentials, image::BuildImageOptions, service::BuildInfo, Docker};
 use futures::stream::StreamExt;
 use git2::Repository;
-use structopt::StructOpt;
 use tar::Builder;
 
 use crate::prelude::*;
 use crate::service::{self, ci::prelude::*};
 
-const DOCKERFILE_BUILDER: &str = include_str!("../docker/Dockerfile");
+const DOCKERFILE_BUILDER: &str = include_str!("../../../docker/Dockerfile");
 
-#[derive(StructOpt)]
-pub struct CmdBuild {
-    #[structopt(long, short)]
-    pub service: String,
-
-    #[structopt(long, short, default_value = "master")]
-    pub branch: String,
+pub struct FnDockerBuild<'a> {
+    pub service: &'a str,
+    pub branch: &'a str,
 }
 
-impl CmdBuild {
+impl FnDockerBuild<'_> {
     pub async fn run(self) -> AppResult<()> {
         status!("Building service");
         labelled_info!("Name", self.service);

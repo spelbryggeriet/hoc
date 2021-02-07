@@ -40,6 +40,8 @@ pub struct CmdFlash {}
 
 impl CmdFlash {
     pub async fn run(self, context: &mut AppContext) -> AppResult<()> {
+        status!("Flashing image");
+
         let index = choose!(
             "Which image do you want to use?",
             Image::iter().map(|i| i.description()),
@@ -176,10 +178,13 @@ impl CmdFlash {
     }
 
     async fn fetch_image<'a: 'b, 'b>(&'a self, image: Image, dest: &mut File) -> AppResult<()> {
-        status!("Fetching image '{}' from '{}'", image, image.url());
+        status!("Fetching image");
+        labelled_info!("Image", image);
+        labelled_info!("URL  ", image.url());
+
         let bytes = reqwest::get(image.url()).await?.bytes().await?;
 
-        status!("Writing image '{}' to file", image);
+        status!("Writing image to file");
         dest.write(bytes.as_ref())
             .with_context(|| format!("Writing image '{}' to file", image))?;
 
@@ -476,6 +481,7 @@ impl CmdFlash {
         };
 
         if attached_disks_info.is_empty() {
+            error!("No external disks mounted");
             anyhow::bail!("No external disks mounted");
         }
 

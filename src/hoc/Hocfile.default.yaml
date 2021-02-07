@@ -1,0 +1,29 @@
+commands:
+  - name: build
+    arguments:
+      - name: service
+    optionals:
+      - fromOptionalSet: git
+    procedure:
+      - fromScript: echoHello
+      - script: echo "Bye"
+      - builtIn: DockerBuild
+
+optionalSets:
+  - name: git
+    optionals:
+      - name: branch
+        default: master
+      - name: protocol
+        default: ssh
+      - name: domain
+        default: gitlab.com
+      - name: project
+        default: lidin-homepi
+
+scripts:
+  - name: echoHello
+    source: |
+      echo "Hello"
+      echo $BAJSKORV
+      echo "World"

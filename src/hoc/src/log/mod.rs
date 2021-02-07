@@ -116,25 +116,27 @@ impl Log {
     }
 
     pub fn error(&self, message: impl AsRef<str>) {
+        let red = Style::new().red();
         *self.failure.lock().unwrap() = true;
         let level = Log::calculate_status_level(&self.statuses);
         Log::println_wrapped_text(
             &self.stdout,
-            Style::new().red().apply_to(message.as_ref()).to_string(),
+            red.apply_to(message.as_ref()).to_string(),
             level,
-            PrefixPrefs::in_status().flag(ERROR_FLAG),
+            PrefixPrefs::in_status().flag(&red.apply_to(ERROR_FLAG).to_string()),
             PrefixPrefs::in_status_overflow(),
         );
     }
 
     pub fn prompt(&self, message: impl AsRef<str>) {
         let cyan = Style::new().cyan();
+        let level = Log::calculate_status_level(&self.statuses);
+
+        let mut prompt = Log::create_line_prefix(level, PrefixPrefs::in_status().flag("?"));
+        prompt += message.as_ref();
 
         let want_continue = Confirm::new()
-            .with_prompt(
-                cyan.apply_to("🤨 ".to_string() + message.as_ref())
-                    .to_string(),
-            )
+            .with_prompt(cyan.apply_to(prompt).to_string())
             .interact_on(&self.stdout.lock().unwrap())
             .unwrap_or_else(|e| panic!(format!("failed printing to stdout: {}", e)));
 
@@ -145,27 +147,27 @@ impl Log {
     }
 
     pub fn input(&self, message: impl AsRef<str>) -> String {
-        let yellow = Style::new().yellow();
+        let cyan = Style::new().cyan();
         let level = Log::calculate_status_level(&self.statuses);
 
         let mut prompt = Log::create_line_prefix(level, PrefixPrefs::in_status().flag("?"));
-        prompt += &yellow.apply_to(message.as_ref()).to_string();
+        prompt += message.as_ref();
 
         Input::new()
-            .with_prompt(prompt)
+            .with_prompt(cyan.apply_to(prompt).to_string())
             .interact_on(&self.stdout.lock().unwrap())
             .unwrap_or_else(|e| panic!(format!("failed printing to stdout: {}", e)))
     }
 
     pub fn hidden_input(&self, message: impl AsRef<str>) -> String {
-        let yellow = Style::new().yellow();
+        let cyan = Style::new().cyan();
         let level = Log::calculate_status_level(&self.statuses);
 
         let mut prompt = Log::create_line_prefix(level, PrefixPrefs::in_status().flag("?"));
-        prompt += &yellow.apply_to(message.as_ref()).to_string();
+        prompt += message.as_ref();
 
         Password::new()
-            .with_prompt(prompt)
+            .with_prompt(cyan.apply_to(prompt).to_string())
             .interact_on(&self.stdout.lock().unwrap())
             .unwrap_or_else(|e| panic!(format!("failed printing to stdout: {}", e)))
     }
@@ -178,12 +180,13 @@ impl Log {
     ) -> usize {
         let cyan = Style::new().cyan();
         let items: Vec<_> = items.into_iter().collect();
+        let level = Log::calculate_status_level(&self.statuses);
+
+        let mut prompt = Log::create_line_prefix(level, PrefixPrefs::in_status().flag("#"));
+        prompt += message.as_ref();
 
         let index = Select::new()
-            .with_prompt(
-                cyan.apply_to("🤔 ".to_string() + message.as_ref())
-                    .to_string(),
-            )
+            .with_prompt(cyan.apply_to(prompt).to_string())
             .items(&items)
             .default(default_index)
             .interact_on_opt(&self.stdout.lock().unwrap())
@@ -285,7 +288,6 @@ impl Log {
             line_prefix += &status_level_color.apply_to(prefs.connector).to_string();
             line_prefix += &status_level_color.apply_to(prefs.flag).to_string();
         } else {
-            line_prefix += prefs.connector;
             line_prefix += prefs.flag;
         }
 

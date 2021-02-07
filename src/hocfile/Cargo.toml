@@ -1,0 +1,12 @@
+[package]
+name = "hocfile"
+version = "0.1.0"
+authors = ["Hampus Lidin <hampuslidin@gmail.com>"]
+edition = "2018"
+
+[dependencies]
+indexmap = "1.6"
+serde = { version = "1.0", features = ["derive"] }
+serde_yaml = "0.8"
+strum_macros = "0.20"
+thiserror = "1.0"
