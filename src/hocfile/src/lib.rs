@@ -76,7 +76,11 @@ impl HocLineParseError {
     }
 }
 
-pub fn parse_hoc_line(state: &mut HocState, line: &str) -> Result<bool, HocLineParseError> {
+pub fn parse_hoc_line(
+    input: &mut HocState,
+    output: &mut HocState,
+    line: &str,
+) -> Result<bool, HocLineParseError> {
     const PREFIX: &str = "[hoc]:";
 
     if !line.starts_with(PREFIX) {
@@ -86,7 +90,7 @@ pub fn parse_hoc_line(state: &mut HocState, line: &str) -> Result<bool, HocLineP
     let split: Vec<_> = line[PREFIX.len()..].splitn(2, ":").collect();
 
     let (ns, split) = match split.as_slice() {
-        [ns @ "output", rest] => (*ns, rest.splitn(2, ":").collect::<Vec<_>>()),
+        [ns @ "in", rest] | [ns @ "out", rest] => (*ns, rest.splitn(2, ":").collect::<Vec<_>>()),
         [unknown, _] => {
             return Err(HocLineParseError::new(format!(
                 "unknown namespace '{}'",
@@ -103,9 +107,7 @@ pub fn parse_hoc_line(state: &mut HocState, line: &str) -> Result<bool, HocLineP
     };
 
     let (cmd, split) = match split.as_slice() {
-        [cmd, rest] => {
-            (*cmd, rest.splitn(2, "=").collect::<Vec<_>>())
-        }
+        [cmd, rest] => (*cmd, rest.splitn(2, "=").collect::<Vec<_>>()),
         [cmd] => {
             return Err(HocLineParseError::new(format!(
                 "command '{}' is missing arguments",
@@ -121,16 +123,16 @@ pub fn parse_hoc_line(state: &mut HocState, line: &str) -> Result<bool, HocLineP
         _ => unreachable!(),
     };
 
-    match cmd {
-        "set" | "append" => {
+    match (ns, cmd) {
+        ("out", "set") | ("out", "append") => {
             let value = value.ok_or_else(|| {
                 HocLineParseError::new(format!("missing value for command '{}'", cmd))
             })?;
 
             if cmd == "set" {
-                state.insert(key.to_string(), value);
+                output.insert(key.to_string(), value);
             } else {
-                let existing = state.get_mut(key).ok_or_else(|| {
+                let existing = output.get_mut(key).ok_or_else(|| {
                     HocLineParseError::new(format!("uninitialized field '{}'", key))
                 })?;
 
@@ -151,14 +153,14 @@ pub fn parse_hoc_line(state: &mut HocState, line: &str) -> Result<bool, HocLineP
             Ok(true)
         }
 
-        "unset" => {
-            state
+        ("in", "unset") => {
+            input
                 .remove(key)
                 .ok_or_else(|| HocLineParseError::new(format!("'{}' is not defined", key)))?;
             Ok(true)
         }
 
-        cmd => Err(HocLineParseError::new(format!(
+        (ns, cmd) => Err(HocLineParseError::new(format!(
             "unknown command '{}' in namespace '{}'",
             cmd, ns
         ))),

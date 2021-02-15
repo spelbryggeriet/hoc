@@ -305,7 +305,7 @@ async fn run() -> AppResult<()> {
                 },
             );
 
-            let exit_status = {
+            let (exit_status, output) = {
                 let context = tera::Context::from_serialize(&input).unwrap();
 
                 let mut rendered_script = tera.render_str(script_proc, &context)?;
@@ -332,23 +332,24 @@ async fn run() -> AppResult<()> {
                     Ok(())
                 });
 
+                let mut output = HashMap::new();
                 if let Some(stdout) = stdout {
                     let reader = BufReader::new(stdout);
                     for line in reader.lines() {
                         let line = line?;
                         info!(line);
 
-                        hocfile::parse_hoc_line(&mut input, &line)?;
+                        hocfile::parse_hoc_line(&mut input, &mut output, &line)?;
                     }
                 }
 
                 stderr_handle.join().unwrap()?;
-                child.wait()?
+                (child.wait()?, output)
             };
 
             if exit_status.success() {
                 #[cfg(debug_assertions)]
-                for (key, value) in input.iter() {
+                for (key, value) in output.iter() {
                     let mut stack = vec![(false, value.clone())];
                     let mut debug = String::new();
                     debug += &key;
@@ -385,6 +386,8 @@ async fn run() -> AppResult<()> {
                     }
                     info!("[DEBUG] {}", debug);
                 }
+
+                input.extend(output);
 
                 continue;
             }
