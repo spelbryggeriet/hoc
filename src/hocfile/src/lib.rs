@@ -4,8 +4,8 @@ extern crate thiserror;
 mod hocfile;
 mod tree;
 
-use std::{collections::HashMap};
 use serde::Serialize;
+use std::collections::HashMap;
 
 pub use hocfile::*;
 
@@ -103,14 +103,8 @@ pub fn parse_hoc_line(state: &mut HocState, line: &str) -> Result<bool, HocLineP
     };
 
     let (cmd, split) = match split.as_slice() {
-        [cmd @ "set", rest] | [cmd @ "append", rest] => {
+        [cmd, rest] => {
             (*cmd, rest.splitn(2, "=").collect::<Vec<_>>())
-        }
-        [unknown, _] => {
-            return Err(HocLineParseError::new(format!(
-                "unknown command '{}' in namespace '{}'",
-                unknown, ns
-            )));
         }
         [cmd] => {
             return Err(HocLineParseError::new(format!(
@@ -122,42 +116,52 @@ pub fn parse_hoc_line(state: &mut HocState, line: &str) -> Result<bool, HocLineP
     };
 
     let (key, value) = match split.as_slice() {
-        [key, value] => (*key, parse_hoc_value(value)?.1),
-        [key] => {
-            return Err(HocLineParseError::new(format!(
-                "missing value for key '{}'",
-                key
-            )));
-        }
+        [key, value] => (*key, Some(parse_hoc_value(value)?.1)),
+        [key] => (*key, None),
         _ => unreachable!(),
     };
 
     match cmd {
-        "set" => {
-            state.insert(key.to_string(), value);
+        "set" | "append" => {
+            let value = value.ok_or_else(|| {
+                HocLineParseError::new(format!("missing value for command '{}'", cmd))
+            })?;
+
+            if cmd == "set" {
+                state.insert(key.to_string(), value);
+            } else {
+                let existing = state.get_mut(key).ok_or_else(|| {
+                    HocLineParseError::new(format!("uninitialized field '{}'", key))
+                })?;
+
+                match (existing, value) {
+                    (HocValue::List(existing), value) => existing.push(value),
+                    (HocValue::String(existing), HocValue::String(value)) => {
+                        existing.push_str(&value)
+                    }
+                    (HocValue::String(_), _) => {
+                        return Err(HocLineParseError::new(format!(
+                            "expected string for key '{}'",
+                            key
+                        )))
+                    }
+                }
+            }
+
             Ok(true)
         }
-        "append" => {
-            let existing = state
-                .get_mut(key)
-                .ok_or_else(|| HocLineParseError::new(format!("uninitialized field '{}'", key)))?;
 
-            match (existing, value) {
-                (HocValue::List(existing), value) => {
-                    existing.push(value);
-                    Ok(true)
-                }
-                (HocValue::String(existing), HocValue::String(value)) => {
-                    existing.push_str(&value);
-                    Ok(true)
-                }
-                (HocValue::String(_), _) => Err(HocLineParseError::new(format!(
-                    "expected string for key '{}'",
-                    key
-                ))),
-            }
+        "unset" => {
+            state
+                .remove(key)
+                .ok_or_else(|| HocLineParseError::new(format!("'{}' is not defined", key)))?;
+            Ok(true)
         }
-        _ => unreachable!(),
+
+        cmd => Err(HocLineParseError::new(format!(
+            "unknown command '{}' in namespace '{}'",
+            cmd, ns
+        ))),
     }
 }
 
@@ -170,11 +174,14 @@ fn parse_hoc_value(mut s: &str) -> Result<(&str, HocValue), HocLineParseError> {
     const BSLASH: char = '\\';
 
     if s.starts_with(DQUOTE) {
-        let mut chars = s.chars().scan(0, |i, c| {
-            let cur = *i;
-            *i += c.len_utf8();
-            Some((cur, c))
-        }).skip(1);
+        let mut chars = s
+            .chars()
+            .scan(0, |i, c| {
+                let cur = *i;
+                *i += c.len_utf8();
+                Some((cur, c))
+            })
+            .skip(1);
 
         let mut value = String::new();
 
@@ -193,10 +200,7 @@ fn parse_hoc_value(mut s: &str) -> Result<(&str, HocValue), HocLineParseError> {
                     return Err(HocLineParseError::new("trailing backslash"));
                 }
             } else if c == DQUOTE {
-                return Ok((
-                    &s[i + DQUOTE.len_utf8()..],
-                    HocValue::String(value),
-                ));
+                return Ok((&s[i + DQUOTE.len_utf8()..], HocValue::String(value)));
             } else {
                 value.push(c);
             }

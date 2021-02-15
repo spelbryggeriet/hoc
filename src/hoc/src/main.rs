@@ -31,11 +31,11 @@ use std::{
 };
 use std::{env, path::PathBuf};
 
-use tera::Tera;
 use anyhow::Context;
 use lazy_static::lazy_static;
 use log::Log;
 use structopt::StructOpt;
+use tera::Tera;
 
 use configure::CmdConfigure;
 use context::AppContext;
@@ -201,6 +201,17 @@ async fn run() -> AppResult<()> {
             }))
             .collect();
 
+        let mut tera = Tera::default();
+        tera.register_filter("squote", |value: &serde_json::Value, _: &_| {
+            Ok(serde_json::Value::String(format!(
+                "'{}'",
+                value
+                    .as_str()
+                    .ok_or(tera::Error::msg("expected string"))?
+                    .replace("'", r#"'\''"#)
+            )))
+        });
+
         let num_steps = command.procedure.len();
         for (step_i, step) in (1..).zip(&command.procedure) {
             let script_proc = match step {
@@ -294,9 +305,10 @@ async fn run() -> AppResult<()> {
                 },
             );
 
-            let (exit_status, output) = {
+            let exit_status = {
                 let context = tera::Context::from_serialize(&input).unwrap();
-                let mut rendered_script = Tera::one_off(script_proc, &context, false)?;
+
+                let mut rendered_script = tera.render_str(script_proc, &context)?;
                 rendered_script = hocfile.script.profile.clone() + &rendered_script;
 
                 let mut child = std::process::Command::new("bash")
@@ -309,20 +321,7 @@ async fn run() -> AppResult<()> {
                 status!("Script output");
                 let stdout = child.stdout.take();
                 let stderr = child.stderr.take();
-                let stdout_handle = std::thread::spawn(|| -> AppResult<_> {
-                    let mut output = HashMap::new();
 
-                    if let Some(stdout) = stdout {
-                        let reader = BufReader::new(stdout);
-                        for line in reader.lines() {
-                            let line = line?;
-                            info!(line);
-
-                            hocfile::parse_hoc_line(&mut output, &line)?;
-                        }
-                    }
-                    Ok(output)
-                });
                 let stderr_handle = std::thread::spawn(|| -> io::Result<()> {
                     if let Some(stderr) = stderr {
                         let reader = BufReader::new(stderr);
@@ -333,14 +332,23 @@ async fn run() -> AppResult<()> {
                     Ok(())
                 });
 
-                let output = stdout_handle.join().unwrap()?;
+                if let Some(stdout) = stdout {
+                    let reader = BufReader::new(stdout);
+                    for line in reader.lines() {
+                        let line = line?;
+                        info!(line);
+
+                        hocfile::parse_hoc_line(&mut input, &line)?;
+                    }
+                }
+
                 stderr_handle.join().unwrap()?;
-                (child.wait()?, output)
+                child.wait()?
             };
 
             if exit_status.success() {
                 #[cfg(debug_assertions)]
-                for (key, value) in output.iter() {
+                for (key, value) in input.iter() {
                     let mut stack = vec![(false, value.clone())];
                     let mut debug = String::new();
                     debug += &key;
@@ -377,8 +385,6 @@ async fn run() -> AppResult<()> {
                     }
                     info!("[DEBUG] {}", debug);
                 }
-
-                input = output;
 
                 continue;
             }

@@ -55,6 +55,10 @@ optionalSets:
 
 script:
   profile: |
+    function lines {
+        printf "%s\n" $@
+    }
+
     function _args {
         shift $1
         if [[ $# = 1 ]] ; then
@@ -69,7 +73,7 @@ script:
     }
 
     function squote {
-        _args 1 "$@" | sed -r 's/(.*)/'"'"'\1'"'"'/'
+        _args 1 "$@" | sed -r 's/('\'')/'\''\\\1'\''/' | sed -r 's/(.*)/'\''\1'\''/'
     }
 
     function dquote {
@@ -96,19 +100,18 @@ script:
             printf %s "$f" "${@/#/$d}"
         fi
     }
-
-    function lines {
-        printf "%s\n" $@
-    }
   predefined:
     - name: regex
       source: |
-        regex='{{ regex }}'
+        regex={{ regex | squote }}
         echo "[hoc]:output:set:matches=[]"
 
         {%- for search_string in search_strings %}
-        [[ '{{ search_string }}' =~ $regex ]]
+        [[ {{ search_string | squote }} =~ $regex ]]
 
         matches=$(lines ${BASH_REMATCH[@]:1} | dquote | join_by ',')
         echo "[hoc]:output:append:matches=[$matches]"
         {%- endfor %}
+
+        echo "[hoc]:output:unset:regex"
+        echo "[hoc]:output:unset:search_strings"
