@@ -4,12 +4,12 @@ use futures::stream::StreamExt;
 use crate::prelude::*;
 use crate::service;
 
-pub struct FnGitlabPublish<'a> {
-    pub service: &'a str,
-    pub branch: &'a str,
+pub struct FnGitlabPublish {
+    pub service: String,
+    pub branch: String,
 }
 
-impl FnGitlabPublish<'_> {
+impl FnGitlabPublish {
     pub async fn run(self) -> AppResult<()> {
         let docker = Docker::connect_with_unix_defaults()?;
 

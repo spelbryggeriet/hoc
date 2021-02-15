@@ -31,6 +31,7 @@ use std::{
 };
 use std::{env, path::PathBuf};
 
+use tera::Tera;
 use anyhow::Context;
 use lazy_static::lazy_static;
 use log::Log;
@@ -38,7 +39,7 @@ use structopt::StructOpt;
 
 use configure::CmdConfigure;
 use context::AppContext;
-use hocfile::Hocfile;
+use hocfile::{HocValue, Hocfile};
 
 lazy_static! {
     pub static ref HOME_DIR: PathBuf = PathBuf::from(format!("{}/.hoc", env::var("HOME").unwrap()));
@@ -179,26 +180,29 @@ async fn run() -> AppResult<()> {
         // clap.
         let command = hocfile.find_command(&subcmd_name).unwrap();
 
-        let num_steps = command.procedure.len();
-        for (step_i, step) in (1..).zip(&command.procedure) {
-            let mut arguments: HashMap<_, _> = command
-                .arguments()
-                .flat_map(|arg| {
-                    Some((arg.name.deref(), subcmd_matches.value_of(arg.name.deref())?))
-                })
-                .collect();
-            let mut optionals: HashMap<_, _> = command
-                .optionals(&hocfile)
-                .flat_map(|optional| {
-                    Some((
-                        optional.name.deref(),
+        let mut input: HashMap<_, _> = command
+            .arguments()
+            .flat_map(|arg| {
+                Some((
+                    arg.name.to_string(),
+                    HocValue::String(subcmd_matches.value_of(arg.name.deref())?.to_string()),
+                ))
+            })
+            .chain(command.optionals(&hocfile).flat_map(|optional| {
+                Some((
+                    optional.name.to_string(),
+                    HocValue::String(
                         subcmd_matches
                             .value_of(optional.name.deref())
-                            .or(optional.default.as_deref())?,
-                    ))
-                })
-                .collect();
+                            .or(optional.default.as_deref())?
+                            .to_string(),
+                    ),
+                ))
+            }))
+            .collect();
 
+        let num_steps = command.procedure.len();
+        for (step_i, step) in (1..).zip(&command.procedure) {
             let script_proc = match step {
                 ProcedureStep::BuiltIn(built_in_fn) => {
                     status!(
@@ -210,8 +214,9 @@ async fn run() -> AppResult<()> {
 
                     match built_in_fn {
                         BuiltInFn::RpiFlash => {
-                            let cached = optionals
+                            let cached = input
                                 .remove("cached")
+                                .and_then(|s| s.as_string().ok())
                                 .and_then(|s| s.parse().ok())
                                 .unwrap();
                             let mut context =
@@ -223,8 +228,14 @@ async fn run() -> AppResult<()> {
 
                         BuiltInFn::DockerBuild => {
                             let cmd_build = crate::build::FnDockerBuild {
-                                service: arguments.remove("service").unwrap(),
-                                branch: optionals.remove("branch").unwrap(),
+                                service: input
+                                    .remove("service")
+                                    .and_then(|s| s.as_string().ok())
+                                    .unwrap(),
+                                branch: input
+                                    .remove("branch")
+                                    .and_then(|s| s.as_string().ok())
+                                    .unwrap(),
                             };
 
                             cmd_build.run().await?;
@@ -232,8 +243,14 @@ async fn run() -> AppResult<()> {
 
                         BuiltInFn::GitlabPublish => {
                             let cmd_publish = crate::publish::FnGitlabPublish {
-                                service: arguments.remove("service").unwrap(),
-                                branch: optionals.remove("branch").unwrap(),
+                                service: input
+                                    .remove("service")
+                                    .and_then(|s| s.as_string().ok())
+                                    .unwrap(),
+                                branch: input
+                                    .remove("branch")
+                                    .and_then(|s| s.as_string().ok())
+                                    .unwrap(),
                             };
 
                             cmd_publish.run().await?;
@@ -241,8 +258,14 @@ async fn run() -> AppResult<()> {
 
                         BuiltInFn::K8sDeploy => {
                             let cmd_deploy = crate::deploy::FnK8sDeploy {
-                                service: arguments.remove("service").unwrap(),
-                                branch: optionals.remove("branch").unwrap(),
+                                service: input
+                                    .remove("service")
+                                    .and_then(|s| s.as_string().ok())
+                                    .unwrap(),
+                                branch: input
+                                    .remove("branch")
+                                    .and_then(|s| s.as_string().ok())
+                                    .unwrap(),
                             };
 
                             cmd_deploy.run().await?;
@@ -271,10 +294,14 @@ async fn run() -> AppResult<()> {
                 },
             );
 
-            let exit_status = {
+            let (exit_status, output) = {
+                let context = tera::Context::from_serialize(&input).unwrap();
+                let mut rendered_script = Tera::one_off(script_proc, &context, false)?;
+                rendered_script = hocfile.script.profile.clone() + &rendered_script;
+
                 let mut child = std::process::Command::new("bash")
                     .args(&["-eu", "-c"])
-                    .arg(script_proc)
+                    .arg(rendered_script)
                     .stdout(Stdio::piped())
                     .stderr(Stdio::piped())
                     .spawn()?;
@@ -282,14 +309,19 @@ async fn run() -> AppResult<()> {
                 status!("Script output");
                 let stdout = child.stdout.take();
                 let stderr = child.stderr.take();
-                let stdout_handle = std::thread::spawn(|| -> io::Result<()> {
+                let stdout_handle = std::thread::spawn(|| -> AppResult<_> {
+                    let mut output = HashMap::new();
+
                     if let Some(stdout) = stdout {
                         let reader = BufReader::new(stdout);
                         for line in reader.lines() {
-                            info!(line?);
+                            let line = line?;
+                            info!(line);
+
+                            hocfile::parse_hoc_line(&mut output, &line)?;
                         }
                     }
-                    Ok(())
+                    Ok(output)
                 });
                 let stderr_handle = std::thread::spawn(|| -> io::Result<()> {
                     if let Some(stderr) = stderr {
@@ -301,12 +333,53 @@ async fn run() -> AppResult<()> {
                     Ok(())
                 });
 
-                stdout_handle.join().unwrap()?;
+                let output = stdout_handle.join().unwrap()?;
                 stderr_handle.join().unwrap()?;
-                child.wait()?
+                (child.wait()?, output)
             };
 
             if exit_status.success() {
+                #[cfg(debug_assertions)]
+                for (key, value) in output.iter() {
+                    let mut stack = vec![(false, value.clone())];
+                    let mut debug = String::new();
+                    debug += &key;
+                    debug += ": ";
+
+                    while let Some(item) = stack.pop() {
+                        match item.1 {
+                            HocValue::String(s) => {
+                                if item.0 {
+                                    debug += &s;
+                                } else {
+                                    debug.push('\'');
+                                    debug += &s;
+                                    debug.push('\'');
+                                }
+                            }
+                            HocValue::List(l) => {
+                                debug.push('[');
+                                stack.push((true, HocValue::String("]".to_string())));
+                                stack.extend(
+                                    l.into_iter()
+                                        .rev()
+                                        .map(|item| {
+                                            vec![
+                                                (true, HocValue::String(",".to_string())),
+                                                (false, item),
+                                            ]
+                                        })
+                                        .flat_map(|list| list.into_iter())
+                                        .skip(1),
+                                );
+                            }
+                        }
+                    }
+                    info!("[DEBUG] {}", debug);
+                }
+
+                input = output;
+
                 continue;
             }
 

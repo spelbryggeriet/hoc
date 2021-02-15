@@ -13,12 +13,12 @@ use crate::service::{self, ci::prelude::*};
 
 const DOCKERFILE_BUILDER: &str = include_str!("../../../docker/Dockerfile");
 
-pub struct FnDockerBuild<'a> {
-    pub service: &'a str,
-    pub branch: &'a str,
+pub struct FnDockerBuild {
+    pub service: String,
+    pub branch: String,
 }
 
-impl FnDockerBuild<'_> {
+impl FnDockerBuild {
     pub async fn run(self) -> AppResult<()> {
         status!("Building service");
         labelled_info!("Name", self.service);

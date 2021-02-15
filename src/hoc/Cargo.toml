@@ -36,6 +36,7 @@ strum = "0.20"
 strum_macros = "0.20"
 tar = "0.4"
 tempfile = "3.1"
+tera = "1.6"
 thiserror = "1.0"
 tokio = { version = "0.2", features = ["macros"] }
 toml = "0.5"

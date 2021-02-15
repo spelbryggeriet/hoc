@@ -7,6 +7,16 @@ commands:
     procedure:
       - builtIn: RpiFlash
 
+  - name: configure
+    optionals: []
+    arguments: []
+    procedure:
+      - script: |
+          echo '[hoc]:output:set:regex="([^ ]*) \\((.*)\\) at ([^ ]*) on (.*) \\[(.*)\\]"'
+          echo "[hoc]:output:set:search_strings=[]"
+          echo "$(arp -a | dquote | prepend "[hoc]:output:append:search_strings=")"
+      - fromScript: regex
+
   - name: build
     arguments:
       - name: service
@@ -43,4 +53,62 @@ optionalSets:
       - name: project
         default: lidin-homepi
 
-scripts: []
+script:
+  profile: |
+    function _args {
+        shift $1
+        if [[ $# = 1 ]] ; then
+            echo $1
+        else
+            cat
+        fi
+    }
+
+    function escape {
+        _args 2 "$@" | sed -r 's/((^|[^\\])(\\\\)*)'$1'/\1\\'$1'/g'
+    }
+
+    function squote {
+        _args 1 "$@" | sed -r 's/(.*)/'"'"'\1'"'"'/'
+    }
+
+    function dquote {
+        _args 1 "$@" | escape '"' | sed -r 's/(.*)/"\1"/'
+    }
+
+    function prepend {
+        _args 2 "$@" | sed -r "s/(.*)/$1\1/"
+    }
+
+    function join_by {
+        local d=$1
+        shift
+
+        if [[ $# = 0 ]] ; then
+            read -r out
+            while IFS= read -r line ; do
+                out="$out$line"
+            done <<< "$(sed 's/^/'$d'/')"
+            echo "$out"
+        else
+            local f=$1
+            shift
+            printf %s "$f" "${@/#/$d}"
+        fi
+    }
+
+    function lines {
+        printf "%s\n" $@
+    }
+  predefined:
+    - name: regex
+      source: |
+        regex='{{ regex }}'
+        echo "[hoc]:output:set:matches=[]"
+
+        {%- for search_string in search_strings %}
+        [[ '{{ search_string }}' =~ $regex ]]
+
+        matches=$(lines ${BASH_REMATCH[@]:1} | dquote | join_by ',')
+        echo "[hoc]:output:append:matches=[$matches]"
+        {%- endfor %}

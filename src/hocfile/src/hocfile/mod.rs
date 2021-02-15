@@ -88,7 +88,7 @@ impl Deref for ResourceRef {
 pub struct Hocfile {
     pub commands: Vec<Command>,
     pub optional_sets: Vec<OptionalSet>,
-    pub scripts: Vec<Script>,
+    pub script: Script,
 }
 
 impl Hocfile {
@@ -142,8 +142,8 @@ impl Hocfile {
             .find(|optional_set| optional_set.name.deref() == name)
     }
 
-    pub fn find_script(&self, name: &str) -> Option<&Script> {
-        self.scripts
+    pub fn find_script(&self, name: &str) -> Option<&ScriptSource> {
+        self.script.predefined
             .iter()
             .find(|script| script.name.deref() == name)
     }
@@ -276,6 +276,13 @@ pub enum BuiltInFn {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Script {
+    pub profile: String,
+    pub predefined: Vec<ScriptSource>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ScriptSource {
     pub name: ResourceRef,
     pub source: String,
 }

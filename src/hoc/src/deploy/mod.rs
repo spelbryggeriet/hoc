@@ -4,12 +4,12 @@ use kube::{Client, Config};
 
 use crate::prelude::*;
 
-pub struct FnK8sDeploy<'a> {
-    pub service: &'a str,
-    pub branch: &'a str,
+pub struct FnK8sDeploy {
+    pub service: String,
+    pub branch: String,
 }
 
-impl FnK8sDeploy<'_> {
+impl FnK8sDeploy {
     pub async fn run(self) -> AppResult<()> {
         status!(format!("Deploying service '{}'", self.service));
 
