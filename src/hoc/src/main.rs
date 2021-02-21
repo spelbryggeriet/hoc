@@ -1,8 +1,81 @@
 #[macro_use]
 extern crate strum_macros;
 
-#[macro_use]
 extern crate hoclog;
+
+macro_rules! _log {
+    ($meta:tt ($($args:tt)*)) => {
+        _log! { $meta ($($args)*) => () }
+    };
+
+    ($meta:tt ((), $($rest:tt)*) => ($($processed:tt)*)) => {
+        _log! { $meta ($($rest)*) => ($($processed)* "",) }
+    };
+
+    ($meta:tt (($text:literal $(,)?), $($rest:tt)*) => ($($processed:tt)*)) => {
+        _log! { $meta ($($rest)*) => ($($processed)* &$text,) }
+    };
+
+    ($meta:tt (($value:expr $(,)?), $($rest:tt)*) => ($($processed:tt)*)) => {
+        _log! { $meta ($($rest)*) => ($($processed)* format!("{}", $value),) }
+    };
+
+    ($meta:tt (($($fmt:tt)*), $($rest:tt)*) => ($($processed:tt)*)) => {
+        _log! { $meta ($($rest)*) => ($($processed)* format!($($fmt)*),) }
+    };
+
+    ([$method:ident] () => ($($processed:tt)*)) => {
+        crate::LOG.$method($($processed)*)
+    };
+}
+
+macro_rules! labelled_info {
+    ($label:expr, $($args:tt)*) => {
+        _log!([labelled_info] (($label), ($($args)*),))
+    };
+}
+
+macro_rules! info {
+    ($($args:tt)*) => {
+        _log!([info] (($($args)*),))
+    };
+}
+
+macro_rules! status {
+    ($($args:tt)*) => {
+        let _status = _log!([status] (($($args)*),));
+    };
+}
+
+macro_rules! error {
+    ($($args:tt)*) => {
+        _log!([error] (($($args)*),))
+    };
+}
+
+macro_rules! prompt {
+    ($($args:tt)*) => {
+        _log!([prompt] (($($args)*),))
+    };
+}
+
+macro_rules! input {
+    ($($args:tt)*) => {
+        _log!([input] (($($args)*),))
+    };
+}
+
+macro_rules! hidden_input {
+    ($($args:tt)*) => {
+        _log!([hidden_input] (($($args)*),))
+    };
+}
+
+macro_rules! choose {
+    ($msg:expr, $items:expr $(, $default_index:expr)? $(,)?) => {
+        crate::LOG.choose($msg, $items, $( if true { $default_index } else )? { 0 })
+    };
+}
 
 mod context;
 mod file;
@@ -19,7 +92,7 @@ mod prelude {
     pub use crate::LOG;
     pub use crate::{context::AppContext, AppResult, CACHE_DIR, HOME_DIR, KUBE_DIR};
     pub use anyhow::Context;
-    pub use hoclog::{Styling, Wrapping, status, info};
+    pub use hoclog::{Styling, Wrapping};
 }
 
 use std::{
@@ -53,6 +126,7 @@ lazy_static! {
     pub static ref KUBE_DIR: PathBuf = HOME_DIR.join("kube");
     pub static ref LOG: Log = Log::new();
 }
+
 
 fn readable_size(size: usize) -> (f32, &'static str) {
     let mut order_10_bits = 0;
@@ -233,7 +307,6 @@ async fn run() -> AppResult<()> {
         use hocfile::{BuiltInFn, ProcedureStep};
 
         let sync_pipe = TempPipe::new(0o644)?;
-        println!("{}", sync_pipe.path.as_display());
 
         // Safety: We know the command exists, since we have successfully received matches from
         // clap.
@@ -409,7 +482,7 @@ async fn run() -> AppResult<()> {
                         let line = line?;
                         info!(line);
 
-                        hocfile::parse_hoc_line(&mut input, &mut output, &line)?;
+                        hocfile::exec_hoc_line(&*LOG, &mut input, &mut output, &line)?;
                     }
                 }
 
