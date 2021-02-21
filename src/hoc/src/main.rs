@@ -118,7 +118,6 @@ use configure::CmdConfigure;
 use context::AppContext;
 use hocfile::{HocValue, Hocfile};
 use hoclog::Log;
-use thiserror::private::PathAsDisplay;
 
 lazy_static! {
     pub static ref HOME_DIR: PathBuf = PathBuf::from(format!("{}/.hoc", env::var("HOME").unwrap()));
@@ -126,7 +125,6 @@ lazy_static! {
     pub static ref KUBE_DIR: PathBuf = HOME_DIR.join("kube");
     pub static ref LOG: Log = Log::new();
 }
-
 
 fn readable_size(size: usize) -> (f32, &'static str) {
     let mut order_10_bits = 0;
@@ -333,7 +331,7 @@ async fn run() -> AppResult<()> {
             ))
         }));
         input.insert(
-            "hoc_pipe".into(),
+            "sync_pipe".into(),
             HocValue::String(
                 sync_pipe
                     .path

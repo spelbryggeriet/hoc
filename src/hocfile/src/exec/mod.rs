@@ -202,9 +202,21 @@ pub fn exec_hoc_line(
                 .map_err(|err| HocLineParseError::new(format!("{}: {}", prefix, err)))?;
             let options = args
                 .pop_list_for_key_checked("options")
-                .map_err(|err| HocLineParseError::new(format!("{}: {}", prefix, err)))?;
+                .map_err(|err| HocLineParseError::new(format!("{}: {}", prefix, err)))?
+                .into_iter()
+                .map(|v| v.as_string().ok())
+                .collect::<Option<Vec<_>>>()
+                .ok_or_else(|| HocLineParseError::new("expected options type be of type string"))?;
 
-            // log.choose(message, options.iter(), 0);
+            let index = log.choose(message, options, 0);
+
+            let sync_pipe = input
+                .get("sync_pipe")
+                .and_then(|v| v.as_string_ref())
+                .unwrap();
+            std::fs::write(sync_pipe, format!("{}\n", index)).map_err(|e| {
+                HocLineParseError::new(format!("failed to write to sync pipe: {}", e))
+            })?;
 
             Ok(false)
         }
