@@ -1,2 +1,2 @@
 [workspace]
-members = ["src/hoc", "src/hocfile"]
+members = ["src/hoc", "src/hocfile", "src/hoclog"]

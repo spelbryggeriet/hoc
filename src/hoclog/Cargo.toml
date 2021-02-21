@@ -1,0 +1,9 @@
+[package]
+name = "hoclog"
+version = "0.1.0"
+authors = ["Hampus Lidin <hampuslidin@gmail.com>"]
+edition = "2018"
+
+[dependencies]
+console = "0.11"
+dialoguer = "0.6"

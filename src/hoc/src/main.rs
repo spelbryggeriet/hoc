@@ -2,7 +2,7 @@
 extern crate strum_macros;
 
 #[macro_use]
-mod log;
+extern crate hoclog;
 
 mod context;
 mod file;
@@ -16,30 +16,36 @@ mod publish;
 
 mod prelude {
     pub use crate::file::{NamedFile, TempDir};
-    pub use crate::log::{Styling, Wrapping};
     pub use crate::LOG;
     pub use crate::{context::AppContext, AppResult, CACHE_DIR, HOME_DIR, KUBE_DIR};
     pub use anyhow::Context;
+    pub use hoclog::{Styling, Wrapping, status, info};
 }
 
 use std::{
     collections::HashMap,
+    ffi::{CString, OsString},
+    fs,
     io::{self, BufRead, BufReader},
     ops::Deref,
-    os::unix::prelude::ExitStatusExt,
     process::Stdio,
 };
 use std::{env, path::PathBuf};
 
+#[cfg(target_family = "unix")]
+use std::os::unix::{ffi::OsStrExt, prelude::ExitStatusExt};
+
 use anyhow::Context;
 use lazy_static::lazy_static;
-use log::Log;
+use rand::{distributions::Alphanumeric, Rng};
 use structopt::StructOpt;
 use tera::Tera;
 
 use configure::CmdConfigure;
 use context::AppContext;
 use hocfile::{HocValue, Hocfile};
+use hoclog::Log;
+use thiserror::private::PathAsDisplay;
 
 lazy_static! {
     pub static ref HOME_DIR: PathBuf = PathBuf::from(format!("{}/.hoc", env::var("HOME").unwrap()));
@@ -66,6 +72,56 @@ fn readable_size(size: usize) -> (f32, &'static str) {
     };
 
     (size, unit)
+}
+
+struct TempPipe {
+    path: PathBuf,
+}
+
+impl TempPipe {
+    fn new(mode: u32) -> io::Result<Self> {
+        const RAND_LEN: usize = 10;
+
+        let mut buf = env::temp_dir();
+        let mut name = OsString::with_capacity(3 + RAND_LEN);
+        name.push("tmp");
+
+        unsafe {
+            rand::thread_rng()
+                .sample_iter(&Alphanumeric)
+                .take(RAND_LEN)
+                .for_each(|b| name.push(std::str::from_utf8_unchecked(&[b as u8])))
+        }
+
+        buf.push(name);
+
+        let path = CString::new(buf.as_os_str().as_bytes())?;
+        let result: libc::c_int = unsafe { libc::mkfifo(path.as_ptr(), mode as libc::mode_t) };
+
+        let result: i32 = result.into();
+        if result == 0 {
+            return Ok(TempPipe { path: buf });
+        }
+
+        let error = errno::errno();
+        let kind = match error.0 {
+            libc::EACCES => io::ErrorKind::PermissionDenied,
+            libc::EEXIST => io::ErrorKind::AlreadyExists,
+            libc::ENOENT => io::ErrorKind::NotFound,
+            _ => io::ErrorKind::Other,
+        };
+
+        Err(io::Error::new(
+            kind,
+            format!("could not open {:?}: {}", path, error),
+        ))
+    }
+}
+
+impl Drop for TempPipe {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.path);
+    }
 }
 
 pub type AppResult<T> = anyhow::Result<T>;
@@ -176,6 +232,9 @@ async fn run() -> AppResult<()> {
     if let (subcmd_name, Some(subcmd_matches)) = matches.subcommand() {
         use hocfile::{BuiltInFn, ProcedureStep};
 
+        let sync_pipe = TempPipe::new(0o644)?;
+        println!("{}", sync_pipe.path.as_display());
+
         // Safety: We know the command exists, since we have successfully received matches from
         // clap.
         let command = hocfile.find_command(&subcmd_name).unwrap();
@@ -188,18 +247,29 @@ async fn run() -> AppResult<()> {
                     HocValue::String(subcmd_matches.value_of(arg.name.deref())?.to_string()),
                 ))
             })
-            .chain(command.optionals(&hocfile).flat_map(|optional| {
-                Some((
-                    optional.name.to_string(),
-                    HocValue::String(
-                        subcmd_matches
-                            .value_of(optional.name.deref())
-                            .or(optional.default.as_deref())?
-                            .to_string(),
-                    ),
-                ))
-            }))
             .collect();
+        input.extend(command.optionals(&hocfile).flat_map(|optional| {
+            Some((
+                optional.name.to_string(),
+                HocValue::String(
+                    subcmd_matches
+                        .value_of(optional.name.deref())
+                        .or(optional.default.as_deref())?
+                        .to_string(),
+                ),
+            ))
+        }));
+        input.insert(
+            "hoc_pipe".into(),
+            HocValue::String(
+                sync_pipe
+                    .path
+                    .as_os_str()
+                    .to_str()
+                    .context("convertion OS string to Rust string")?
+                    .to_string(),
+            ),
+        );
 
         let mut tera = Tera::default();
         tera.register_filter("squote", |value: &serde_json::Value, _: &_| {
@@ -308,8 +378,8 @@ async fn run() -> AppResult<()> {
             let (exit_status, output) = {
                 let context = tera::Context::from_serialize(&input).unwrap();
 
-                let mut rendered_script = tera.render_str(script_proc, &context)?;
-                rendered_script = hocfile.script.profile.clone() + &rendered_script;
+                let template_script = hocfile.script.profile.clone() + &script_proc;
+                let rendered_script = tera.render_str(&template_script, &context)?;
 
                 let mut child = std::process::Command::new("bash")
                     .args(&["-eu", "-c"])

@@ -7,9 +7,11 @@ use std::fs::OpenOptions;
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::mem;
 use std::net::{Ipv4Addr, TcpStream};
-use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+
+#[cfg(target_family = "unix")]
+use std::os::unix::fs::OpenOptionsExt;
 
 use anyhow::anyhow;
 use indexmap::IndexMap;

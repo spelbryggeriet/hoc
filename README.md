@@ -818,28 +818,6 @@ sudo service kubelet restart
 
 ``` -->
 
-Create cluster issuer for certificate creation:
-
-```sh
-cat <<EOT | kubectl create -f -
-apiVersion: cert-manager.io/v1
-kind: ClusterIssuer
-metadata:
-  name: letsencrypt
-spec:
-  acme:
-    email: hampuslidin@gmail.com
-    server: https://acme-v02.api.letsencrypt.org/directory
-    preferredChain: "ISRG Root X1"
-    privateKeySecretRef:
-      name: letsencrypt-account-key
-    solvers:
-      - http01:
-          ingress:
-            class: traefik
-EOT
-```
-
 Create local storage Storage Class:
 
 ```sh
@@ -1007,6 +985,28 @@ helm install cert-manager jetstack/cert-manager \
     --set tolerations\[0\].operator=Exists \
     --set nodeSelector.beta\\.kubernetes\\.io/arch=amd64 \
     --set installCRDs=true
+```
+
+Create cluster issuer for certificate creation:
+
+```sh
+cat <<EOT | kubectl create -f -
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt
+spec:
+  acme:
+    email: hampuslidin@gmail.com
+    server: https://acme-v02.api.letsencrypt.org/directory
+    preferredChain: "ISRG Root X1"
+    privateKeySecretRef:
+      name: letsencrypt-account-key
+    solvers:
+      - http01:
+          ingress:
+            class: traefik
+EOT
 ```
 
 Install vault:

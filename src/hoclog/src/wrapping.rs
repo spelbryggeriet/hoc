@@ -1,6 +1,6 @@
-use crate::log::styling::{SplitAnsiEscapeCodeInclusive, CLEAR_STYLE};
-use crate::prelude::*;
 use std::mem;
+
+use crate::styling::{SplitAnsiEscapeCodeInclusive, Styling, CLEAR_STYLE};
 
 pub trait Wrapping {
     fn words_inclusive(&self) -> WordsInclusive;
