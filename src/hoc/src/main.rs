@@ -215,6 +215,7 @@ enum Subcommand {
 
 async fn run() -> AppResult<()> {
     let hocfile = Hocfile::unvalidated_from_slice(include_bytes!("../Hocfile.default.yaml"))?;
+
     let optional_set_dependencies = hocfile.optional_set_dependencies();
 
     fn create_arg<'a>(
