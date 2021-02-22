@@ -15,30 +15,28 @@ commands:
       - name: node-name
     procedure:
       - script: |
-          hoc out set regex='"([^ ]*) \\((.*)\\) at ([^ ]*) on (.*) \\[(.*)\\]"'
-          hoc out set search_strings=[]
-          arp -a | dquote | prepend 'search_strings=' | hoc out append
+          hoc out set --regex '"([^ ]*) \\((.*)\\) at ([^ ]*) on (.*) \\[(.*)\\]"'
+          hoc out set --search_strings []
+          arp -a | dquote | hoc out append --search_strings -
       - fromScript: regex
       - script: |
           message='"Which endpoint do you want to configure?"'
 
-          options=""
-          {%- for match in matches %}
-
-          {%- if loop.index > 1 %}
-          options="$options,"
+          {%- if matches|length > 0 %}
+          options=(
+              {%- for m in matches %}
+              {{ m | nth(n=0) | squote }}' at '{{ m | nth(n=1) | squote }}
+              {%- endfor %}
+          )
+          options="$(lines "${options[@]:-}" | dquote | join_by ',' | bracket)"
+          {%- else %}
+          options="[]"
           {%- endif %}
 
-          options=$options\"
-          options=$options{{ match | nth(n=0) | squote }}
-          options=$options' at '
-          options=$options{{ match | nth(n=1) | squote }}
-          options=$options\"
-          {%- endfor %}
-          options="[$options]"
-
-          hoc in choose message="$message" options="$options"
+          hoc in choose --message "$message" --options "$options"
           read_pipe index
+
+          hoc in unset --matches
 
   - name: build
     arguments:
@@ -81,21 +79,26 @@ script:
     - name: regex
       source: |
         regex={{ regex | squote }}
-        hoc out set matches=[]
+        hoc out set --matches []
 
         {%- for search_string in search_strings %}
         [[ {{ search_string | squote }} =~ $regex ]]
 
-        matches=$(lines ${BASH_REMATCH[@]:1} | dquote | join_by ',' | bracket)
-        hoc out append matches="$matches"
+        if [[ {% raw %} ${#BASH_REMATCH} {% endraw %} = 0 ]] ; then
+            matches="[]"
+        else
+            matches="$(lines "${BASH_REMATCH[@]:1}" | dquote | join_by ',' | bracket)"
+        fi
+
+        hoc out append --matches "$matches"
         {%- endfor %}
 
-        hoc in unset regex
-        hoc in unset search_strings
+        hoc in unset --regex
+        hoc in unset --search_strings
 
   profile: |
     function lines {
-        printf "%s\n" $@
+        printf "%s\n" "$@"
     }
 
     function _args {
@@ -136,7 +139,7 @@ script:
         shift
 
         if [[ $# = 0 ]] ; then
-            read -r out
+            IFS= read -r out
             while IFS= read -r line ; do
                 out="$out$line"
             done <<< "$(sed 's/^/'$d'/')"
@@ -144,7 +147,7 @@ script:
         else
             local f=$1
             shift
-            printf %s "$f" "${@/#/$d}"
+            printf %s "$f" "${@/#/$d}" | append "\n"
         fi
     }
 
@@ -154,16 +157,73 @@ script:
         local cmd=$1
         shift
 
-        if [[ $# = 0 ]] ; then
-            prepend "[hoc]:$ns:$cmd(" | append ")"
-        else
-            local f=$1
-            shift
+        local prefix="[hoc]:$ns:$cmd"
+        local re='^--(.+)$'
 
-            printf %s "$f" "${@/#/,}" | prepend "[hoc]:$ns:$cmd(" | append ")\n"
+        local flag ; unset flag
+
+        local cmd_args=()
+        local current_args=()
+        local num_stdin=0
+
+        for arg in "$@" ; do
+            [[ "$arg" =~ $re ]]
+
+            if [[ -z ${flag+x} ]] ; then
+                if [[ {% raw %} ${#BASH_REMATCH[@]} {% endraw %} = 0 ]] ; then
+                    echo "expected flag, got value: $arg" >&2
+                    return 1
+                fi
+
+                flag="${BASH_REMATCH[1]}"
+            else
+                if [[ "$arg" = "-" ]] ; then
+                    num_stdin=$(( num_stdin + 1 ))
+
+                    current_args+=( "$flag=" )
+                    cmd_args+=( "$(join_by ',' "${current_args[@]:-}")" )
+                    current_args=()
+
+                    unset flag
+                elif [[ {% raw %} ${#BASH_REMATCH[@]} {% endraw %} = 2 ]] ; then
+                    current_args+=( "$flag" )
+                    flag="$arg"
+                else
+                    current_args+=( "$flag=$arg" )
+                    unset flag
+                fi
+            fi
+        done
+
+        if [[ -n ${flag+x} ]] ; then
+            current_args+=( "$flag" )
         fi
+
+        cmd_args+=( "$(join_by ',' "${current_args[@]:-}")" )
+
+        if [[ $num_stdin = 0 ]] ; then
+            echo "$prefix($(join_by ',' "${cmd_args[@]:-}"))"
+            return 0
+        fi
+
+        while true ; do
+            local args="${cmd_args[0]}"
+            for i in `seq 1 $num_stdin` ; do
+                if ! IFS= read -r value ; then
+                    return 0
+                fi
+
+                if [[ -z ${cmd_args[$i]+x} ]] ; then
+                    args="$args$value"
+                else
+                    args="$(join_by ',' "$args$value" "${cmd_args[$i]}")"
+                fi
+            done
+
+            echo "$prefix($args)"
+        done
     }
 
     function read_pipe {
-        read -r $1 <{{ sync_pipe }}
+        IFS= read -r $1 <{{ sync_pipe }} || true
     }

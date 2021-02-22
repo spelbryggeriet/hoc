@@ -214,7 +214,7 @@ pub fn exec_hoc_line(
                 .get("sync_pipe")
                 .and_then(|v| v.as_string_ref())
                 .unwrap();
-            std::fs::write(sync_pipe, format!("{}\n", index)).map_err(|e| {
+            std::fs::write(sync_pipe, index.to_string()).map_err(|e| {
                 HocLineParseError::new(format!("failed to write to sync pipe: {}", e))
             })?;
 
