@@ -160,7 +160,6 @@ pub fn exec_hoc_line(
         ("out", "set") => {
             let (key, value) = args.pop_key_value();
             output.insert(key.to_string(), value);
-            Ok(true)
         }
 
         ("out", "append") => {
@@ -182,8 +181,6 @@ pub fn exec_hoc_line(
                     );
                 }
             }
-
-            Ok(true)
         }
 
         ("in", "unset") => {
@@ -192,8 +189,6 @@ pub fn exec_hoc_line(
             input.remove(key).ok_or_else(|| {
                 HocLineParseError::new(format!("{}: '{}' is not defined", prefix, key))
             })?;
-
-            Ok(true)
         }
 
         ("in", "choose") => {
@@ -217,10 +212,10 @@ pub fn exec_hoc_line(
             std::fs::write(sync_pipe, index.to_string()).map_err(|e| {
                 HocLineParseError::new(format!("failed to write to sync pipe: {}", e))
             })?;
-
-            Ok(false)
         }
 
         (ns, cmd) => unreachable!("did not expect command '{}' in namespace '{}'", cmd, ns),
     }
+
+    Ok(true)
 }

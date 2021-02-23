@@ -252,7 +252,24 @@ async fn run() -> AppResult<()> {
             .cloned()
     }
 
+    // let app_args = App::from_args();
+
     let mut app = clap::App::new("hoc");
+
+    app = app
+        .arg(
+            clap::Arg::with_name("verbose")
+                .long("verbose")
+                .help("Verbose log output.")
+                .global(true),
+        )
+        .arg(
+            clap::Arg::with_name("debug")
+                .long("debug")
+                .help("Debug log output.")
+                .global(true),
+        );
+
     let mut optional_args = Vec::with_capacity(hocfile.optional_sets.len());
 
     for optional_set in optional_set_dependencies.nodes() {
@@ -497,9 +514,11 @@ async fn run() -> AppResult<()> {
                     let reader = BufReader::new(stdout);
                     for line in reader.lines() {
                         let line = line?;
-                        info!(line);
 
-                        hocfile::exec_hoc_line(&*LOG, &mut input, &mut output, &line)?;
+                        let parsed = hocfile::exec_hoc_line(&*LOG, &mut input, &mut output, &line)?;
+                        if parsed && matches.is_present("verbose") {
+                            info!(line);
+                        }
                     }
                 }
 
@@ -509,42 +528,44 @@ async fn run() -> AppResult<()> {
 
             if exit_status.success() {
                 #[cfg(debug_assertions)]
-                for (key, value) in output.iter() {
-                    let mut stack = vec![(false, value.clone())];
-                    let mut debug = String::new();
-                    debug += &key;
-                    debug += ": ";
+                if matches.is_present("debug") {
+                    for (key, value) in output.iter() {
+                        let mut stack = vec![(false, value.clone())];
+                        let mut debug = String::new();
+                        debug += &key;
+                        debug += ": ";
 
-                    while let Some(item) = stack.pop() {
-                        match item.1 {
-                            HocValue::String(s) => {
-                                if item.0 {
-                                    debug += &s;
-                                } else {
-                                    debug.push('\'');
-                                    debug += &s;
-                                    debug.push('\'');
+                        while let Some(item) = stack.pop() {
+                            match item.1 {
+                                HocValue::String(s) => {
+                                    if item.0 {
+                                        debug += &s;
+                                    } else {
+                                        debug.push('\'');
+                                        debug += &s;
+                                        debug.push('\'');
+                                    }
+                                }
+                                HocValue::List(l) => {
+                                    debug.push('[');
+                                    stack.push((true, HocValue::String("]".to_string())));
+                                    stack.extend(
+                                        l.into_iter()
+                                            .rev()
+                                            .map(|item| {
+                                                vec![
+                                                    (true, HocValue::String(",".to_string())),
+                                                    (false, item),
+                                                ]
+                                            })
+                                            .flat_map(|list| list.into_iter())
+                                            .skip(1),
+                                    );
                                 }
                             }
-                            HocValue::List(l) => {
-                                debug.push('[');
-                                stack.push((true, HocValue::String("]".to_string())));
-                                stack.extend(
-                                    l.into_iter()
-                                        .rev()
-                                        .map(|item| {
-                                            vec![
-                                                (true, HocValue::String(",".to_string())),
-                                                (false, item),
-                                            ]
-                                        })
-                                        .flat_map(|list| list.into_iter())
-                                        .skip(1),
-                                );
-                            }
                         }
+                        info!("[DEBUG] {}", debug);
                     }
-                    info!("[DEBUG] {}", debug);
                 }
 
                 input.extend(output);
@@ -564,12 +585,13 @@ async fn run() -> AppResult<()> {
         }
     }
 
-    let args = App::from_args();
-    let mut context = AppContext::configure(args.cached).context("Configuring app context")?;
+    Ok(())
 
-    match args.subcommand {
-        Subcommand::Configure(cmd) => cmd.run(&mut context).await.context("configure command"),
-    }
+    // let mut context = AppContext::configure(app_args.cached).context("Configuring app context")?;
+
+    // match app_args.subcommand {
+    //     Subcommand::Configure(cmd) => cmd.run(&mut context).await.context("configure command"),
+    // }
 }
 
 #[tokio::main]
