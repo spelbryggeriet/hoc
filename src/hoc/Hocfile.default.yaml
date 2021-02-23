@@ -19,19 +19,18 @@ commands:
           hoc out set --search_strings []
           arp -a | dquote | hoc out append --search_strings -
       - fromScript: regex
-      - script: |
+      - condition:
+          expression: matches|length > 0
+          message: no endpoints found to configure
+        script: |
           message='"Which endpoint do you want to configure?"'
 
-          {%- if matches|length > 0 %}
           options=(
               {%- for m in matches %}
               {{ m | nth(n=0) | squote }}' at '{{ m | nth(n=1) | squote }}
               {%- endfor %}
           )
           options="$(lines "${options[@]:-}" | dquote | join_by ',' | bracket)"
-          {%- else %}
-          options="[]"
-          {%- endif %}
 
           hoc in choose --message "$message" --options "$options"
           read_pipe index

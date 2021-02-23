@@ -303,7 +303,7 @@ async fn run() -> AppResult<()> {
 
     let matches = app.get_matches();
     if let (subcmd_name, Some(subcmd_matches)) = matches.subcommand() {
-        use hocfile::{BuiltInFn, ProcedureStep};
+        use hocfile::{BuiltInFn, ProcedureStepType};
 
         let sync_pipe = TempPipe::new(0o644)?;
 
@@ -356,8 +356,28 @@ async fn run() -> AppResult<()> {
 
         let num_steps = command.procedure.len();
         for (step_i, step) in (1..).zip(&command.procedure) {
-            let script_proc = match step {
-                ProcedureStep::BuiltIn(built_in_fn) => {
+            let context = tera::Context::from_serialize(&input).unwrap();
+
+            if let Some(cond) = step.condition.as_ref() {
+                let cond_expr = cond.expression();
+                let cond_template =
+                    format!("{{% if {} %}}true{{% else %}}false{{%endif%}}", cond_expr);
+                let condition_met = tera.render_str(&cond_template, &context)? == "true";
+
+                if !condition_met {
+                    error!(
+                        "Step {}/{} condition not met: {}",
+                        step_i,
+                        num_steps,
+                        cond.message()
+                            .unwrap_or(&format!("'{}' evaluated to false", cond_expr))
+                    );
+                    break;
+                }
+            }
+
+            let script_proc = match &step.step_type {
+                ProcedureStepType::BuiltIn(built_in_fn) => {
                     status!(
                         "Step {}/{}: [built-in] {:?}",
                         step_i,
@@ -428,19 +448,19 @@ async fn run() -> AppResult<()> {
                     continue;
                 }
 
-                ProcedureStep::FromScript(script_ref) => {
+                ProcedureStepType::FromScript(script_ref) => {
                     let script = hocfile.find_script(&script_ref).unwrap();
                     &script.source
                 }
 
-                ProcedureStep::Script(script) => script,
+                ProcedureStepType::Script(script) => script,
             };
 
             status!(
                 "Step {}/{}: {}",
                 step_i,
                 num_steps,
-                if let ProcedureStep::FromScript(script_ref) = step {
+                if let ProcedureStepType::FromScript(script_ref) = &step.step_type {
                     format!("[script] {}", script_ref.deref())
                 } else {
                     "[inline] Custom step".to_string()
@@ -448,8 +468,6 @@ async fn run() -> AppResult<()> {
             );
 
             let (exit_status, output) = {
-                let context = tera::Context::from_serialize(&input).unwrap();
-
                 let template_script = hocfile.script.profile.clone() + &script_proc;
                 let rendered_script = tera.render_str(&template_script, &context)?;
 

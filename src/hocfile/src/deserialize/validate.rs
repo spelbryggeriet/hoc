@@ -99,7 +99,7 @@ impl Hocfile {
                 command
                     .procedure
                     .iter()
-                    .filter_map(|step| step.as_script_ref()),
+                    .filter_map(|step| step.step_type.as_script_ref()),
             );
             helper(
                 errors,

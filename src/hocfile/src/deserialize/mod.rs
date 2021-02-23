@@ -249,14 +249,48 @@ pub struct ConcreteOptional {
 }
 
 #[derive(Debug, Deserialize)]
+pub struct ProcedureStep {
+    pub condition: Option<ProcedureStepCondition>,
+
+    #[serde(flatten)]
+    pub step_type: ProcedureStepType,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+pub enum ProcedureStepCondition {
+    Expr(String),
+    Options {
+        expression: String,
+        message: String,
+    }
+}
+
+impl ProcedureStepCondition {
+    pub fn expression(&self) -> &str {
+        match self {
+            Self::Expr(expr) => expr,
+            Self::Options { expression, .. } => expression,
+        }
+    }
+
+    pub fn message(&self) -> Option<&str> {
+        match self {
+            Self::Options { message, .. } => Some(message),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub enum ProcedureStep {
+pub enum ProcedureStepType {
     BuiltIn(BuiltInFn),
     FromScript(ResourceRef),
     Script(String),
 }
 
-impl ProcedureStep {
+impl ProcedureStepType {
     fn as_script_ref(&self) -> Option<&ResourceRef> {
         match self {
             Self::FromScript(script_ref) => Some(script_ref),
