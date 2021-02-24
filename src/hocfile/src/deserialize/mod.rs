@@ -248,9 +248,17 @@ pub struct ConcreteOptional {
     pub default: Option<String>,
 }
 
+fn false_value() -> bool {
+    false
+}
+
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ProcedureStep {
     pub condition: Option<ProcedureStepCondition>,
+
+    #[serde(default = "false_value")]
+    pub persist_output: bool,
 
     #[serde(flatten)]
     pub step_type: ProcedureStepType,

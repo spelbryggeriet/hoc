@@ -13,7 +13,11 @@ const LIST: &str = "list";
 const COMMANDS: &[(&str, &[(&str, &[Option<&str>])])] = &[
     (
         "out",
-        &[("set", &[Some(VALUE)]), ("append", &[Some(VALUE)])],
+        &[
+            ("set", &[Some(VALUE)]),
+            ("append", &[Some(VALUE)]),
+            ("persist", &[None]),
+        ],
     ),
     (
         "in",
@@ -146,6 +150,7 @@ pub fn exec_hoc_line(
     log: &Log,
     input: &mut HocState,
     output: &mut HocState,
+    persisted: &mut Vec<String>,
     line: &str,
 ) -> Result<bool, HocLineParseError> {
     let (ns, cmd, mut args) = if let Some(r) = parse::parse_hoc_line(line)? {
@@ -181,6 +186,11 @@ pub fn exec_hoc_line(
                     );
                 }
             }
+        }
+
+        ("out", "persist") => {
+            let key = args.pop_key();
+            persisted.push(key.to_string());
         }
 
         ("in", "unset") => {

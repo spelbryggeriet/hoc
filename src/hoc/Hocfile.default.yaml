@@ -35,8 +35,6 @@ commands:
           hoc in choose --message "$message" --options "$options"
           read_pipe index
 
-          hoc in unset --matches
-
   - name: build
     arguments:
       - name: service
@@ -91,9 +89,6 @@ script:
 
         hoc out append --matches "$matches"
         {%- endfor %}
-
-        hoc in unset --regex
-        hoc in unset --search_strings
 
   profile: |
     function lines {

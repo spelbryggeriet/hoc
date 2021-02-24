@@ -320,7 +320,7 @@ async fn run() -> AppResult<()> {
 
     let matches = app.get_matches();
     if let (subcmd_name, Some(subcmd_matches)) = matches.subcommand() {
-        use hocfile::{BuiltInFn, ProcedureStepType};
+        use hocfile::{BuiltInFn, ProcedureStep, ProcedureStepType};
 
         let sync_pipe = TempPipe::new(0o644)?;
 
@@ -372,6 +372,7 @@ async fn run() -> AppResult<()> {
         });
 
         let num_steps = command.procedure.len();
+        let mut previous_output_keys = Vec::new();
         for (step_i, step) in (1..).zip(&command.procedure) {
             let context = tera::Context::from_serialize(&input).unwrap();
 
@@ -484,7 +485,9 @@ async fn run() -> AppResult<()> {
                 },
             );
 
-            let (exit_status, output) = {
+            let mut output = HashMap::new();
+            let mut persisted_keys = Vec::new();
+            let exit_status = {
                 let template_script = hocfile.script.profile.clone() + &script_proc;
                 let rendered_script = tera.render_str(&template_script, &context)?;
 
@@ -509,21 +512,26 @@ async fn run() -> AppResult<()> {
                     Ok(())
                 });
 
-                let mut output = HashMap::new();
                 if let Some(stdout) = stdout {
                     let reader = BufReader::new(stdout);
                     for line in reader.lines() {
                         let line = line?;
 
-                        let parsed = hocfile::exec_hoc_line(&*LOG, &mut input, &mut output, &line)?;
-                        if parsed && matches.is_present("verbose") {
+                        let parsed = hocfile::exec_hoc_line(
+                            &*LOG,
+                            &mut input,
+                            &mut output,
+                            &mut persisted_keys,
+                            &line,
+                        )?;
+                        if !parsed || matches.is_present("verbose") {
                             info!(line);
                         }
                     }
                 }
 
                 stderr_handle.join().unwrap()?;
-                (child.wait()?, output)
+                child.wait()?
             };
 
             if exit_status.success() {
@@ -568,6 +576,20 @@ async fn run() -> AppResult<()> {
                     }
                 }
 
+                for key in previous_output_keys.drain(..) {
+                    input.remove(&key);
+                }
+
+                if !step.persist_output {
+                    previous_output_keys.extend(
+                        output
+                            .keys()
+                            .filter(|k| !persisted_keys.contains(k))
+                            .cloned(),
+                    );
+                }
+
+                persisted_keys.clear();
                 input.extend(output);
 
                 continue;
