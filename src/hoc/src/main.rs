@@ -109,6 +109,7 @@ use std::{env, path::PathBuf};
 use std::os::unix::{ffi::OsStrExt, prelude::ExitStatusExt};
 
 use anyhow::Context;
+use heck::SnakeCase;
 use lazy_static::lazy_static;
 use rand::{distributions::Alphanumeric, Rng};
 use structopt::StructOpt;
@@ -320,7 +321,7 @@ async fn run() -> AppResult<()> {
 
     let matches = app.get_matches();
     if let (subcmd_name, Some(subcmd_matches)) = matches.subcommand() {
-        use hocfile::{BuiltInFn, ProcedureStep, ProcedureStepType};
+        use hocfile::{BuiltInFn, ProcedureStepType};
 
         let sync_pipe = TempPipe::new(0o644)?;
 
@@ -332,14 +333,14 @@ async fn run() -> AppResult<()> {
             .arguments()
             .flat_map(|arg| {
                 Some((
-                    arg.name.to_string(),
+                    arg.name.to_string().to_snake_case(),
                     HocValue::String(subcmd_matches.value_of(arg.name.deref())?.to_string()),
                 ))
             })
             .collect();
         input.extend(command.optionals(&hocfile).flat_map(|optional| {
             Some((
-                optional.name.to_string(),
+                optional.name.to_string().to_snake_case(),
                 HocValue::String(
                     subcmd_matches
                         .value_of(optional.name.deref())
