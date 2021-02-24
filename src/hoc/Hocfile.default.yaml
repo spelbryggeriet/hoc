@@ -17,6 +17,8 @@ commands:
       - script: |
           hoc out set --regex '"([^ ]*) \\((.*)\\) at ([^ ]*) on (.*) \\[(.*)\\]"'
           hoc out set --search_strings []
+
+          echo "Searching for local endpoints ..."
           arp -a | dquote | hoc out append --search_strings -
       - fromScript: regex
       - condition:

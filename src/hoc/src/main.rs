@@ -47,6 +47,18 @@ macro_rules! status {
     };
 }
 
+macro_rules! status_no_track {
+    ($($args:tt)*) => {
+        let _status = _log!([status_no_track] (($($args)*),));
+    };
+}
+
+macro_rules! warning {
+    ($($args:tt)*) => {
+        _log!([warning] (($($args)*),))
+    };
+}
+
 macro_rules! error {
     ($($args:tt)*) => {
         _log!([error] (($($args)*),))
@@ -488,54 +500,78 @@ async fn run() -> AppResult<()> {
 
             let mut output = HashMap::new();
             let mut persisted_keys = Vec::new();
+            let mut hoc_line_error = None;
+
             let exit_status = {
                 let template_script = hocfile.script.profile.clone() + &script_proc;
                 let rendered_script = tera.render_str(&template_script, &context)?;
 
                 let mut child = std::process::Command::new("bash")
-                    .args(&["-eu", "-c"])
+                    .args(&["-eu", "-o", "pipefail", "-c",])
                     .arg(rendered_script)
                     .stdout(Stdio::piped())
                     .stderr(Stdio::piped())
                     .spawn()?;
 
-                status!("Script output");
+                status!("Script execution");
+
                 let stdout = child.stdout.take();
                 let stderr = child.stderr.take();
 
-                let stderr_handle = std::thread::spawn(|| -> io::Result<()> {
+                let stderr_handle = std::thread::spawn(move || -> io::Result<bool> {
+                    let mut stderr_had_output = false;
                     if let Some(stderr) = stderr {
                         let reader = BufReader::new(stderr);
                         for line in reader.lines() {
                             error!(line?);
+                            stderr_had_output = true;
                         }
                     }
-                    Ok(())
+                    Ok(stderr_had_output)
                 });
 
+                let mut stdout_had_output = false;
                 if let Some(stdout) = stdout {
                     let reader = BufReader::new(stdout);
                     for line in reader.lines() {
                         let line = line?;
 
-                        let parsed = hocfile::exec_hoc_line(
+                        let command_execution = hocfile::exec_hoc_line(
                             &*LOG,
                             &mut input,
                             &mut output,
                             &mut persisted_keys,
                             &line,
-                        )?;
-                        if !parsed || matches.is_present("verbose") {
-                            info!(line);
+                        );
+
+                        match command_execution {
+                            Ok(Some(("in", "choose"))) => stdout_had_output = true,
+                            Ok(opt) => {
+                                if opt.is_none() || matches.is_present("verbose") {
+                                    info!(line);
+                                    stdout_had_output = true
+                                }
+                            }
+                            Err(error) => {
+                                warning!(line);
+                                stdout_had_output = true;
+                                hoc_line_error.replace(error);
+                                break;
+                            }
                         }
                     }
                 }
 
-                stderr_handle.join().unwrap()?;
+                let stderr_had_output = stderr_handle.join().unwrap()?;
+
+                if !stdout_had_output && !stderr_had_output {
+                    warning!("No output from script")
+                }
+
                 child.wait()?
             };
 
-            if exit_status.success() {
+            if exit_status.success() && hoc_line_error.is_none() {
                 #[cfg(debug_assertions)]
                 if matches.is_present("debug") {
                     for (key, value) in output.iter() {
@@ -602,6 +638,10 @@ async fn run() -> AppResult<()> {
                 error!("Script was interupted by signal code {}.", signal);
             } else {
                 error!("Script failed.");
+            }
+
+            if let Some(error) = hoc_line_error {
+                error!(error);
             }
 
             anyhow::bail!("Command '{}' failed", command.name.deref());

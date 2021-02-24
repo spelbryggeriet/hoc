@@ -48,7 +48,7 @@ where
 impl<I> Utf8IndicesIterExt for I where I: Iterator<Item = char> {}
 
 #[derive(Error, Debug)]
-#[error("failed parsing Hoc line: {message}")]
+#[error("Failed parsing Hoc line: {message}")]
 pub struct HocLineParseError {
     message: String,
 }
@@ -63,7 +63,7 @@ impl HocLineParseError {
 
 pub fn parse_hoc_line(
     line: &str,
-) -> Result<Option<(&str, &str, VecDeque<(&str, Option<HocValue>)>)>, HocLineParseError> {
+) -> Result<Option<(&'static str, &'static str, VecDeque<(&str, Option<HocValue>)>)>, HocLineParseError> {
     let s = if let Some(s) = consume_hoc_prefix(line) {
         s
     } else {
@@ -94,7 +94,7 @@ fn consume_hoc_prefix(s: &str) -> Option<&str> {
     Some(&s[PREFIX.len()..])
 }
 
-fn parse_hoc_namespace(s: &str) -> Result<(&str, &str), HocLineParseError> {
+fn parse_hoc_namespace(s: &str) -> Result<(&str, &'static str), HocLineParseError> {
     for ns in super::COMMANDS.iter().map(|(ns, _)| ns) {
         if s.starts_with(ns) && s[ns.len()..].starts_with(COLON) {
             return Ok((&s[ns.len() + COLON.len_utf8()..], ns));
@@ -113,10 +113,10 @@ fn parse_hoc_namespace(s: &str) -> Result<(&str, &str), HocLineParseError> {
     )))
 }
 
-fn parse_hoc_command<'s, 'ns>(
+fn parse_hoc_command<'s>(
     s: &'s str,
-    ns: &'ns str,
-) -> Result<(&'s str, &'ns str), HocLineParseError> {
+    ns: &str,
+) -> Result<(&'s str, &'static str), HocLineParseError> {
     for cmd in super::COMMANDS
         .iter()
         .filter_map(|(some_ns, cmds)| (ns == *some_ns).then(|| cmds.iter()))

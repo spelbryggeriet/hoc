@@ -152,11 +152,11 @@ pub fn exec_hoc_line(
     output: &mut HocState,
     persisted: &mut Vec<String>,
     line: &str,
-) -> Result<bool, HocLineParseError> {
+) -> Result<Option<(&'static str, &'static str)>, HocLineParseError> {
     let (ns, cmd, mut args) = if let Some(r) = parse::parse_hoc_line(line)? {
         r
     } else {
-        return Ok(false);
+        return Ok(None);
     };
 
     let prefix = format!("executing command '{}' in namespace '{}'", cmd, ns);
@@ -227,5 +227,5 @@ pub fn exec_hoc_line(
         (ns, cmd) => unreachable!("did not expect command '{}' in namespace '{}'", cmd, ns),
     }
 
-    Ok(true)
+    Ok(Some((ns, cmd)))
 }
