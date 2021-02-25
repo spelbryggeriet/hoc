@@ -407,15 +407,20 @@ async fn run() -> AppResult<()> {
                 }
             }
 
-            let script_proc = match &step.step_type {
-                ProcedureStepType::BuiltIn(built_in_fn) => {
-                    status!(
-                        "Step {}/{}: [built-in] {:?}",
-                        step_i,
-                        num_steps,
-                        built_in_fn
-                    );
+            status!(
+                "Step {}/{}: {} {}",
+                step_i,
+                num_steps,
+                if matches!(step.step_type, ProcedureStepType::BuiltIn { .. }) {
+                    "[built-in]"
+                } else {
+                    "[script]"
+                },
+                step.step_type.description(&hocfile),
+            );
 
+            let script_proc = match &step.step_type {
+                ProcedureStepType::BuiltIn { built_in_fn, .. } => {
                     match built_in_fn {
                         BuiltInFn::RpiFlash => {
                             let cached = input
@@ -479,24 +484,13 @@ async fn run() -> AppResult<()> {
                     continue;
                 }
 
-                ProcedureStepType::FromScript(script_ref) => {
+                ProcedureStepType::ScriptRef { script_ref, .. } => {
                     let script = hocfile.find_script(&script_ref).unwrap();
                     &script.source
                 }
 
-                ProcedureStepType::Script(script) => script,
+                ProcedureStepType::Script { script, .. } => script,
             };
-
-            status!(
-                "Step {}/{}: {}",
-                step_i,
-                num_steps,
-                if let ProcedureStepType::FromScript(script_ref) = &step.step_type {
-                    format!("[script] {}", script_ref.deref())
-                } else {
-                    "[inline] Custom step".to_string()
-                },
-            );
 
             let mut output = HashMap::new();
             let mut persisted_keys = Vec::new();

@@ -291,17 +291,41 @@ impl ProcedureStepCondition {
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(untagged)]
 pub enum ProcedureStepType {
-    BuiltIn(BuiltInFn),
-    FromScript(ResourceRef),
-    Script(String),
+    BuiltIn {
+        description: Option<String>,
+
+        #[serde(rename = "builtIn")]
+        built_in_fn: BuiltInFn,
+    },
+    #[serde(rename_all = "camelCase")]
+    ScriptRef {
+        description: Option<String>,
+        script_ref: ResourceRef,
+    },
+    Script {
+        description: String,
+        script: String,
+    },
 }
 
 impl ProcedureStepType {
+    pub fn description<'s: 'hf, 'hf>(&'s self, hocfile: &'hf Hocfile) -> &'hf str {
+        match self {
+            Self::BuiltIn { description, built_in_fn } => {
+                description.as_deref().unwrap_or(built_in_fn.description())
+            }
+            Self::ScriptRef { description, script_ref } => {
+                description.as_deref().unwrap_or(&hocfile.find_script(script_ref).unwrap().description)
+            }
+            Self::Script { description, .. } => description,
+        }
+    }
+
     fn as_script_ref(&self) -> Option<&ResourceRef> {
         match self {
-            Self::FromScript(script_ref) => Some(script_ref),
+            Self::ScriptRef { script_ref, .. } => Some(script_ref),
             _ => None,
         }
     }
@@ -315,6 +339,17 @@ pub enum BuiltInFn {
     K8sDeploy,
 }
 
+impl BuiltInFn {
+    fn description(&self) -> &'static str {
+        match self {
+            Self::RpiFlash => "Flash Raspberry Pi",
+            Self::DockerBuild => "Build Docker image",
+            Self::GitlabPublish => "Publish to Gitlab",
+            Self::K8sDeploy => "Deploy to Kubernetes cluster",
+        }
+    }
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Script {
@@ -325,6 +360,7 @@ pub struct Script {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ScriptSource {
+    pub description: String,
     pub name: ResourceRef,
     pub source: String,
 }

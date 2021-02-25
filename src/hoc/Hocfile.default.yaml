@@ -14,14 +14,17 @@ commands:
     arguments:
       - name: node-name
     procedure:
-      - script: |
+      - description: Find local endpoints
+        script: |
           hoc out set --regex '"([^ ]*) \\((.*)\\) at ([^ ]*) on (.*) \\[(.*)\\]"'
           hoc out set --search_strings []
 
           echo "Searching for local endpoints ..."
           arp -a | dquote | hoc out append --search_strings -
-      - fromScript: regex
-      - condition:
+      - description: Rewrite endpoint output
+        scriptRef: regex
+      - description: Configure endpoint
+        condition:
           expression: matches|length > 0
           message: no endpoints found to configure
         script: |
@@ -76,6 +79,7 @@ optionalSets:
 script:
   predefined:
     - name: regex
+      description: Match search strings with regular expression
       source: |
         regex={{ regex | squote }}
         hoc out set --matches []

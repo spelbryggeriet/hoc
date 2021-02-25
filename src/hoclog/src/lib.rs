@@ -54,7 +54,7 @@ impl Log {
             stdout: Arc::new(Mutex::new(Term::buffered_stdout())),
             statuses: Arc::new(Mutex::new(vec![])),
             failure: Arc::new(Mutex::new(false)),
-            spacing_printed: Arc::new(Mutex::new(false)),
+            spacing_printed: Arc::new(Mutex::new(true)),
         }
     }
 
@@ -76,7 +76,6 @@ impl Log {
         ));
 
         self.statuses.lock().unwrap().push(Arc::downgrade(&status));
-        *self.spacing_printed.lock().unwrap() = true;
         status
     }
 
@@ -91,7 +90,6 @@ impl Log {
         ));
 
         self.statuses.lock().unwrap().push(Arc::downgrade(&status));
-        *self.spacing_printed.lock().unwrap() = true;
         status
     }
 
@@ -408,17 +406,20 @@ impl Status {
             .map(|l| Some(l + 1))
             .unwrap_or(Some(0));
 
+        if level == Some(0) && !*spacing_printed.lock().unwrap() {
+            Log::println(
+                &stdout,
+                "",
+            );
+            *spacing_printed.lock().unwrap() = true;
+        }
+
         Log::println_wrapped_text(
             &stdout,
             message,
             level,
             PrefixPrefs::with_connector("╓╴").flag("*"),
             PrefixPrefs::in_status_overflow(),
-        );
-
-        Log::println(
-            &stdout,
-            Log::create_line_prefix(level, PrefixPrefs::in_status_overflow()),
         );
 
         Status {
@@ -438,7 +439,11 @@ impl Drop for Status {
         let mut line = Log::create_line_prefix(level, PrefixPrefs::with_connector("╙─").flag("─"));
         if self.tracking {
             if !*self.failure.lock().unwrap() {
-                line += &Style::new().green().apply_to("SUCCESS").to_string();
+                if level == Some(0) {
+                    line += &Style::new().green().apply_to("SUCCESS").to_string();
+                } else {
+                    line += "DONE";
+                }
             } else {
                 line += &Style::new().red().apply_to("FAILURE").to_string();
             }
@@ -446,23 +451,15 @@ impl Drop for Status {
             line += "DONE";
         };
 
-        if !*self.spacing_printed.lock().unwrap() {
-            Log::println(
-                &self.stdout,
-                Log::create_line_prefix(level, PrefixPrefs::in_status_overflow()),
-            );
-        }
-
         Log::println(&self.stdout, line);
 
-        Log::println(
-            &self.stdout,
-            Log::create_line_prefix(
-                level.filter(|l| *l > 0).map(|l| l - 1),
-                PrefixPrefs::in_status_overflow(),
-            ),
-        );
-        *self.spacing_printed.lock().unwrap() = true;
+        if level == Some(0) {
+            Log::println(
+                &self.stdout,
+                ""
+            );
+            *self.spacing_printed.lock().unwrap() = true;
+        }
 
         let mut statuses = self.statuses.lock().unwrap();
         statuses.pop();
