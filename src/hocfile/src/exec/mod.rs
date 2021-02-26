@@ -1,6 +1,6 @@
 mod parse;
 
-use std::collections::VecDeque;
+use std::{collections::VecDeque, path::Path};
 
 use crate::{HocState, HocValue};
 use hoclog::Log;
@@ -12,17 +12,18 @@ const LIST: &str = "list";
 
 const COMMANDS: &[(&str, &[(&str, &[Option<&str>])])] = &[
     (
+        "in",
+        &[("unset", &[None]), ("choose", &[Some(STRING), Some(LIST)])],
+    ),
+    (
         "out",
         &[
             ("append", &[Some(VALUE)]),
             ("set", &[Some(VALUE)]),
-            ("set_static", &[Some(VALUE)]),
+            ("static", &[Some(VALUE)]),
         ],
     ),
-    (
-        "in",
-        &[("unset", &[None]), ("choose", &[Some(STRING), Some(LIST)])],
-    ),
+    ("state", &[("persist", &[Some(VALUE)]), ("forget", &[None])]),
 ];
 
 trait PopHocCommandArgument<'a> {
@@ -151,6 +152,8 @@ pub fn exec_hoc_line(
     input: &mut HocState,
     output: &mut HocState,
     static_keys: &mut Vec<String>,
+    state: &mut HocState,
+    sync_pipe: &Path,
     line: &str,
 ) -> Result<Option<(&'static str, &'static str)>, HocLineParseError> {
     let (ns, cmd, mut args) = if let Some(r) = parse::parse_hoc_line(line)? {
@@ -162,6 +165,33 @@ pub fn exec_hoc_line(
     let prefix = format!("executing command '{}' in namespace '{}'", cmd, ns);
 
     match (ns, cmd) {
+        ("in", "unset") => {
+            let key = args.pop_key();
+
+            input.remove(key).ok_or_else(|| {
+                HocLineParseError::new(format!("{}: '{}' is not defined", prefix, key))
+            })?;
+        }
+
+        ("in", "choose") => {
+            let message = args
+                .pop_string_for_key_checked("message")
+                .map_err(|err| HocLineParseError::new(format!("{}: {}", prefix, err)))?;
+            let options = args
+                .pop_list_for_key_checked("options")
+                .map_err(|err| HocLineParseError::new(format!("{}: {}", prefix, err)))?
+                .into_iter()
+                .map(|v| v.as_string().ok())
+                .collect::<Option<Vec<_>>>()
+                .ok_or_else(|| HocLineParseError::new("expected options type be of type string"))?;
+
+            let index = log.choose(message, options, 0);
+
+            std::fs::write(sync_pipe, index.to_string()).map_err(|e| {
+                HocLineParseError::new(format!("failed to write to sync pipe: {}", e))
+            })?;
+        }
+
         ("out", "append") => {
             let key = args.peek().0;
 
@@ -188,41 +218,20 @@ pub fn exec_hoc_line(
             output.insert(key.to_string(), value);
         }
 
-        ("out", "set_static") => {
+        ("out", "static") => {
             let (key, value) = args.pop_key_value();
             output.insert(key.to_string(), value);
             static_keys.push(key.to_string());
         }
 
-        ("in", "unset") => {
-            let key = args.pop_key();
-
-            input.remove(key).ok_or_else(|| {
-                HocLineParseError::new(format!("{}: '{}' is not defined", prefix, key))
-            })?;
+        ("state", "persist") => {
+            let (key, value) = args.pop_key_value();
+            state.insert(key.to_string(), value);
         }
 
-        ("in", "choose") => {
-            let message = args
-                .pop_string_for_key_checked("message")
-                .map_err(|err| HocLineParseError::new(format!("{}: {}", prefix, err)))?;
-            let options = args
-                .pop_list_for_key_checked("options")
-                .map_err(|err| HocLineParseError::new(format!("{}: {}", prefix, err)))?
-                .into_iter()
-                .map(|v| v.as_string().ok())
-                .collect::<Option<Vec<_>>>()
-                .ok_or_else(|| HocLineParseError::new("expected options type be of type string"))?;
-
-            let index = log.choose(message, options, 0);
-
-            let sync_pipe = input
-                .get("sync_pipe")
-                .and_then(|v| v.as_string_ref())
-                .unwrap();
-            std::fs::write(sync_pipe, index.to_string()).map_err(|e| {
-                HocLineParseError::new(format!("failed to write to sync pipe: {}", e))
-            })?;
+        ("state", "forget") => {
+            let key = args.pop_key();
+            state.remove(key);
         }
 
         (ns, cmd) => unreachable!("did not expect command '{}' in namespace '{}'", cmd, ns),

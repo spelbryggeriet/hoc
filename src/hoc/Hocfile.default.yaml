@@ -25,13 +25,13 @@ commands:
         scriptRef: regex
       - description: Configure endpoint
         condition:
-          expression: matches|length > 0
-          message: no endpoints found to configure
+          expression: input.matches|length > 0
+          message: No endpoints found to configure
         script: |
           message='"Which endpoint do you want to configure?"'
 
           options=(
-              {%- for m in matches %}
+              {%- for m in input.matches %}
               {{ m | nth(n=0) | squote }}' at '{{ m | nth(n=1) | squote }}
               {%- endfor %}
           )
@@ -81,10 +81,10 @@ script:
     - name: regex
       description: Match search strings with regular expression
       source: |
-        regex={{ regex | squote }}
+        regex={{ input.regex | squote }}
         hoc out set --matches []
 
-        {%- for search_string in search_strings %}
+        {%- for search_string in input.search_strings %}
         [[ {{ search_string | squote }} =~ $regex ]]
 
         if [[ {% raw %} ${#BASH_REMATCH} {% endraw %} = 0 ]] ; then

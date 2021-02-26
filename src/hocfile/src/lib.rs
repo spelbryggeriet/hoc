@@ -7,14 +7,14 @@ mod tree;
 
 use std::collections::HashMap;
 
-use serde::Serialize;
+use serde::{Serialize, Deserialize};
 
 pub use deserialize::*;
 pub use exec::exec_hoc_line;
 
 pub type HocState = HashMap<String, HocValue>;
 
-#[derive(Serialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(untagged)]
 pub enum HocValue {
     String(String),

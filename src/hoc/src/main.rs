@@ -110,7 +110,7 @@ mod prelude {
 use std::{
     collections::HashMap,
     ffi::{CString, OsString},
-    fs,
+    fs::{self, File, OpenOptions},
     io::{self, BufRead, BufReader},
     ops::Deref,
     process::Stdio,
@@ -120,7 +120,7 @@ use std::{env, path::PathBuf};
 #[cfg(target_family = "unix")]
 use std::os::unix::{ffi::OsStrExt, prelude::ExitStatusExt};
 
-use anyhow::Context;
+use anyhow::{anyhow, Context};
 use heck::SnakeCase;
 use lazy_static::lazy_static;
 use rand::{distributions::Alphanumeric, Rng};
@@ -129,7 +129,7 @@ use tera::Tera;
 
 use configure::CmdConfigure;
 use context::AppContext;
-use hocfile::{HocValue, Hocfile};
+use hocfile::{HocState, HocValue, Hocfile};
 use hoclog::Log;
 
 lazy_static! {
@@ -160,7 +160,7 @@ fn readable_size(size: usize) -> (f32, &'static str) {
 }
 
 struct TempPipe {
-    path: PathBuf,
+    path_buf: PathBuf,
 }
 
 impl TempPipe {
@@ -185,7 +185,7 @@ impl TempPipe {
 
         let result: i32 = result.into();
         if result == 0 {
-            return Ok(TempPipe { path: buf });
+            return Ok(TempPipe { path_buf: buf });
         }
 
         let error = errno::errno();
@@ -205,7 +205,7 @@ impl TempPipe {
 
 impl Drop for TempPipe {
     fn drop(&mut self) {
-        let _ = fs::remove_file(&self.path);
+        let _ = fs::remove_file(&self.path_buf);
     }
 }
 
@@ -228,6 +228,18 @@ enum Subcommand {
 
 async fn run() -> AppResult<()> {
     let hocfile = Hocfile::unvalidated_from_slice(include_bytes!("../Hocfile.default.yaml"))?;
+
+    let mut hocstate_dir = PathBuf::from(env::var("HOME").unwrap());
+    hocstate_dir.push(".hoc");
+
+    let hocstate_file_path = hocstate_dir.join("state.yaml");
+
+    let mut hocstate = if !hocstate_file_path.exists() {
+        HocState::new()
+    } else {
+        let hocstate_file = File::open(&hocstate_file_path).context("Opening Hoc state file")?;
+        serde_yaml::from_reader(&hocstate_file).context("Parsing Hoc state file")?
+    };
 
     let optional_set_dependencies = hocfile.optional_set_dependencies();
 
@@ -341,15 +353,13 @@ async fn run() -> AppResult<()> {
         // clap.
         let command = hocfile.find_command(&subcmd_name).unwrap();
 
-        let mut input: HashMap<_, _> = command
-            .arguments()
-            .flat_map(|arg| {
-                Some((
-                    arg.name.to_string().to_snake_case(),
-                    HocValue::String(subcmd_matches.value_of(arg.name.deref())?.to_string()),
-                ))
-            })
-            .collect();
+        let mut input: HashMap<_, _> = hocstate.clone();
+        input.extend(command.arguments().flat_map(|arg| {
+            Some((
+                arg.name.to_string().to_snake_case(),
+                HocValue::String(subcmd_matches.value_of(arg.name.deref())?.to_string()),
+            ))
+        }));
         input.extend(command.optionals(&hocfile).flat_map(|optional| {
             Some((
                 optional.name.to_string().to_snake_case(),
@@ -361,16 +371,14 @@ async fn run() -> AppResult<()> {
                 ),
             ))
         }));
-        input.insert(
-            "sync_pipe".into(),
-            HocValue::String(
-                sync_pipe
-                    .path
-                    .as_os_str()
-                    .to_str()
-                    .context("convertion OS string to Rust string")?
-                    .to_string(),
-            ),
+
+        let sync_pipe_string = HocValue::String(
+            sync_pipe
+                .path_buf
+                .as_os_str()
+                .to_str()
+                .context("convertion OS string to Rust string")?
+                .to_string(),
         );
 
         let mut tera = Tera::default();
@@ -387,7 +395,10 @@ async fn run() -> AppResult<()> {
         let num_steps = command.procedure.len();
         let mut previous_output_keys = Vec::new();
         for (step_i, step) in (1..).zip(&command.procedure) {
-            let context = tera::Context::from_serialize(&input).unwrap();
+            let mut context = tera::Context::new();
+            context.insert("sync_pipe", &sync_pipe_string);
+            context.insert("input", &input);
+            context.insert("state", &hocstate);
 
             if let Some(cond) = step.condition.as_ref() {
                 let cond_expr = cond.expression();
@@ -501,7 +512,7 @@ async fn run() -> AppResult<()> {
                 let rendered_script = tera.render_str(&template_script, &context)?;
 
                 let mut child = std::process::Command::new("bash")
-                    .args(&["-eu", "-o", "pipefail", "-c",])
+                    .args(&["-eu", "-o", "pipefail", "-c"])
                     .arg(rendered_script)
                     .stdout(Stdio::piped())
                     .stderr(Stdio::piped())
@@ -535,6 +546,8 @@ async fn run() -> AppResult<()> {
                             &mut input,
                             &mut output,
                             &mut static_keys,
+                            &mut hocstate,
+                            sync_pipe.path_buf.as_path(),
                             &line,
                         );
 
@@ -612,12 +625,8 @@ async fn run() -> AppResult<()> {
                 }
 
                 if !step.static_output {
-                    previous_output_keys.extend(
-                        output
-                            .keys()
-                            .filter(|k| !static_keys.contains(k))
-                            .cloned(),
-                    );
+                    previous_output_keys
+                        .extend(output.keys().filter(|k| !static_keys.contains(k)).cloned());
                 }
 
                 static_keys.clear();
@@ -641,6 +650,27 @@ async fn run() -> AppResult<()> {
             anyhow::bail!("Command '{}' failed", command.name.deref());
         }
     }
+
+    if !hocstate_dir.exists() {
+        fs::create_dir(&hocstate_dir).context("Creating Hoc directory")?;
+    }
+
+    let new_hocstate_file_path = hocstate_dir.join("state.yaml.new");
+    let new_hocstate_file = OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .open(&new_hocstate_file_path)
+        .context("Opening Hoc state file")?;
+    serde_yaml::to_writer(&new_hocstate_file, &hocstate)?;
+
+    match fs::remove_file(&hocstate_file_path) {
+        Ok(()) => (),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => (),
+        Err(err) => return Err(anyhow!(err)),
+    }
+
+    fs::rename(new_hocstate_file_path, hocstate_file_path)?;
 
     Ok(())
 
