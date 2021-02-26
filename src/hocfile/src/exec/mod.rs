@@ -14,9 +14,9 @@ const COMMANDS: &[(&str, &[(&str, &[Option<&str>])])] = &[
     (
         "out",
         &[
-            ("set", &[Some(VALUE)]),
             ("append", &[Some(VALUE)]),
-            ("persist", &[None]),
+            ("set", &[Some(VALUE)]),
+            ("set_static", &[Some(VALUE)]),
         ],
     ),
     (
@@ -150,7 +150,7 @@ pub fn exec_hoc_line(
     log: &Log,
     input: &mut HocState,
     output: &mut HocState,
-    persisted: &mut Vec<String>,
+    static_keys: &mut Vec<String>,
     line: &str,
 ) -> Result<Option<(&'static str, &'static str)>, HocLineParseError> {
     let (ns, cmd, mut args) = if let Some(r) = parse::parse_hoc_line(line)? {
@@ -162,11 +162,6 @@ pub fn exec_hoc_line(
     let prefix = format!("executing command '{}' in namespace '{}'", cmd, ns);
 
     match (ns, cmd) {
-        ("out", "set") => {
-            let (key, value) = args.pop_key_value();
-            output.insert(key.to_string(), value);
-        }
-
         ("out", "append") => {
             let key = args.peek().0;
 
@@ -188,9 +183,15 @@ pub fn exec_hoc_line(
             }
         }
 
-        ("out", "persist") => {
-            let key = args.pop_key();
-            persisted.push(key.to_string());
+        ("out", "set") => {
+            let (key, value) = args.pop_key_value();
+            output.insert(key.to_string(), value);
+        }
+
+        ("out", "set_static") => {
+            let (key, value) = args.pop_key_value();
+            output.insert(key.to_string(), value);
+            static_keys.push(key.to_string());
         }
 
         ("in", "unset") => {

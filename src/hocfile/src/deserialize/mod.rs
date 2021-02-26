@@ -258,7 +258,7 @@ pub struct ProcedureStep {
     pub condition: Option<ProcedureStepCondition>,
 
     #[serde(default = "false_value")]
-    pub persist_output: bool,
+    pub static_output: bool,
 
     #[serde(flatten)]
     pub step_type: ProcedureStepType,

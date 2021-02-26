@@ -493,7 +493,7 @@ async fn run() -> AppResult<()> {
             };
 
             let mut output = HashMap::new();
-            let mut persisted_keys = Vec::new();
+            let mut static_keys = Vec::new();
             let mut hoc_line_error = None;
 
             let exit_status = {
@@ -534,7 +534,7 @@ async fn run() -> AppResult<()> {
                             &*LOG,
                             &mut input,
                             &mut output,
-                            &mut persisted_keys,
+                            &mut static_keys,
                             &line,
                         );
 
@@ -611,16 +611,16 @@ async fn run() -> AppResult<()> {
                     input.remove(&key);
                 }
 
-                if !step.persist_output {
+                if !step.static_output {
                     previous_output_keys.extend(
                         output
                             .keys()
-                            .filter(|k| !persisted_keys.contains(k))
+                            .filter(|k| !static_keys.contains(k))
                             .cloned(),
                     );
                 }
 
-                persisted_keys.clear();
+                static_keys.clear();
                 input.extend(output);
 
                 continue;
