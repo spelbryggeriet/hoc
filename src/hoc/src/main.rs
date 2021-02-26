@@ -115,7 +115,10 @@ use std::{
     ops::Deref,
     process::Stdio,
 };
-use std::{env, path::PathBuf};
+use std::{
+    env,
+    path::{Path, PathBuf},
+};
 
 #[cfg(target_family = "unix")]
 use std::os::unix::{ffi::OsStrExt, prelude::ExitStatusExt};
@@ -372,15 +375,6 @@ async fn run() -> AppResult<()> {
             ))
         }));
 
-        let sync_pipe_string = HocValue::String(
-            sync_pipe
-                .path_buf
-                .as_os_str()
-                .to_str()
-                .context("convertion OS string to Rust string")?
-                .to_string(),
-        );
-
         let mut tera = Tera::default();
         tera.register_filter("squote", |value: &serde_json::Value, _: &_| {
             Ok(serde_json::Value::String(format!(
@@ -396,7 +390,7 @@ async fn run() -> AppResult<()> {
         let mut previous_output_keys = Vec::new();
         for (step_i, step) in (1..).zip(&command.procedure) {
             let mut context = tera::Context::new();
-            context.insert("sync_pipe", &sync_pipe_string);
+            context.insert("sync_pipe", &sync_pipe.path_buf);
             context.insert("input", &input);
             context.insert("state", &hocstate);
 
@@ -523,19 +517,17 @@ async fn run() -> AppResult<()> {
                 let stdout = child.stdout.take();
                 let stderr = child.stderr.take();
 
-                let stderr_handle = std::thread::spawn(move || -> io::Result<bool> {
+                let stderr_handle = std::thread::spawn(move || -> io::Result<()> {
                     let mut stderr_had_output = false;
                     if let Some(stderr) = stderr {
                         let reader = BufReader::new(stderr);
                         for line in reader.lines() {
                             error!(line?);
-                            stderr_had_output = true;
                         }
                     }
-                    Ok(stderr_had_output)
+                    Ok(())
                 });
 
-                let mut stdout_had_output = false;
                 if let Some(stdout) = stdout {
                     let reader = BufReader::new(stdout);
                     for line in reader.lines() {
@@ -552,28 +544,22 @@ async fn run() -> AppResult<()> {
                         );
 
                         match command_execution {
-                            Ok(Some(("in", "choose"))) => stdout_had_output = true,
                             Ok(opt) => {
                                 if opt.is_none() || matches.is_present("verbose") {
                                     info!(line);
-                                    stdout_had_output = true
                                 }
                             }
                             Err(error) => {
                                 warning!(line);
-                                stdout_had_output = true;
                                 hoc_line_error.replace(error);
-                                break;
+                                let _ = child.kill();
                             }
+                            _ => (),
                         }
                     }
                 }
 
-                let stderr_had_output = stderr_handle.join().unwrap()?;
-
-                if !stdout_had_output && !stderr_had_output {
-                    warning!("No output from script")
-                }
+                stderr_handle.join().unwrap()?;
 
                 child.wait()?
             };
@@ -635,7 +621,7 @@ async fn run() -> AppResult<()> {
                 continue;
             }
 
-            if let Some(code) = exit_status.code() {
+            if let Some(code) = exit_status.code().filter(|c| *c != 0) {
                 error!("Script exited with status {}.", code);
             } else if let Some(signal) = exit_status.signal() {
                 error!("Script was interupted by signal code {}.", signal);

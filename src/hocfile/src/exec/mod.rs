@@ -10,10 +10,16 @@ const VALUE: &str = "value";
 const STRING: &str = "string";
 const LIST: &str = "list";
 
+const EMPTY_OUTPUT: &str = "\n";
+
 const COMMANDS: &[(&str, &[(&str, &[Option<&str>])])] = &[
     (
         "in",
-        &[("unset", &[None]), ("choose", &[Some(STRING), Some(LIST)])],
+        &[
+            ("unset", &[None]),
+            ("choose", &[Some(STRING), Some(LIST)]),
+            ("hidden_input", &[Some(STRING)]),
+        ],
     ),
     (
         "out",
@@ -147,6 +153,12 @@ impl<'a> PopHocCommandArgument<'a> for VecDeque<(&'a str, Option<HocValue>)> {
     }
 }
 
+fn write_to_pipe(sync_pipe: &Path, contents: impl AsRef<[u8]>) -> Result<(), HocLineParseError> {
+    std::fs::write(sync_pipe, contents).map_err(|e| {
+        HocLineParseError::new(format!("Failed to write to sync pipe: {}", e))
+    })
+}
+
 pub fn exec_hoc_line(
     log: &Log,
     input: &mut HocState,
@@ -164,18 +176,20 @@ pub fn exec_hoc_line(
 
     let prefix = format!("executing command '{}' in namespace '{}'", cmd, ns);
 
-    match (ns, cmd) {
+    let sync_pipe_output = match (ns, cmd) {
         ("in", "unset") => {
             let key = args.pop_key();
 
             input.remove(key).ok_or_else(|| {
                 HocLineParseError::new(format!("{}: '{}' is not defined", prefix, key))
             })?;
+
+            EMPTY_OUTPUT.to_string()
         }
 
         ("in", "choose") => {
-            let message = args
-                .pop_string_for_key_checked("message")
+            let prompt = args
+                .pop_string_for_key_checked("prompt")
                 .map_err(|err| HocLineParseError::new(format!("{}: {}", prefix, err)))?;
             let options = args
                 .pop_list_for_key_checked("options")
@@ -185,11 +199,15 @@ pub fn exec_hoc_line(
                 .collect::<Option<Vec<_>>>()
                 .ok_or_else(|| HocLineParseError::new("expected options type be of type string"))?;
 
-            let index = log.choose(message, options, 0);
+            log.choose(prompt, options, 0).to_string()
+        }
 
-            std::fs::write(sync_pipe, index.to_string()).map_err(|e| {
-                HocLineParseError::new(format!("failed to write to sync pipe: {}", e))
-            })?;
+        ("in", "hidden_input") => {
+            let prompt = args
+                .pop_string_for_key_checked("prompt")
+                .map_err(|err| HocLineParseError::new(format!("{}: {}", prefix, err)))?;
+
+            log.hidden_input(prompt)
         }
 
         ("out", "append") => {
@@ -211,31 +229,43 @@ pub fn exec_hoc_line(
                     );
                 }
             }
+
+            EMPTY_OUTPUT.to_string()
         }
 
         ("out", "set") => {
             let (key, value) = args.pop_key_value();
             output.insert(key.to_string(), value);
+
+            EMPTY_OUTPUT.to_string()
         }
 
         ("out", "static") => {
             let (key, value) = args.pop_key_value();
             output.insert(key.to_string(), value);
             static_keys.push(key.to_string());
+
+            EMPTY_OUTPUT.to_string()
         }
 
         ("state", "persist") => {
             let (key, value) = args.pop_key_value();
             state.insert(key.to_string(), value);
+
+            EMPTY_OUTPUT.to_string()
         }
 
         ("state", "forget") => {
             let key = args.pop_key();
             state.remove(key);
+
+            EMPTY_OUTPUT.to_string()
         }
 
         (ns, cmd) => unreachable!("did not expect command '{}' in namespace '{}'", cmd, ns),
-    }
+    };
+
+    write_to_pipe(sync_pipe, sync_pipe_output)?;
 
     Ok(Some((ns, cmd)))
 }

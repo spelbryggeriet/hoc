@@ -16,29 +16,54 @@ commands:
     procedure:
       - description: Find local endpoints
         script: |
-          hoc out set --regex '"([^ ]*) \\((.*)\\) at ([^ ]*) on (.*) \\[(.*)\\]"'
+          hoc out set --regex '"([^ ]+) \\((.+)\\) at ([^ ]+) on (.+) \\[(.+)\\]"'
           hoc out set --search_strings []
 
           echo "Searching for local endpoints ..."
           arp -a | dquote | hoc out append --search_strings -
       - description: Rewrite endpoint output
         scriptRef: regex
+      - description: Filter endpoints
+        script: |
+          hoc out set --endpoints []
+          {%- for m in input.matches %}
+          {%- if m|nth(n=0) != "?" %}
+          hoc out append --endpoints '["{{ m | nth(n=0) }}","{{ m | nth(n=1) }}"]'
+          {%- endif %}
+          {%- endfor %}
       - description: Configure endpoint
         condition:
-          expression: input.matches|length > 0
+          expression: input.endpoints|length > 0
           message: No endpoints found to configure
         script: |
+          # Prompt user for endpoint to configure.
           message='"Which endpoint do you want to configure?"'
-
+          node_names=(
+              {%- for m in input.endpoints %}
+              {{ m | nth(n=0) | squote }}
+              {%- endfor %}
+          )
           options=(
-              {%- for m in input.matches %}
+              {%- for m in input.endpoints %}
               {{ m | nth(n=0) | squote }}' at '{{ m | nth(n=1) | squote }}
               {%- endfor %}
           )
           options="$(lines "${options[@]:-}" | dquote | join_by ',' | bracket)"
+          STORE=index hoc in choose --prompt "$message" --options "$options"
 
-          hoc in choose --message "$message" --options "$options"
-          read_pipe index
+          # Persist the endpoint.
+          hoc state persist --node_name "$(dquote ${node_names[$index]})"
+
+          # Determine credentials for SSH user.
+          username={{ state.username | default(value="pi") | squote }}
+
+          {%- if state.username %}
+          echo "Using previously set up user '{{ state.username }}'"
+          STORE=password hoc in hidden_input --prompt '"Password for {{ state.username }}"'
+          {%- else %}
+          echo "Using default credentials"
+          password='raspberry'
+          {%- endif %}
 
   - name: build
     arguments:
@@ -99,15 +124,6 @@ script:
   profile: |
     function lines {
         printf "%s\n" "$@"
-    }
-
-    function _args {
-        shift $1
-        if [[ $# = 1 ]] ; then
-            echo $1
-        else
-            cat
-        fi
     }
 
     function escape {
@@ -203,6 +219,7 @@ script:
 
         if [[ $num_stdin = 0 ]] ; then
             echo "$prefix($(join_by ',' "${cmd_args[@]:-}"))"
+            _hocsync ${STORE:-}
             return 0
         fi
 
@@ -221,9 +238,19 @@ script:
             done
 
             echo "$prefix($args)"
+            _hocsync ${STORE:-}
         done
     }
 
-    function read_pipe {
-        IFS= read -r $1 <{{ sync_pipe }} || true
+    function _args {
+        shift $1
+        if [[ $# = 1 ]] ; then
+            echo $1
+        else
+            cat
+        fi
+    }
+
+    function _hocsync {
+        IFS= read -r ${1:-} <{{ sync_pipe }} || true
     }
