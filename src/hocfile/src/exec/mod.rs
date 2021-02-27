@@ -3,6 +3,7 @@ mod parse;
 use std::{collections::VecDeque, path::Path};
 
 use crate::{HocState, HocValue};
+use heck::SnakeCase;
 use hoclog::Log;
 use parse::HocLineParseError;
 
@@ -13,6 +14,7 @@ const LIST: &str = "list";
 const EMPTY_OUTPUT: &str = "\n";
 
 const COMMANDS: &[(&str, &[(&str, &[Option<&str>])])] = &[
+    ("do", &[("snake_case", &[Some(STRING)])]),
     (
         "in",
         &[
@@ -154,9 +156,8 @@ impl<'a> PopHocCommandArgument<'a> for VecDeque<(&'a str, Option<HocValue>)> {
 }
 
 fn write_to_pipe(sync_pipe: &Path, contents: impl AsRef<[u8]>) -> Result<(), HocLineParseError> {
-    std::fs::write(sync_pipe, contents).map_err(|e| {
-        HocLineParseError::new(format!("Failed to write to sync pipe: {}", e))
-    })
+    std::fs::write(sync_pipe, contents)
+        .map_err(|e| HocLineParseError::new(format!("Failed to write to sync pipe: {}", e)))
 }
 
 pub fn exec_hoc_line(
@@ -177,6 +178,13 @@ pub fn exec_hoc_line(
     let prefix = format!("executing command '{}' in namespace '{}'", cmd, ns);
 
     let sync_pipe_output = match (ns, cmd) {
+        ("do", "snake_case") => {
+            let string = args
+                .pop_string_for_key_checked("string")
+                .map_err(|err| HocLineParseError::new(format!("{}: {}", prefix, err)))?;
+
+            string.to_snake_case()
+        }
         ("in", "unset") => {
             let key = args.pop_key();
 

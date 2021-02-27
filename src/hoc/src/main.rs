@@ -512,8 +512,6 @@ async fn run() -> AppResult<()> {
                     .stderr(Stdio::piped())
                     .spawn()?;
 
-                status!("Script execution");
-
                 let stdout = child.stdout.take();
                 let stderr = child.stderr.take();
 

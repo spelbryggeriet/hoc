@@ -1,11 +1,19 @@
 commands:
   - name: flash
-    optionals:
-      - name: cached
-        default: "false"
+    optionals: []
     arguments: []
     procedure:
-      - builtIn: RpiFlash
+      - description: Flashing image
+        script: |
+          options=( 'Debian 20' )
+          STORE=index hoc in choose \
+              --prompt '"Which image do you want to use?"' \
+              --options "$( lines "${options[@]}" | stringify | listify)"
+
+          image="${options[$index]}"
+          STORE=image hoc do snake_case --string "$(stringify "$image")"
+
+          echo "$image"
 
   - name: configure
     optionals:
@@ -20,7 +28,7 @@ commands:
           hoc out set --search_strings []
 
           echo "Searching for local endpoints ..."
-          arp -a | dquote | hoc out append --search_strings -
+          arp -a | stringify | hoc out append --search_strings -
       - description: Rewrite endpoint output
         scriptRef: regex
       - description: Filter endpoints
@@ -48,11 +56,11 @@ commands:
               {{ m | nth(n=0) | squote }}' at '{{ m | nth(n=1) | squote }}
               {%- endfor %}
           )
-          options="$(lines "${options[@]:-}" | dquote | join_by ',' | bracket)"
+          options="$(lines "${options[@]:-}" | stringify | listify)"
           STORE=index hoc in choose --prompt "$message" --options "$options"
 
           # Persist the endpoint.
-          hoc state persist --node_name "$(dquote ${node_names[$index]})"
+          hoc state persist --node_name "$(stringify ${node_names[$index]})"
 
           # Determine credentials for SSH user.
           username={{ state.username | default(value="pi") | squote }}
@@ -115,13 +123,26 @@ script:
         if [[ {% raw %} ${#BASH_REMATCH} {% endraw %} = 0 ]] ; then
             matches="[]"
         else
-            matches="$(lines "${BASH_REMATCH[@]:1}" | dquote | join_by ',' | bracket)"
+            matches="$(lines "${BASH_REMATCH[@]:1}" | stringify | listify)"
         fi
 
         hoc out append --matches "$matches"
         {%- endfor %}
 
   profile: |
+    function _args {
+        shift $1
+        if [[ $# = 1 ]] ; then
+            echo $1
+        else
+            cat
+        fi
+    }
+
+    function _hocsync {
+        IFS= read -r ${1:-} <{{ sync_pipe }} || true
+    }
+
     function lines {
         printf "%s\n" "$@"
     }
@@ -134,12 +155,12 @@ script:
         _args 1 "$@" | sed -r 's/('\'')/'\''\\\1'\''/' | sed -r 's/(.*)/'\''\1'\''/'
     }
 
-    function dquote {
+    function stringify {
         _args 1 "$@" | escape '"' | sed -r 's/(.*)/"\1"/'
     }
 
-    function bracket {
-        _args 1 "$@" | sed -r 's/(.*)/[\1]/'
+    function listify {
+        _args 1 "$@" | join_by ',' | sed -r 's/(.*)/[\1]/'
     }
 
     function prepend {
@@ -240,17 +261,4 @@ script:
             echo "$prefix($args)"
             _hocsync ${STORE:-}
         done
-    }
-
-    function _args {
-        shift $1
-        if [[ $# = 1 ]] ; then
-            echo $1
-        else
-            cat
-        fi
-    }
-
-    function _hocsync {
-        IFS= read -r ${1:-} <{{ sync_pipe }} || true
     }
