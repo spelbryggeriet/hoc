@@ -157,7 +157,7 @@ impl Log {
         *self.spacing_printed.lock().unwrap() = false;
     }
 
-    pub fn prompt(&self, message: impl AsRef<str>) {
+    pub fn prompt(&self, message: impl AsRef<str>) -> bool {
         let cyan = Style::new().cyan();
         let level = Log::calculate_status_level(&self.statuses);
 
@@ -166,15 +166,13 @@ impl Log {
 
         let want_continue = Confirm::new()
             .with_prompt(cyan.apply_to(prompt).to_string())
+            .default(false)
             .interact_on(&self.stdout.lock().unwrap())
             .unwrap_or_else(|e| panic!(format!("failed printing to stdout: {}", e)));
 
-        if !want_continue {
-            // anyhow::bail!("User cancelled operation");
-            panic!("User cancelled operation");
-        }
-
         *self.spacing_printed.lock().unwrap() = false;
+
+        want_continue
     }
 
     pub fn input(&self, message: impl AsRef<str>) -> String {

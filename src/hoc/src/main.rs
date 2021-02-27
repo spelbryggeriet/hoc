@@ -400,6 +400,13 @@ async fn run() -> AppResult<()> {
             let mut context = tera::Context::new();
             context.insert("sync_pipe", &sync_pipe.path_buf);
             context.insert("cache_dir", &hoccache_dir);
+
+            #[cfg(target_os = "macos")]
+            context.insert("target", "macos");
+
+            #[cfg(target_os = "linux")]
+            context.insert("target", "linux");
+
             context.insert("input", &input);
             context.insert("state", &hocstate);
 
@@ -525,7 +532,6 @@ async fn run() -> AppResult<()> {
                 let stderr = child.stderr.take();
 
                 let stderr_handle = std::thread::spawn(move || -> io::Result<()> {
-                    let mut stderr_had_output = false;
                     if let Some(stderr) = stderr {
                         let reader = BufReader::new(stderr);
                         for line in reader.lines() {

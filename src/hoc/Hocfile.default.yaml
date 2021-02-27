@@ -15,7 +15,7 @@ commands:
           )
 
           STORE=index hoc in choose \
-              --prompt '"Which image do you want to use?"' \
+              --text '"Which image do you want to use?"' \
               --options "$( lines "${options[@]}" | stringify | listify)"
 
           image="${options[$index]}"
@@ -45,11 +45,110 @@ commands:
               echo "Using cached image at $filepath"
           fi
 
-          {%- if input.cached == "false" %}
-          echo "Cleaning up temporary files ..."
-          rm "$filepath"
+          hoc out static --image "$(stringify "$image")"
+          hoc out static --image_path "$(stringify "$filepath")"
+          hoc out set --image_type '"disk"'
+      - description: Find attached disks
+        script: |
+          echo "Finding attached disks ..."
+          output="$(diskutil list external physical)"
+
+          if [[ -z "$(trim "$output")" ]] ; then
+              echo "No external disk attached"
+              echo "Waiting for a drive to be attached ..."
+
+              while [[ -z "$(trim "$output")" ]] ; do
+                  sleep 1
+                  output="$(diskutil list external physical)"
+              done
+          fi
+
+          hoc out set --regex '"^ *#:( *TYPE) *(NAME *) (SIZE *)(IDENTIFIER *)$"'
+          hoc out static --search_strings []
+          echo "$output" | stringify | hoc out append --search_strings -
+      - description: Match disk list header
+        scriptRef: regex
+      - description: Parse disk list header
+        script: |
+          {%- set filtered = [] %}
+          {%- for m in input.matches %}
+          {%- if m | length == 4 %}
+          {%- set_global filtered = filtered | concat(with=[m]) %}
+          {%- endif %}
+          {%- endfor %}
+
+          {%- if filtered | length != 1 %}
+          echo "Disk list header output could not be parsed" >&2
+          exit 1
           {%- endif %}
 
+          ty_ln={{ filtered | nth(n=0) | nth(n=0) | length }}
+          nm_ln={{ filtered | nth(n=0) | nth(n=1) | length }}
+          sz_ln={{ filtered | nth(n=0) | nth(n=2) | length }}
+          id_ln={{ filtered | nth(n=0) | nth(n=3) | length }}
+
+          hoc out set --regex '"^ *0:(.{0,'$ty_ln'}) (.{0,'$nm_ln'}).(.{0,'$sz_ln'})(.{0,'$id_ln'})$"'
+      - description: Match disk list
+        scriptRef: regex
+      - description: Flash image
+        script: |
+          hoc in unset --search_strings
+
+          disks=(
+              {%- set filtered = [] %}
+              {%- for m in input.matches %}
+              {%- if m | length == 4 %}
+              {%- set_global filtered = filtered | concat(with=[m]) %}
+              {{ m | nth(n=3) | trim | squote }}
+              {%- endif %}
+              {%- endfor %}
+          )
+
+          options=(
+              {%- for f in filtered %}
+              {%- set ty = f | nth(n=0) | trim %}
+              {%- set nm = f | nth(n=1) | trim %}
+              {%- set sz = f | nth(n=2) | trim | squote %}
+              {%- set id = f | nth(n=3) | trim | squote %}
+
+              {%- if ty == "" %}
+              {%- set ty = "unknown type" | squote %}
+              {%- else %}
+              {%- set ty = "type " ~ ty | squote %}
+              {%- endif %}
+
+              {%- if nm == "" %}
+              {%- set nm = "unnamed disk" | squote %}
+              {%- else %}
+              {%- set nm = nm | squote %}
+              {%- endif %}
+
+              {{ nm }}' of '{{ ty }}' with size '{{ sz }}' mounted at '{{ id }}
+              {%- endfor %}
+          )
+
+          STORE=index hoc in choose \
+              --text '"Which disk do you want to flash?"' \
+              --options "$(lines "${options[@]:-}" | stringify | listify)"
+
+          disk="/dev/r${disks[$index]}"
+
+          echo "Unmounting $disk ..."
+          diskutil unmountDisk "$disk"
+
+          STORE=resp hoc in prompt \
+              --text '"Do you want to continue to flash '$disk' with {{ input.image }}?"'
+          if [[ $resp = 0 ]] ; then
+              exit 1
+          fi
+
+          echo "Flashing $disk ..."
+          sudo dd bs=1m if={{ input.image_path | squote }} of="$disk" 2>&1
+
+          {%- if input.cached == "false" %}
+          echo "Cleaning up temporary files ..."
+          rm {{ input.image_path | squote }}
+          {%- endif %}
 
   - name: configure
     optionals:
@@ -65,7 +164,7 @@ commands:
 
           echo "Searching for local endpoints ..."
           arp -a | stringify | hoc out append --search_strings -
-      - description: Rewrite endpoint output
+      - description: Match endpoint output
         scriptRef: regex
       - description: Filter endpoints
         script: |
@@ -93,7 +192,7 @@ commands:
               {%- endfor %}
           )
           options="$(lines "${options[@]:-}" | stringify | listify)"
-          STORE=index hoc in choose --prompt "$message" --options "$options"
+          STORE=index hoc in choose --text "$message" --options "$options"
 
           # Persist the endpoint.
           hoc state persist --node_name "$(stringify ${node_names[$index]})"
@@ -103,7 +202,7 @@ commands:
 
           {%- if state.username %}
           echo "Using previously set up user '{{ state.username }}'"
-          STORE=password hoc in hidden_input --prompt '"Password for {{ state.username }}"'
+          STORE=password hoc in hidden_input --text '"Password for {{ state.username }}"'
           {%- else %}
           echo "Using default credentials"
           password='raspberry'
@@ -191,6 +290,10 @@ script:
         _args 1 "$@" | sed -r 's/('\'')/'\''\\\1'\''/' | sed -r 's/(.*)/'\''\1'\''/'
     }
 
+    function trim {
+        _args 1 "$@" | xargs
+    }
+
     function stringify {
         _args 1 "$@" | escape '"' | sed -r 's/(.*)/"\1"/'
     }
@@ -222,6 +325,11 @@ script:
             shift
             printf %s "$f" "${@/#/$d}" | append "\n"
         fi
+    }
+
+    function unimplemented {
+        echo "not implemented" >&2
+        exit 1
     }
 
     function hoc {

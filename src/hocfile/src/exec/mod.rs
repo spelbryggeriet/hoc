@@ -11,16 +11,17 @@ const VALUE: &str = "value";
 const STRING: &str = "string";
 const LIST: &str = "list";
 
-const EMPTY_OUTPUT: &str = "\n";
+const EMPTY_OUTPUT: &str = "";
 
 const COMMANDS: &[(&str, &[(&str, &[Option<&str>])])] = &[
     ("do", &[("snake_case", &[Some(STRING)])]),
     (
         "in",
         &[
-            ("unset", &[None]),
             ("choose", &[Some(STRING), Some(LIST)]),
             ("hidden_input", &[Some(STRING)]),
+            ("prompt", &[Some(STRING)]),
+            ("unset", &[None]),
         ],
     ),
     (
@@ -185,19 +186,10 @@ pub fn exec_hoc_line(
 
             string.to_snake_case()
         }
-        ("in", "unset") => {
-            let key = args.pop_key();
-
-            input.remove(key).ok_or_else(|| {
-                HocLineParseError::new(format!("{}: '{}' is not defined", prefix, key))
-            })?;
-
-            EMPTY_OUTPUT.to_string()
-        }
 
         ("in", "choose") => {
             let prompt = args
-                .pop_string_for_key_checked("prompt")
+                .pop_string_for_key_checked("text")
                 .map_err(|err| HocLineParseError::new(format!("{}: {}", prefix, err)))?;
             let options = args
                 .pop_list_for_key_checked("options")
@@ -212,10 +204,28 @@ pub fn exec_hoc_line(
 
         ("in", "hidden_input") => {
             let prompt = args
-                .pop_string_for_key_checked("prompt")
+                .pop_string_for_key_checked("text")
                 .map_err(|err| HocLineParseError::new(format!("{}: {}", prefix, err)))?;
 
             log.hidden_input(prompt)
+        }
+
+        ("in", "prompt") => {
+            let prompt = args
+                .pop_string_for_key_checked("text")
+                .map_err(|err| HocLineParseError::new(format!("{}: {}", prefix, err)))?;
+
+            (log.prompt(prompt) as u32).to_string()
+        }
+
+        ("in", "unset") => {
+            let key = args.pop_key();
+
+            input.remove(key).ok_or_else(|| {
+                HocLineParseError::new(format!("{}: '{}' is not defined", prefix, key))
+            })?;
+
+            EMPTY_OUTPUT.to_string()
         }
 
         ("out", "append") => {
