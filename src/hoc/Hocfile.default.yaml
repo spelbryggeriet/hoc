@@ -1,19 +1,55 @@
 commands:
   - name: flash
-    optionals: []
+    optionals:
+      - name: cached
+        default: "true"
+      - name: refetch
+        default: "false"
     arguments: []
     procedure:
-      - description: Flashing image
+      - description: Fetch image
         script: |
           options=( 'Debian 20' )
+          urls=(
+            'https://cdimage.ubuntu.com/releases/20.04/release/ubuntu-20.04.2-live-server-arm64.iso'
+          )
+
           STORE=index hoc in choose \
               --prompt '"Which image do you want to use?"' \
               --options "$( lines "${options[@]}" | stringify | listify)"
 
           image="${options[$index]}"
-          STORE=image hoc do snake_case --string "$(stringify "$image")"
+          url="${urls[$index]}"
 
-          echo "$image"
+          STORE=image_key hoc do snake_case --string "$(stringify "$image")"
+
+          echo URL: "$url"
+
+          {%- if input.cached == "true" %}
+          filepath={{ cache_dir | squote }}"/$image_key"
+          if [[ -e "$filepath" ]] ; then
+              exists={% if input.refetch == "true" -%} 0 {%- else -%} 1 {%- endif %}
+          else
+              exists=0
+          fi
+          {%- else %}
+          filepath="$(mktemp "$(echo "$TMPDIR/XXXXXXXXXXXX" | sed 's/\/\/*/\//g')")"
+          exists=0
+          {%- endif %}
+
+          if [[ $exists = 0 ]] ; then
+              echo "Fetching image ..."
+              curl -s "$url" --output "$filepath"
+              echo "Image saved to $filepath"
+          else
+              echo "Using cached image at $filepath"
+          fi
+
+          {%- if input.cached == "false" %}
+          echo "Cleaning up temporary files ..."
+          rm "$filepath"
+          {%- endif %}
+
 
   - name: configure
     optionals:

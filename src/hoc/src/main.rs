@@ -234,6 +234,14 @@ async fn run() -> AppResult<()> {
 
     let mut hocstate_dir = PathBuf::from(env::var("HOME").unwrap());
     hocstate_dir.push(".hoc");
+    if !hocstate_dir.exists() {
+        fs::create_dir(&hocstate_dir).context("Creating Hoc directory")?;
+    }
+
+    let hoccache_dir = hocstate_dir.join("cache");
+    if !hoccache_dir.exists() {
+        fs::create_dir(&hoccache_dir).context("Creating Hoc cache directory")?;
+    }
 
     let hocstate_file_path = hocstate_dir.join("state.yaml");
 
@@ -391,6 +399,7 @@ async fn run() -> AppResult<()> {
         for (step_i, step) in (1..).zip(&command.procedure) {
             let mut context = tera::Context::new();
             context.insert("sync_pipe", &sync_pipe.path_buf);
+            context.insert("cache_dir", &hoccache_dir);
             context.insert("input", &input);
             context.insert("state", &hocstate);
 
@@ -633,10 +642,6 @@ async fn run() -> AppResult<()> {
 
             anyhow::bail!("Command '{}' failed", command.name.deref());
         }
-    }
-
-    if !hocstate_dir.exists() {
-        fs::create_dir(&hocstate_dir).context("Creating Hoc directory")?;
     }
 
     let new_hocstate_file_path = hocstate_dir.join("state.yaml.new");
