@@ -11,7 +11,7 @@ commands:
         script: |
           options=( 'Debian 20' )
           urls=(
-            'https://cdimage.ubuntu.com/releases/20.04/release/ubuntu-20.04.2-live-server-arm64.iso'
+            'https://cdimage.ubuntu.com/releases/20.04/release/ubuntu-20.04.3-live-server-arm64.iso'
           )
 
           STORE=index hoc in choose \

@@ -23,7 +23,7 @@ k8s-openapi = { version = "0.10", default-features = false, features = ["v1_19"]
 kube = { git = "https://github.com/clux/kube-rs.git", rev = "f49fcc4b64ca53091efe15f570e38c6ab3789567" }
 lazy_static = "1.4"
 libc = "0.2"
-nom = "5.1"
+nom = "7.0.0"
 num_enum = "0.5"
 plist = "1.0"
 rand = "0.7"
