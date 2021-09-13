@@ -2,7 +2,7 @@ mod styling;
 mod wrapping;
 
 use std::cell::RefCell;
-use std::sync::{Arc, Mutex, MutexGuard, Weak};
+use std::sync::{Arc, Mutex, Weak};
 use std::{fmt, io::Write};
 
 use console::{Style, Term, TermTarget};
@@ -71,7 +71,7 @@ impl PrintContext {
         first_line_prefix_prefs: PrefixPrefs,
         line_prefix_prefs: PrefixPrefs,
     ) {
-        let prefix = Log::create_line_prefix(self.status_level(), first_line_prefix_prefs);
+        let prefix = self.create_line_prefix(first_line_prefix_prefs);
         let prefix_len = prefix.char_count_without_styling();
 
         let text_len = text.as_ref().chars().count();
@@ -89,10 +89,37 @@ impl PrintContext {
         Log::println(&mut self.stdout.borrow_mut(), first_line);
 
         for chunk in text_chunks {
-            let mut line = Log::create_line_prefix(self.status_level(), line_prefix_prefs);
+            let mut line = self.create_line_prefix(line_prefix_prefs);
             line += &chunk;
             Log::println(&mut *self.stdout.borrow_mut(), line);
         }
+    }
+
+    fn create_line_prefix(&self, prefs: PrefixPrefs) -> String {
+        let mut line_prefix = String::new();
+
+        if self.status_level() > 0 {
+            for outer_level in 1..self.status_level() {
+                line_prefix += &Log::get_status_level_color(outer_level)
+                    .apply_to("│ ")
+                    .to_string();
+            }
+
+            let status_level_color = Log::get_status_level_color(self.status_level());
+            line_prefix += &status_level_color.apply_to(prefs.connector).to_string();
+            line_prefix += &status_level_color.apply_to(prefs.flag).to_string();
+        } else {
+            line_prefix += prefs.flag;
+        }
+
+        line_prefix += " ";
+
+        if prefs.label.len() > 0 {
+            line_prefix += prefs.label;
+            line_prefix += " ";
+        }
+
+        line_prefix
     }
 }
 
@@ -205,9 +232,8 @@ impl Log {
         let mut print_context = self.print_context.lock().unwrap();
 
         let cyan = Style::new().cyan();
-        let level = print_context.status_level();
 
-        let mut prompt = Log::create_line_prefix(level, PrefixPrefs::in_status().flag("?"));
+        let mut prompt = print_context.create_line_prefix(PrefixPrefs::in_status().flag("?"));
         prompt += message.as_ref();
 
         let want_continue = Confirm::new()
@@ -225,9 +251,8 @@ impl Log {
         let mut print_context = self.print_context.lock().unwrap();
 
         let cyan = Style::new().cyan();
-        let level = print_context.status_level();
 
-        let mut prompt = Log::create_line_prefix(level, PrefixPrefs::in_status().flag("?"));
+        let mut prompt = print_context.create_line_prefix(PrefixPrefs::in_status().flag("?"));
         prompt += message.as_ref();
 
         let input = Input::new()
@@ -244,9 +269,8 @@ impl Log {
         let mut print_context = self.print_context.lock().unwrap();
 
         let cyan = Style::new().cyan();
-        let level = print_context.status_level();
 
-        let mut prompt = Log::create_line_prefix(level, PrefixPrefs::in_status().flag("?"));
+        let mut prompt = print_context.create_line_prefix(PrefixPrefs::in_status().flag("?"));
         prompt += message.as_ref();
 
         let password = Password::new()
@@ -268,36 +292,36 @@ impl Log {
 
         let cyan = Style::new().cyan();
         let items: Vec<_> = items.into_iter().collect();
-        let level = print_context.status_level();
 
-        let mut prompt = Log::create_line_prefix(level, PrefixPrefs::in_status().flag("#"));
+        let mut prompt = print_context.create_line_prefix(PrefixPrefs::in_status().flag("#"));
         prompt += message.as_ref();
 
-        struct ChooseTheme {
-            level: usize,
+        struct ChooseTheme<'a> {
+            print_context: &'a PrintContext,
         }
 
-        impl Theme for ChooseTheme {
+        impl Theme for ChooseTheme<'_> {
             fn format_select_prompt_item(
                 &self,
                 f: &mut dyn fmt::Write,
                 text: &str,
                 active: bool,
             ) -> fmt::Result {
-                let prefix = Log::create_line_prefix(
-                    self.level,
+                let prefix = self.print_context.create_line_prefix(
                     PrefixPrefs::in_status_overflow().flag(if active { ">" } else { " " }),
                 );
                 write!(f, "{}{}", prefix, text)
             }
         }
 
-        let index = Select::with_theme(&ChooseTheme { level })
-            .with_prompt(cyan.apply_to(prompt).to_string())
-            .items(&items)
-            .default(default_index)
-            .interact_on_opt(&print_context.stdout.borrow())
-            .unwrap_or_else(|e| panic!("failed printing to stdout: {}", e));
+        let index = Select::with_theme(&ChooseTheme {
+            print_context: &print_context,
+        })
+        .with_prompt(cyan.apply_to(prompt).to_string())
+        .items(&items)
+        .default(default_index)
+        .interact_on_opt(&print_context.stdout.borrow())
+        .unwrap_or_else(|e| panic!("failed printing to stdout: {}", e));
 
         print_context.spacing_needed = true;
 
@@ -335,33 +359,6 @@ impl Log {
             7 => style.magenta(),
             _ => style.magenta().bright(),
         }
-    }
-
-    fn create_line_prefix(status_level: usize, prefs: PrefixPrefs) -> String {
-        let mut line_prefix = String::new();
-
-        if status_level > 0 {
-            for outer_level in 1..status_level {
-                line_prefix += &Log::get_status_level_color(outer_level)
-                    .apply_to("│ ")
-                    .to_string();
-            }
-
-            let status_level_color = Log::get_status_level_color(status_level);
-            line_prefix += &status_level_color.apply_to(prefs.connector).to_string();
-            line_prefix += &status_level_color.apply_to(prefs.flag).to_string();
-        } else {
-            line_prefix += prefs.flag;
-        }
-
-        line_prefix += " ";
-
-        if prefs.label.len() > 0 {
-            line_prefix += prefs.label;
-            line_prefix += " ";
-        }
-
-        line_prefix
     }
 }
 
@@ -440,7 +437,8 @@ impl Drop for Status {
 
         let level = print_context.status_level();
 
-        let mut line = Log::create_line_prefix(level, PrefixPrefs::with_connector("╙─").flag("─"));
+        let mut line =
+            print_context.create_line_prefix(PrefixPrefs::with_connector("╙─").flag("─"));
         if self.tracking {
             if !print_context.failure {
                 if level == 1 {
