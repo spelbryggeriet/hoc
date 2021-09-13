@@ -100,12 +100,13 @@ impl PrintContext {
 
         if self.status_level() > 0 {
             for outer_level in 1..self.status_level() {
-                line_prefix += &Log::get_status_level_color(outer_level)
+                line_prefix += &self
+                    .get_status_level_color(outer_level)
                     .apply_to("│ ")
                     .to_string();
             }
 
-            let status_level_color = Log::get_status_level_color(self.status_level());
+            let status_level_color = self.get_status_level_color(self.status_level());
             line_prefix += &status_level_color.apply_to(prefs.connector).to_string();
             line_prefix += &status_level_color.apply_to(prefs.flag).to_string();
         } else {
@@ -120,6 +121,20 @@ impl PrintContext {
         }
 
         line_prefix
+    }
+
+    fn get_status_level_color(&self, status_level: usize) -> Style {
+        let style = Style::new();
+        match status_level {
+            0 | 1 => style.white(),
+            2 => style.white().bright(),
+            3 => style.cyan(),
+            4 => style.cyan().bright(),
+            5 => style.blue(),
+            6 => style.blue().bright(),
+            7 => style.magenta(),
+            _ => style.magenta().bright(),
+        }
     }
 }
 
@@ -345,20 +360,6 @@ impl Log {
     fn println(out: &mut Term, msg: impl AsRef<str>) {
         Log::print(out, msg);
         Log::print(out, "\n");
-    }
-
-    fn get_status_level_color(level: usize) -> Style {
-        let style = Style::new();
-        match level {
-            0 | 1 => style.white(),
-            2 => style.white().bright(),
-            3 => style.cyan(),
-            4 => style.cyan().bright(),
-            5 => style.blue(),
-            6 => style.blue().bright(),
-            7 => style.magenta(),
-            _ => style.magenta().bright(),
-        }
     }
 }
 
