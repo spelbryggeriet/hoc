@@ -1,16 +1,33 @@
 mod styling;
 mod wrapping;
 
+use std::sync::{Arc, Mutex, MutexGuard, Weak};
+use std::{fmt, io::Write};
+
 use console::{Style, Term, TermTarget};
 use dialoguer::{theme::Theme, Confirm, Input, Password, Select};
-use std::sync::{Arc, Mutex, Weak};
-use std::{fmt, io::Write};
+use lazy_static::lazy_static;
 
 pub use styling::Styling;
 pub use wrapping::Wrapping;
 
 const INFO_FLAG: &str = "~";
 const ERROR_FLAG: &str = "⚠︎";
+
+lazy_static! {
+    pub static ref LOG: Log = Log::new();
+}
+
+#[macro_export]
+macro_rules! info {
+    ($fmt:expr) => {
+        ::hoclog::LOG.info($fmt)
+    };
+
+    ($fmt:expr, $($args:tt)*) => {
+        ::$crate::LOG.info(format!($fmt, $($args)*))
+    };
+}
 
 fn get_term_label(target: TermTarget) -> &'static str {
     match target {
@@ -94,9 +111,11 @@ impl Log {
     }
 
     pub fn info(&self, message: impl AsRef<str>) {
+        let mut out = self.stdout.lock().unwrap();
+
         let level = Log::calculate_status_level(&self.statuses);
         Log::println_wrapped_text(
-            &self.stdout,
+            &mut out,
             message,
             level,
             PrefixPrefs::in_status().flag(INFO_FLAG),
@@ -106,6 +125,8 @@ impl Log {
     }
 
     pub fn labelled_info(&self, label: impl AsRef<str>, message: impl AsRef<str>) {
+        let mut out = self.stdout.lock().unwrap();
+
         let level = Log::calculate_status_level(&self.statuses);
 
         let label_len = label.as_ref().chars().count();
@@ -117,7 +138,7 @@ impl Log {
         label += &" ".repeat(label_len - label_trimmed_len);
 
         Log::println_wrapped_text(
-            &self.stdout,
+            &mut out,
             message,
             level,
             PrefixPrefs::in_status().flag(INFO_FLAG).label(&label),
@@ -127,11 +148,13 @@ impl Log {
     }
 
     pub fn warning(&self, message: impl AsRef<str>) {
+        let mut out = self.stdout.lock().unwrap();
+
         let yellow = Style::new().yellow();
         let level = Log::calculate_status_level(&self.statuses);
 
         Log::println_wrapped_text(
-            &self.stdout,
+            &mut out,
             yellow.apply_to(message.as_ref()).to_string(),
             level,
             PrefixPrefs::in_status().flag(&yellow.apply_to(ERROR_FLAG).to_string()),
@@ -142,12 +165,14 @@ impl Log {
     }
 
     pub fn error(&self, message: impl AsRef<str>) {
+        let mut out = self.stdout.lock().unwrap();
+
         let red = Style::new().red();
         *self.failure.lock().unwrap() = true;
         let level = Log::calculate_status_level(&self.statuses);
 
         Log::println_wrapped_text(
-            &self.stdout,
+            &mut out,
             red.apply_to(message.as_ref()).to_string(),
             level,
             PrefixPrefs::in_status().flag(&red.apply_to(ERROR_FLAG).to_string()),
@@ -168,7 +193,7 @@ impl Log {
             .with_prompt(cyan.apply_to(prompt).to_string())
             .default(false)
             .interact_on(&self.stdout.lock().unwrap())
-            .unwrap_or_else(|e| panic!(format!("failed printing to stdout: {}", e)));
+            .unwrap_or_else(|e| panic!("failed printing to stdout: {}", e));
 
         *self.spacing_printed.lock().unwrap() = false;
 
@@ -187,7 +212,7 @@ impl Log {
         Input::new()
             .with_prompt(cyan.apply_to(prompt).to_string())
             .interact_on(&self.stdout.lock().unwrap())
-            .unwrap_or_else(|e| panic!(format!("failed printing to stdout: {}", e)))
+            .unwrap_or_else(|e| panic!("failed printing to stdout: {}", e))
     }
 
     pub fn hidden_input(&self, message: impl AsRef<str>) -> String {
@@ -202,7 +227,7 @@ impl Log {
         Password::new()
             .with_prompt(cyan.apply_to(prompt).to_string())
             .interact_on(&self.stdout.lock().unwrap())
-            .unwrap_or_else(|e| panic!(format!("failed printing to stdout: {}", e)))
+            .unwrap_or_else(|e| panic!("failed printing to stdout: {}", e))
     }
 
     pub fn choose(
@@ -242,7 +267,7 @@ impl Log {
             .items(&items)
             .default(default_index)
             .interact_on_opt(&self.stdout.lock().unwrap())
-            .unwrap_or_else(|e| panic!(format!("failed printing to stdout: {}", e)));
+            .unwrap_or_else(|e| panic!("failed printing to stdout: {}", e));
 
         *self.spacing_printed.lock().unwrap() = false;
 
@@ -254,31 +279,22 @@ impl Log {
         }
     }
 
-    fn print(out: &Mutex<Term>, msg: impl AsRef<str>) {
-        let mut out = out.lock().unwrap();
+    fn print(out: &mut MutexGuard<Term>, msg: impl AsRef<str>) {
         out.write(msg.as_ref().as_bytes()).unwrap_or_else(|e| {
-            panic!(format!(
-                "failed printing to {}: {}",
-                get_term_label(out.target()),
-                e
-            ))
+            panic!("failed printing to {}: {}", get_term_label(out.target()), e)
         });
         out.flush().unwrap_or_else(|e| {
-            panic!(format!(
-                "failed flushing to {}: {}",
-                get_term_label(out.target()),
-                e
-            ))
+            panic!("failed flushing to {}: {}", get_term_label(out.target()), e)
         });
     }
 
-    fn println(out: &Mutex<Term>, msg: impl AsRef<str>) {
+    fn println(out: &mut MutexGuard<Term>, msg: impl AsRef<str>) {
         Log::print(out, msg);
         Log::print(out, "\n");
     }
 
     fn println_wrapped_text(
-        stdout: &Arc<Mutex<Term>>,
+        out: &mut MutexGuard<Term>,
         text: impl AsRef<str>,
         status_level: Option<usize>,
         first_line_prefix_prefs: PrefixPrefs,
@@ -288,9 +304,7 @@ impl Log {
         let prefix_len = prefix.char_count_without_styling();
 
         let text_len = text.as_ref().chars().count();
-        let text_max_width = stdout
-            .lock()
-            .unwrap()
+        let text_max_width = out
             .size_checked()
             .and_then(|s| (s.1 as usize).checked_sub(prefix_len))
             .filter(|l| *l > 0)
@@ -299,12 +313,12 @@ impl Log {
         let mut text_chunks = normalized_text.wrapped_lines(text_max_width);
 
         let first_line = prefix + &text_chunks.next().unwrap_or_default();
-        Log::println(&stdout, first_line);
+        Log::println(out, first_line);
 
         for chunk in text_chunks {
             let mut line = Log::create_line_prefix(status_level, line_prefix_prefs);
             line += &chunk;
-            Log::println(&stdout, line);
+            Log::println(out, line);
         }
     }
 
@@ -400,25 +414,25 @@ impl Status {
         spacing_printed: Arc<Mutex<bool>>,
         tracking: bool,
     ) -> Self {
-        let level = Log::calculate_status_level(&statuses)
-            .map(|l| Some(l + 1))
-            .unwrap_or(Some(0));
+        {
+            let mut out = stdout.lock().unwrap();
+            let level = Log::calculate_status_level(&statuses)
+                .map(|l| Some(l + 1))
+                .unwrap_or(Some(0));
 
-        if level == Some(0) && !*spacing_printed.lock().unwrap() {
-            Log::println(
-                &stdout,
-                "",
+            if level == Some(0) && !*spacing_printed.lock().unwrap() {
+                Log::println(&mut out, "");
+                *spacing_printed.lock().unwrap() = true;
+            }
+
+            Log::println_wrapped_text(
+                &mut out,
+                message,
+                level,
+                PrefixPrefs::with_connector("╓╴").flag("*"),
+                PrefixPrefs::in_status_overflow(),
             );
-            *spacing_printed.lock().unwrap() = true;
         }
-
-        Log::println_wrapped_text(
-            &stdout,
-            message,
-            level,
-            PrefixPrefs::with_connector("╓╴").flag("*"),
-            PrefixPrefs::in_status_overflow(),
-        );
 
         Status {
             stdout,
@@ -432,6 +446,8 @@ impl Status {
 
 impl Drop for Status {
     fn drop(&mut self) {
+        let mut out = self.stdout.lock().unwrap();
+
         let level = Log::calculate_status_level(&self.statuses);
 
         let mut line = Log::create_line_prefix(level, PrefixPrefs::with_connector("╙─").flag("─"));
@@ -449,13 +465,10 @@ impl Drop for Status {
             line += "DONE";
         };
 
-        Log::println(&self.stdout, line);
+        Log::println(&mut out, line);
 
         if level == Some(0) {
-            Log::println(
-                &self.stdout,
-                ""
-            );
+            Log::println(&mut out, "");
             *self.spacing_printed.lock().unwrap() = true;
         }
 
