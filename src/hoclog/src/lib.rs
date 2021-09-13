@@ -60,8 +60,8 @@ struct PrintContext {
 }
 
 impl PrintContext {
-    fn calculate_status_level(&self) -> Option<usize> {
-        Some(self.statuses.len()).filter(|i| *i > 0).map(|i| i - 1)
+    fn calculate_status_level(&self) -> usize {
+        self.statuses.len()
     }
 }
 
@@ -256,7 +256,7 @@ impl Log {
         prompt += message.as_ref();
 
         struct ChooseTheme {
-            level: Option<usize>,
+            level: usize,
         }
 
         impl Theme for ChooseTheme {
@@ -308,7 +308,7 @@ impl Log {
     fn println_wrapped_text(
         out: &mut Term,
         text: impl AsRef<str>,
-        status_level: Option<usize>,
+        status_level: usize,
         first_line_prefix_prefs: PrefixPrefs,
         line_prefix_prefs: PrefixPrefs,
     ) {
@@ -337,28 +337,28 @@ impl Log {
     fn get_status_level_color(level: usize) -> Style {
         let style = Style::new();
         match level {
-            0 => style.white(),
-            1 => style.white().bright(),
-            2 => style.cyan(),
-            3 => style.cyan().bright(),
-            4 => style.blue(),
-            5 => style.blue().bright(),
-            6 => style.magenta(),
+            0 | 1 => style.white(),
+            2 => style.white().bright(),
+            3 => style.cyan(),
+            4 => style.cyan().bright(),
+            5 => style.blue(),
+            6 => style.blue().bright(),
+            7 => style.magenta(),
             _ => style.magenta().bright(),
         }
     }
 
-    fn create_line_prefix(status_level: Option<usize>, prefs: PrefixPrefs) -> String {
+    fn create_line_prefix(status_level: usize, prefs: PrefixPrefs) -> String {
         let mut line_prefix = String::new();
 
-        if let Some(level) = status_level {
-            for outer_level in 0..level {
+        if status_level > 0 {
+            for outer_level in 1..status_level {
                 line_prefix += &Log::get_status_level_color(outer_level)
                     .apply_to("│ ")
                     .to_string();
             }
 
-            let status_level_color = Log::get_status_level_color(level);
+            let status_level_color = Log::get_status_level_color(status_level);
             line_prefix += &status_level_color.apply_to(prefs.connector).to_string();
             line_prefix += &status_level_color.apply_to(prefs.flag).to_string();
         } else {
@@ -420,12 +420,9 @@ impl Status {
         let print_context_clone = Arc::clone(print_context);
         let mut print_context = print_context.lock().unwrap();
 
-        let level = print_context
-            .calculate_status_level()
-            .map(|l| Some(l + 1))
-            .unwrap_or(Some(0));
+        let level = print_context.calculate_status_level() + 1;
 
-        if level == Some(0) && print_context.spacing_needed {
+        if level == 0 && print_context.spacing_needed {
             Log::println(&mut print_context.stdout, "");
             print_context.spacing_needed = false;
         }
@@ -458,7 +455,7 @@ impl Drop for Status {
         let mut line = Log::create_line_prefix(level, PrefixPrefs::with_connector("╙─").flag("─"));
         if self.tracking {
             if !print_context.failure {
-                if level == Some(0) {
+                if level == 1 {
                     line += &Style::new().green().apply_to("SUCCESS").to_string();
                 } else {
                     line += "DONE";
@@ -472,7 +469,7 @@ impl Drop for Status {
 
         Log::println(&mut print_context.stdout, line);
 
-        if level == Some(0) {
+        if level == 1 {
             Log::println(&mut print_context.stdout, "");
             print_context.spacing_needed = false;
         }
