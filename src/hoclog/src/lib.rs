@@ -65,6 +65,22 @@ impl PrintContext {
         self.statuses.len()
     }
 
+    fn print(&self, msg: impl AsRef<str>) {
+        let mut out = self.stdout.borrow_mut();
+
+        out.write(msg.as_ref().as_bytes()).unwrap_or_else(|e| {
+            panic!("failed printing to {}: {}", get_term_label(out.target()), e)
+        });
+        out.flush().unwrap_or_else(|e| {
+            panic!("failed flushing to {}: {}", get_term_label(out.target()), e)
+        });
+    }
+
+    fn println(&self, msg: impl AsRef<str>) {
+        self.print(msg);
+        self.print("\n");
+    }
+
     fn println_wrapped_text(
         &self,
         text: impl AsRef<str>,
@@ -86,12 +102,12 @@ impl PrintContext {
         let mut text_chunks = normalized_text.wrapped_lines(text_max_width);
 
         let first_line = prefix + &text_chunks.next().unwrap_or_default();
-        Log::println(&mut self.stdout.borrow_mut(), first_line);
+        self.println(first_line);
 
         for chunk in text_chunks {
             let mut line = self.create_line_prefix(line_prefix_prefs);
             line += &chunk;
-            Log::println(&mut *self.stdout.borrow_mut(), line);
+            self.println(line);
         }
     }
 
@@ -347,20 +363,6 @@ impl Log {
             panic!("User cancelled operation");
         }
     }
-
-    fn print(out: &mut Term, msg: impl AsRef<str>) {
-        out.write(msg.as_ref().as_bytes()).unwrap_or_else(|e| {
-            panic!("failed printing to {}: {}", get_term_label(out.target()), e)
-        });
-        out.flush().unwrap_or_else(|e| {
-            panic!("failed flushing to {}: {}", get_term_label(out.target()), e)
-        });
-    }
-
-    fn println(out: &mut Term, msg: impl AsRef<str>) {
-        Log::print(out, msg);
-        Log::print(out, "\n");
-    }
 }
 
 impl Stream<'_> {
@@ -418,7 +420,7 @@ impl Status {
         let level = print_context_unlocked.status_level();
 
         if level == 1 && print_context_unlocked.spacing_needed {
-            Log::println(&mut print_context_unlocked.stdout.borrow_mut(), "");
+            print_context_unlocked.println("");
             print_context_unlocked.spacing_needed = false;
         }
 
@@ -454,10 +456,10 @@ impl Drop for Status {
             line += "DONE";
         };
 
-        Log::println(&mut print_context.stdout.borrow_mut(), line);
+        print_context.println(line);
 
         if level == 1 {
-            Log::println(&mut print_context.stdout.borrow_mut(), "");
+            print_context.println("");
             print_context.spacing_needed = false;
         }
 
