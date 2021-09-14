@@ -1,0 +1,15 @@
+[package]
+name = "hosting-on-command"
+version = "0.1.0"
+authors = ["Hampus Lidin <hampuslidin@gmail.com>"]
+edition = "2018"
+
+[[bin]]
+name = "hoc"
+path = "./src/main.rs"
+
+[dependencies]
+structopt = "0.3.23"
+thiserror = "1.0.29"
+
+hoclog = { path = "../hoclog" }

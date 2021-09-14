@@ -1,7 +1,0 @@
-du-dust
-exa
-procs
-ripgrep
-sd
-starship
-tokei

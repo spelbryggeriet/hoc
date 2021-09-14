@@ -4,7 +4,7 @@ mod wrapping;
 use std::sync::{Arc, Mutex, Weak};
 use std::{fmt, io::Write};
 
-use console::{Style, Term, TermTarget};
+use console::{Style, Term};
 use dialoguer::{theme::Theme, Confirm, Input, Password, Select};
 use lazy_static::lazy_static;
 
@@ -63,13 +63,6 @@ macro_rules! error {
     };
 }
 
-fn get_term_label(target: TermTarget) -> &'static str {
-    match target {
-        TermTarget::Stdout => "stdout",
-        TermTarget::Stderr => "stderr",
-    }
-}
-
 pub struct Log {
     print_context: Arc<Mutex<PrintContext>>,
 }
@@ -101,21 +94,11 @@ impl PrintContext {
     fn print(&mut self, msg: impl AsRef<str>, flush: bool) {
         self.stdout
             .write(msg.as_ref().as_bytes())
-            .unwrap_or_else(|e| {
-                panic!(
-                    "failed printing to {}: {}",
-                    get_term_label(self.stdout.target()),
-                    e
-                )
-            });
+            .unwrap_or_else(|e| panic!("failed printing to stdout: {}", e));
         if flush {
-            self.stdout.flush().unwrap_or_else(|e| {
-                panic!(
-                    "failed flushing to {}: {}",
-                    get_term_label(self.stdout.target()),
-                    e
-                )
-            });
+            self.stdout
+                .flush()
+                .unwrap_or_else(|e| panic!("failed flushing to stdout: {}", e));
         }
     }
 
@@ -144,7 +127,7 @@ impl PrintContext {
     ) {
         self.print_spacing_if_needed(log_type);
 
-        let prefix = self.create_line_prefix(log_type, first_line_prefix_prefs);
+        let prefix = self.create_line_prefix(first_line_prefix_prefs);
         let prefix_len = prefix.char_count_without_styling();
 
         let text_len = text.as_ref().chars().count();
@@ -161,7 +144,7 @@ impl PrintContext {
         self.println(first_line);
 
         for chunk in text_chunks {
-            let mut line = self.create_line_prefix(log_type, line_prefix_prefs);
+            let mut line = self.create_line_prefix(line_prefix_prefs);
             line += &chunk;
             self.println(line);
         }
@@ -169,7 +152,7 @@ impl PrintContext {
         self.last_log_type.replace(log_type);
     }
 
-    fn create_line_prefix(&self, log_type: LogType, prefs: PrefixPrefs) -> String {
+    fn create_line_prefix(&self, prefs: PrefixPrefs) -> String {
         let mut line_prefix = String::new();
 
         let level = self.status_level();
@@ -320,8 +303,7 @@ impl Log {
 
         let cyan = Style::new().cyan();
 
-        let mut prompt =
-            print_context.create_line_prefix(LogType::Flat, PrefixPrefs::in_status().flag("?"));
+        let mut prompt = print_context.create_line_prefix(PrefixPrefs::in_status().flag("?"));
         prompt += message.as_ref();
 
         let want_continue = Confirm::new()
@@ -340,8 +322,7 @@ impl Log {
 
         let cyan = Style::new().cyan();
 
-        let mut prompt =
-            print_context.create_line_prefix(LogType::Flat, PrefixPrefs::in_status().flag("?"));
+        let mut prompt = print_context.create_line_prefix(PrefixPrefs::in_status().flag("?"));
         prompt += message.as_ref();
 
         let input = Input::new()
@@ -359,8 +340,7 @@ impl Log {
 
         let cyan = Style::new().cyan();
 
-        let mut prompt =
-            print_context.create_line_prefix(LogType::Flat, PrefixPrefs::in_status().flag("?"));
+        let mut prompt = print_context.create_line_prefix(PrefixPrefs::in_status().flag("?"));
         prompt += message.as_ref();
 
         let password = Password::new()
@@ -384,8 +364,7 @@ impl Log {
         let cyan = Style::new().cyan();
         let items: Vec<_> = items.into_iter().collect();
 
-        let mut prompt =
-            print_context.create_line_prefix(LogType::Flat, PrefixPrefs::in_status().flag("#"));
+        let mut prompt = print_context.create_line_prefix(PrefixPrefs::in_status().flag("#"));
         prompt += message.as_ref();
 
         struct ChooseTheme<'a> {
@@ -400,7 +379,6 @@ impl Log {
                 active: bool,
             ) -> fmt::Result {
                 let prefix = self.print_context.create_line_prefix(
-                    LogType::Flat,
                     PrefixPrefs::in_status_overflow().flag(if active { ">" } else { " " }),
                 );
                 write!(f, "{}{}", prefix, text)
