@@ -1,7 +1,6 @@
 mod styling;
 mod wrapping;
 
-use std::cell::RefCell;
 use std::sync::{Arc, Mutex, Weak};
 use std::{fmt, io::Write};
 
@@ -42,6 +41,28 @@ macro_rules! status {
     };
 }
 
+#[macro_export]
+macro_rules! warning {
+    ($fmt:expr) => {
+        $crate::LOG.warning($fmt)
+    };
+
+    ($($fmt:tt)*) => {
+        info!(format!($($fmt)*))
+    };
+}
+
+#[macro_export]
+macro_rules! error {
+    ($fmt:expr) => {
+        $crate::LOG.error($fmt)
+    };
+
+    ($($fmt:tt)*) => {
+        info!(format!($($fmt)*))
+    };
+}
+
 fn get_term_label(target: TermTarget) -> &'static str {
     match target {
         TermTarget::Stdout => "stdout",
@@ -54,10 +75,22 @@ pub struct Log {
 }
 
 struct PrintContext {
-    stdout: RefCell<Term>,
+    stdout: Term,
     statuses: Vec<Weak<Status>>,
     failure: bool,
-    spacing_needed: bool,
+    last_log_type: Option<LogType>,
+}
+
+#[derive(PartialEq, Eq, Clone, Copy)]
+enum LogType {
+    /// The start part of a nested log, such as status.
+    NestedStart,
+
+    /// The end part of a nested log, such as status.
+    NestedEnd,
+
+    /// All other logs ar flat.
+    Flat,
 }
 
 impl PrintContext {
@@ -65,35 +98,58 @@ impl PrintContext {
         self.statuses.len()
     }
 
-    fn print(&self, msg: impl AsRef<str>) {
-        let mut out = self.stdout.borrow_mut();
-
-        out.write(msg.as_ref().as_bytes()).unwrap_or_else(|e| {
-            panic!("failed printing to {}: {}", get_term_label(out.target()), e)
-        });
-        out.flush().unwrap_or_else(|e| {
-            panic!("failed flushing to {}: {}", get_term_label(out.target()), e)
-        });
+    fn print(&mut self, msg: impl AsRef<str>, flush: bool) {
+        self.stdout
+            .write(msg.as_ref().as_bytes())
+            .unwrap_or_else(|e| {
+                panic!(
+                    "failed printing to {}: {}",
+                    get_term_label(self.stdout.target()),
+                    e
+                )
+            });
+        if flush {
+            self.stdout.flush().unwrap_or_else(|e| {
+                panic!(
+                    "failed flushing to {}: {}",
+                    get_term_label(self.stdout.target()),
+                    e
+                )
+            });
+        }
     }
 
-    fn println(&self, msg: impl AsRef<str>) {
-        self.print(msg);
-        self.print("\n");
+    fn println(&mut self, msg: impl AsRef<str>) {
+        self.print(msg, false);
+        self.print("\n", true);
+    }
+
+    fn print_spacing_if_needed(&mut self, current_log_type: LogType) {
+        let level = self.status_level();
+        if (current_log_type == LogType::Flat && level == 0
+            || current_log_type == LogType::NestedStart && level == 1)
+            && self.last_log_type.is_some()
+            && self.last_log_type != Some(current_log_type)
+        {
+            self.println("");
+        }
     }
 
     fn println_wrapped_text(
-        &self,
+        &mut self,
         text: impl AsRef<str>,
+        log_type: LogType,
         first_line_prefix_prefs: PrefixPrefs,
         line_prefix_prefs: PrefixPrefs,
     ) {
-        let prefix = self.create_line_prefix(first_line_prefix_prefs);
+        self.print_spacing_if_needed(log_type);
+
+        let prefix = self.create_line_prefix(log_type, first_line_prefix_prefs);
         let prefix_len = prefix.char_count_without_styling();
 
         let text_len = text.as_ref().chars().count();
         let text_max_width = self
             .stdout
-            .borrow()
             .size_checked()
             .and_then(|s| (s.1 as usize).checked_sub(prefix_len))
             .filter(|l| *l > 0)
@@ -105,17 +161,21 @@ impl PrintContext {
         self.println(first_line);
 
         for chunk in text_chunks {
-            let mut line = self.create_line_prefix(line_prefix_prefs);
+            let mut line = self.create_line_prefix(log_type, line_prefix_prefs);
             line += &chunk;
             self.println(line);
         }
+
+        self.last_log_type.replace(log_type);
     }
 
-    fn create_line_prefix(&self, prefs: PrefixPrefs) -> String {
+    fn create_line_prefix(&self, log_type: LogType, prefs: PrefixPrefs) -> String {
         let mut line_prefix = String::new();
 
-        if self.status_level() > 0 {
-            for outer_level in 1..self.status_level() {
+        let level = self.status_level();
+
+        if level > 0 {
+            for outer_level in 1..level {
                 line_prefix += &self
                     .get_status_level_color(outer_level)
                     .apply_to("│ ")
@@ -175,10 +235,10 @@ impl Log {
     pub fn new() -> Self {
         Self {
             print_context: Arc::new(Mutex::new(PrintContext {
-                stdout: RefCell::new(Term::buffered_stdout()),
+                stdout: Term::buffered_stdout(),
                 statuses: Vec::new(),
                 failure: false,
-                spacing_needed: false,
+                last_log_type: None,
             })),
         }
     }
@@ -203,16 +263,13 @@ impl Log {
 
         print_context.println_wrapped_text(
             message,
+            LogType::Flat,
             PrefixPrefs::in_status().flag(INFO_FLAG),
             PrefixPrefs::in_status_overflow(),
         );
-
-        print_context.spacing_needed = true;
     }
 
     pub fn labelled_info(&self, label: impl AsRef<str>, message: impl AsRef<str>) {
-        let mut print_context = self.print_context.lock().unwrap();
-
         let label_len = label.as_ref().chars().count();
         let label_trimmed = label.as_ref().trim_end().to_string();
         let label_trimmed_len = label_trimmed.chars().count();
@@ -221,13 +278,14 @@ impl Log {
         label += ":";
         label += &" ".repeat(label_len - label_trimmed_len);
 
+        let mut print_context = self.print_context.lock().unwrap();
+
         print_context.println_wrapped_text(
             message,
+            LogType::Flat,
             PrefixPrefs::in_status().flag(INFO_FLAG).label(&label),
             PrefixPrefs::in_status_overflow().label(&" ".repeat(1 + label_len)),
         );
-
-        print_context.spacing_needed = true;
     }
 
     pub fn warning(&self, message: impl AsRef<str>) {
@@ -237,11 +295,10 @@ impl Log {
 
         print_context.println_wrapped_text(
             yellow.apply_to(message.as_ref()).to_string(),
+            LogType::Flat,
             PrefixPrefs::in_status().flag(&yellow.apply_to(ERROR_FLAG).to_string()),
             PrefixPrefs::in_status_overflow(),
         );
-
-        print_context.spacing_needed = true;
     }
 
     pub fn error(&self, message: impl AsRef<str>) {
@@ -252,11 +309,10 @@ impl Log {
 
         print_context.println_wrapped_text(
             red.apply_to(message.as_ref()).to_string(),
+            LogType::Flat,
             PrefixPrefs::in_status().flag(&red.apply_to(ERROR_FLAG).to_string()),
             PrefixPrefs::in_status_overflow(),
         );
-
-        print_context.spacing_needed = true;
     }
 
     pub fn prompt(&self, message: impl AsRef<str>) -> bool {
@@ -264,16 +320,17 @@ impl Log {
 
         let cyan = Style::new().cyan();
 
-        let mut prompt = print_context.create_line_prefix(PrefixPrefs::in_status().flag("?"));
+        let mut prompt =
+            print_context.create_line_prefix(LogType::Flat, PrefixPrefs::in_status().flag("?"));
         prompt += message.as_ref();
 
         let want_continue = Confirm::new()
             .with_prompt(cyan.apply_to(prompt).to_string())
             .default(false)
-            .interact_on(&print_context.stdout.borrow())
+            .interact_on(&print_context.stdout)
             .unwrap_or_else(|e| panic!("failed printing to stdout: {}", e));
 
-        print_context.spacing_needed = true;
+        print_context.last_log_type.replace(LogType::Flat);
 
         want_continue
     }
@@ -283,15 +340,16 @@ impl Log {
 
         let cyan = Style::new().cyan();
 
-        let mut prompt = print_context.create_line_prefix(PrefixPrefs::in_status().flag("?"));
+        let mut prompt =
+            print_context.create_line_prefix(LogType::Flat, PrefixPrefs::in_status().flag("?"));
         prompt += message.as_ref();
 
         let input = Input::new()
             .with_prompt(cyan.apply_to(prompt).to_string())
-            .interact_on(&print_context.stdout.borrow())
+            .interact_on(&print_context.stdout)
             .unwrap_or_else(|e| panic!("failed printing to stdout: {}", e));
 
-        print_context.spacing_needed = true;
+        print_context.last_log_type.replace(LogType::Flat);
 
         input
     }
@@ -301,14 +359,16 @@ impl Log {
 
         let cyan = Style::new().cyan();
 
-        let mut prompt = print_context.create_line_prefix(PrefixPrefs::in_status().flag("?"));
+        let mut prompt =
+            print_context.create_line_prefix(LogType::Flat, PrefixPrefs::in_status().flag("?"));
         prompt += message.as_ref();
 
         let password = Password::new()
             .with_prompt(cyan.apply_to(prompt).to_string())
-            .interact_on(&print_context.stdout.borrow())
+            .interact_on(&print_context.stdout)
             .unwrap_or_else(|e| panic!("failed printing to stdout: {}", e));
-        print_context.spacing_needed = true;
+
+        print_context.last_log_type.replace(LogType::Flat);
 
         password
     }
@@ -324,7 +384,8 @@ impl Log {
         let cyan = Style::new().cyan();
         let items: Vec<_> = items.into_iter().collect();
 
-        let mut prompt = print_context.create_line_prefix(PrefixPrefs::in_status().flag("#"));
+        let mut prompt =
+            print_context.create_line_prefix(LogType::Flat, PrefixPrefs::in_status().flag("#"));
         prompt += message.as_ref();
 
         struct ChooseTheme<'a> {
@@ -339,6 +400,7 @@ impl Log {
                 active: bool,
             ) -> fmt::Result {
                 let prefix = self.print_context.create_line_prefix(
+                    LogType::Flat,
                     PrefixPrefs::in_status_overflow().flag(if active { ">" } else { " " }),
                 );
                 write!(f, "{}{}", prefix, text)
@@ -351,10 +413,10 @@ impl Log {
         .with_prompt(cyan.apply_to(prompt).to_string())
         .items(&items)
         .default(default_index)
-        .interact_on_opt(&print_context.stdout.borrow())
+        .interact_on_opt(&print_context.stdout)
         .unwrap_or_else(|e| panic!("failed printing to stdout: {}", e));
 
-        print_context.spacing_needed = true;
+        print_context.last_log_type.replace(LogType::Flat);
 
         if let Some(index) = index {
             index
@@ -417,15 +479,9 @@ impl Status {
             .statuses
             .push(Arc::downgrade(&status));
 
-        let level = print_context_unlocked.status_level();
-
-        if level == 1 && print_context_unlocked.spacing_needed {
-            print_context_unlocked.println("");
-            print_context_unlocked.spacing_needed = false;
-        }
-
         print_context_unlocked.println_wrapped_text(
             message,
+            LogType::NestedStart,
             PrefixPrefs::with_connector("╓╴").flag("*"),
             PrefixPrefs::in_status_overflow(),
         );
@@ -440,8 +496,7 @@ impl Drop for Status {
 
         let level = print_context.status_level();
 
-        let mut line =
-            print_context.create_line_prefix(PrefixPrefs::with_connector("╙─").flag("─"));
+        let mut line = String::new();
         if self.tracking {
             if !print_context.failure {
                 if level == 1 {
@@ -456,12 +511,12 @@ impl Drop for Status {
             line += "DONE";
         };
 
-        print_context.println(line);
-
-        if level == 1 {
-            print_context.println("");
-            print_context.spacing_needed = false;
-        }
+        print_context.println_wrapped_text(
+            line,
+            LogType::NestedEnd,
+            PrefixPrefs::with_connector("╙─").flag("─"),
+            PrefixPrefs::in_status_overflow(),
+        );
 
         print_context.statuses.pop();
     }
