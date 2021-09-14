@@ -118,7 +118,7 @@ impl PrintContext {
         }
     }
 
-    fn println_wrapped_text(
+    fn decorated_println(
         &mut self,
         text: impl AsRef<str>,
         log_type: LogType,
@@ -244,7 +244,7 @@ impl Log {
     pub fn info(&self, message: impl AsRef<str>) {
         let mut print_context = self.print_context.lock().unwrap();
 
-        print_context.println_wrapped_text(
+        print_context.decorated_println(
             message,
             LogType::Flat,
             PrefixPrefs::in_status().flag(INFO_FLAG),
@@ -263,7 +263,7 @@ impl Log {
 
         let mut print_context = self.print_context.lock().unwrap();
 
-        print_context.println_wrapped_text(
+        print_context.decorated_println(
             message,
             LogType::Flat,
             PrefixPrefs::in_status().flag(INFO_FLAG).label(&label),
@@ -276,7 +276,7 @@ impl Log {
 
         let yellow = Style::new().yellow();
 
-        print_context.println_wrapped_text(
+        print_context.decorated_println(
             yellow.apply_to(message.as_ref()).to_string(),
             LogType::Flat,
             PrefixPrefs::in_status().flag(&yellow.apply_to(ERROR_FLAG).to_string()),
@@ -290,7 +290,7 @@ impl Log {
         let red = Style::new().red();
         print_context.failure = true;
 
-        print_context.println_wrapped_text(
+        print_context.decorated_println(
             red.apply_to(message.as_ref()).to_string(),
             LogType::Flat,
             PrefixPrefs::in_status().flag(&red.apply_to(ERROR_FLAG).to_string()),
@@ -457,7 +457,7 @@ impl Status {
             .statuses
             .push(Arc::downgrade(&status));
 
-        print_context_unlocked.println_wrapped_text(
+        print_context_unlocked.decorated_println(
             message,
             LogType::NestedStart,
             PrefixPrefs::with_connector("╓╴").flag("*"),
@@ -489,11 +489,11 @@ impl Drop for Status {
             line += "DONE";
         };
 
-        print_context.println_wrapped_text(
+        print_context.decorated_println(
             line,
             LogType::NestedEnd,
             PrefixPrefs::with_connector("╙─").flag("─"),
-            PrefixPrefs::in_status_overflow(),
+            PrefixPrefs::with_connector("  ").flag(" "),
         );
 
         print_context.statuses.pop();
