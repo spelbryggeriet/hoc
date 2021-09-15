@@ -31,14 +31,14 @@ macro_rules! info {
 
 #[macro_export]
 macro_rules! status {
+    (($($fmt:tt)*) $($rest:tt)*) =>  {
+        status!(format!($($fmt)*) $($rest)*)
+    };
+
     ($fmt:expr => $code:expr) => {{
         let __status = $crate::LOG.status($fmt);
         $code
     }};
-
-    (($($fmt:tt)*) $($rest:tt)*) =>  {
-        status!(format!($($fmt)*) $($rest)*)
-    };
 }
 
 #[macro_export]
