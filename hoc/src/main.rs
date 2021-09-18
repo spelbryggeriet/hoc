@@ -107,15 +107,15 @@ impl Context {
 
         if !self.proc_states.contains_key(P::NAME) {
             let inner_state = P::State::INITIAL_STATE;
-            let description = inner_state.description();
+            let description = inner_state.description().to_owned();
             let cache = ProcedureCache::new(
                 Some(inner_state),
                 ProcedureStepDescription {
                     index: 1,
-                    description: description.to_owned(),
+                    description,
                 },
             );
-            self.save_state(P::NAME, &cache, &mut file)?;
+            self.save_procedure_cache(P::NAME, &cache, &mut file)?;
         }
 
         let mut cache = self.get_procedure_cache::<P::State>(P::NAME)?;
@@ -138,7 +138,7 @@ impl Context {
 
                     cache.state = state;
                     cache.push_step(ProcedureStepDescription { index, description });
-                    self.save_state(P::NAME, &cache, &mut file)?;
+                    self.save_procedure_cache(P::NAME, &cache, &mut file)?;
 
                     if cache.state.is_none() {
                         break;
@@ -159,7 +159,7 @@ impl Context {
         Ok(serde_json::from_str(&self.proc_states[name])?)
     }
 
-    fn save_state<S: ProcedureState>(
+    fn save_procedure_cache<S: ProcedureState>(
         &mut self,
         name: &'static str,
         state: &ProcedureCache<S>,
