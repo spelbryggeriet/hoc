@@ -105,7 +105,20 @@ impl Context {
 
         let mut file = OpenOptions::new().write(true).open(context_dir)?;
 
-        let mut cache = self.get_procedure_cache::<P::State>(P::NAME, &mut file)?;
+        if !self.proc_states.contains_key(P::NAME) {
+            let inner_state = P::State::INITIAL_STATE;
+            let description = inner_state.description();
+            let cache = ProcedureCache::new(
+                Some(inner_state),
+                ProcedureStepDescription {
+                    index: 1,
+                    description: description.to_owned(),
+                },
+            );
+            self.save_state(P::NAME, &cache, &mut file)?;
+        }
+
+        let mut cache = self.get_procedure_cache::<P::State>(P::NAME)?;
         if !cache.first_steps.is_empty() {
             for proc_step in cache.first_steps.iter() {
                 status!(("[CACHED] Skipping step {}: {}", proc_step.index, proc_step.description) => ());
@@ -140,25 +153,10 @@ impl Context {
     }
 
     fn get_procedure_cache<S: ProcedureState>(
-        &mut self,
+        &self,
         name: &'static str,
-        file: &mut File,
     ) -> Result<ProcedureCache<S>> {
-        if !self.proc_states.contains_key(name) {
-            let inner_state = S::INITIAL_STATE;
-            let description = inner_state.description();
-            let cache = ProcedureCache::new(
-                Some(inner_state),
-                ProcedureStepDescription {
-                    index: 1,
-                    description: description.to_owned(),
-                },
-            );
-            self.save_state(name, &cache, file)?;
-            return Ok(cache);
-        } else {
-            return Ok(serde_json::from_str(&self.proc_states[name])?);
-        }
+        Ok(serde_json::from_str(&self.proc_states[name])?)
     }
 
     fn save_state<S: ProcedureState>(
