@@ -1,7 +1,7 @@
 use std::{fs::OpenOptions, result::Result as StdResult};
 
 use context::ProcedureCache;
-use hoclog::status;
+use hoclog::{error, status};
 use procedure::{Procedure, ProcedureState};
 use structopt::StructOpt;
 
@@ -67,7 +67,9 @@ fn main() {
     };
 
     match wrapper() {
-        Ok(_) => (),
-        Err(error) => eprintln!("hoc error: {}", error),
+        Ok(_) | Err(Error::LogError(_)) => (),
+        Err(error) => {
+            let _ = error!("hoc error: {}", error);
+        }
     }
 }

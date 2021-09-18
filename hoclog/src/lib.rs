@@ -1,12 +1,16 @@
 mod styling;
 mod wrapping;
 
-use std::sync::{Arc, Mutex, Weak};
-use std::{fmt, io::Write};
+use std::{
+    fmt,
+    io::Write,
+    sync::{Arc, Mutex, Weak},
+};
 
 use console::{Style, Term};
 use dialoguer::{theme::Theme, Confirm, Input, Password, Select};
 use lazy_static::lazy_static;
+use thiserror::Error;
 
 pub use styling::Styling;
 pub use wrapping::Wrapping;
@@ -48,7 +52,7 @@ macro_rules! warning {
     };
 
     ($($fmt:tt)*) => {
-        info!(format!($($fmt)*))
+        warning!(format!($($fmt)*))
     };
 }
 
@@ -59,9 +63,15 @@ macro_rules! error {
     };
 
     ($($fmt:tt)*) => {
-        info!(format!($($fmt)*))
+        error!(format!($($fmt)*))
     };
 }
+
+pub enum Never {}
+
+#[derive(Debug, Error)]
+#[error("a log error was printed")]
+pub struct LogError;
 
 pub struct Log {
     print_context: Arc<Mutex<PrintContext>>,
@@ -284,7 +294,7 @@ impl Log {
         );
     }
 
-    pub fn error(&self, message: impl AsRef<str>) {
+    pub fn error(&self, message: impl AsRef<str>) -> Result<Never, LogError> {
         let mut print_context = self.print_context.lock().unwrap();
 
         let red = Style::new().red();
@@ -296,6 +306,8 @@ impl Log {
             PrefixPrefs::in_status().flag(&red.apply_to(ERROR_FLAG).to_string()),
             PrefixPrefs::in_status_overflow(),
         );
+
+        Err(LogError)
     }
 
     pub fn prompt(&self, message: impl AsRef<str>) -> bool {
