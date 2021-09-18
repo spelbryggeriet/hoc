@@ -33,7 +33,7 @@ fn run_procedure<P: Procedure>(context: &mut Context, mut proc: P) -> Result<()>
         status!(("[CACHED] Skipping step {}: {}", proc_step.index, proc_step.description) => ());
     }
 
-    let mut state = cache.deserialize_state::<P::State>()?;
+    let mut state = cache.current_state::<P::State>()?;
 
     loop {
         let cache = &mut context[P::NAME];

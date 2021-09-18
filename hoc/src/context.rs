@@ -130,7 +130,7 @@ impl ProcedureCache {
         Ok(())
     }
 
-    pub fn deserialize_state<S: DeserializeOwned>(&self) -> Result<Option<S>> {
+    pub fn current_state<S: DeserializeOwned>(&self) -> Result<Option<S>> {
         Ok(self
             .state
             .as_deref()
