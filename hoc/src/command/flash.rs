@@ -30,14 +30,13 @@ impl Flash {
 
     fn flash(&self) -> Result<Halt<FlashState>> {
         info!("flash");
-        error!("flash error");
-        std::process::exit(1);
+        error!("flash error")?;
 
         Ok(Halt::Finish)
     }
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Hash)]
 pub enum FlashState {
     Download,
     Flash,

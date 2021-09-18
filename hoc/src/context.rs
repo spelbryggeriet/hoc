@@ -1,7 +1,8 @@
 use std::{
-    collections::HashMap,
+    collections::{hash_map::DefaultHasher, HashMap},
     env,
     fs::{self, File},
+    hash::{Hash, Hasher},
     io::{self, Seek, SeekFrom},
     mem,
     ops::{Index, IndexMut},
@@ -96,10 +97,14 @@ pub struct ProcedureCache {
 
 impl ProcedureCache {
     pub fn new<S: ProcedureState>(state: &S) -> Result<Self> {
+        let mut hasher = DefaultHasher::new();
+        state.hash(&mut hasher);
+
         Ok(Self {
             state: Some(serde_json::to_string(state)?),
             first_steps: Vec::new(),
             last_step: ProcedureStepDescription {
+                state_hash: hasher.finish(),
                 index: 1,
                 description: S::INITIAL_STATE.description().to_owned(),
             },
@@ -115,7 +120,11 @@ impl ProcedureCache {
     }
 
     pub fn advance<S: ProcedureState>(&mut self, state: &Option<S>) -> Result<()> {
+        let mut hasher = DefaultHasher::new();
+        state.hash(&mut hasher);
+
         let proc_step = ProcedureStepDescription {
+            state_hash: hasher.finish(),
             index: self.last_step.index + 1,
             description: state
                 .as_ref()
@@ -141,6 +150,7 @@ impl ProcedureCache {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ProcedureStepDescription {
+    pub state_hash: u64,
     pub index: usize,
     pub description: String,
 }

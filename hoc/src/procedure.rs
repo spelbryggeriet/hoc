@@ -1,3 +1,5 @@
+use std::hash::Hash;
+
 use serde::{de::DeserializeOwned, Serialize};
 
 use crate::Result;
@@ -14,7 +16,7 @@ pub trait Procedure {
     fn run(&mut self, state: Self::State) -> Result<Halt<Self::State>>;
 }
 
-pub trait ProcedureState: Serialize + DeserializeOwned {
+pub trait ProcedureState: Serialize + DeserializeOwned + Hash {
     const INITIAL_STATE: Self;
 
     fn description(&self) -> &'static str;
