@@ -60,7 +60,7 @@ enum Halt<S> {
 
 #[derive(Debug, Serialize, Deserialize)]
 struct Context {
-    proc_states: HashMap<String, String>,
+    proc_caches: HashMap<String, ProcedureCache>,
 }
 
 impl Context {
@@ -81,7 +81,7 @@ impl Context {
             Ok(file) => Ok(serde_yaml::from_reader(file)?),
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
                 let context = Self {
-                    proc_states: Default::default(),
+                    proc_caches: Default::default(),
                 };
                 serde_yaml::to_writer(File::create(context_path)?, &context)?;
                 Ok(context)
@@ -105,42 +105,50 @@ impl Context {
 
         let mut file = OpenOptions::new().write(true).open(context_dir)?;
 
-        if !self.proc_states.contains_key(P::NAME) {
-            let inner_state = P::State::INITIAL_STATE;
-            let description = inner_state.description().to_owned();
-            let cache = ProcedureCache::new(
-                Some(inner_state),
-                ProcedureStepDescription {
-                    index: 1,
-                    description,
-                },
+        if !self.proc_caches.contains_key(P::NAME) {
+            let state = P::State::INITIAL_STATE;
+            let description = state.description().to_owned();
+            self.proc_caches.insert(
+                P::NAME.to_string(),
+                ProcedureCache::new(
+                    &state,
+                    ProcedureStepDescription {
+                        index: 1,
+                        description,
+                    },
+                )?,
             );
-            self.save_procedure_cache(P::NAME, &cache, &mut file)?;
+            self.persist(&mut file)?;
         }
 
-        let mut cache = self.get_procedure_cache::<P::State>(P::NAME)?;
+        let cache = &self.proc_caches[P::NAME];
         if !cache.first_steps.is_empty() {
             for proc_step in cache.first_steps.iter() {
                 status!(("[CACHED] Skipping step {}: {}", proc_step.index, proc_step.description) => ());
             }
         }
 
+        let mut state = cache.deserialize_state::<P::State>()?;
+        let mut index = cache.last_step.index;
+
         loop {
-            if let Some(inner_state) = cache.state {
-                status!(("Step {}: {}", cache.last_step.index, inner_state.description()) => {
-                    let index = cache.last_step.index + 1;
-                    let (description, state) = match proc.run(inner_state)? {
+            let cache = self.proc_caches.get_mut(P::NAME).unwrap();
+            if let Some(inner_state) = state {
+                status!(("Step {}: {}", index, inner_state.description()) => {
+                    index += 1;
+                    let (description, new_state) = match proc.run(inner_state)? {
                         Halt::Yield(inner_state) => {
                             (inner_state.description().to_owned(), Some(inner_state))
                         }
                         Halt::Finish => (String::new(), None),
                     };
 
-                    cache.state = state;
+                    state = new_state;
+                    cache.serialize_state(&state)?;
                     cache.push_step(ProcedureStepDescription { index, description });
-                    self.save_procedure_cache(P::NAME, &cache, &mut file)?;
+                    self.persist(&mut file)?;
 
-                    if cache.state.is_none() {
+                    if state.is_none(){
                         break;
                     }
                 });
@@ -152,21 +160,7 @@ impl Context {
         Ok(())
     }
 
-    fn get_procedure_cache<S: ProcedureState>(
-        &self,
-        name: &'static str,
-    ) -> Result<ProcedureCache<S>> {
-        Ok(serde_json::from_str(&self.proc_states[name])?)
-    }
-
-    fn save_procedure_cache<S: ProcedureState>(
-        &mut self,
-        name: &'static str,
-        state: &ProcedureCache<S>,
-        file: &mut File,
-    ) -> Result<()> {
-        self.proc_states
-            .insert(name.to_owned(), serde_json::to_string(&state)?);
+    fn persist(&self, file: &mut File) -> Result<()> {
         file.set_len(0)?;
         file.seek(SeekFrom::Start(0))?;
         serde_yaml::to_writer(&*file, self)?;
@@ -175,20 +169,33 @@ impl Context {
     }
 }
 
-#[derive(Serialize, Deserialize)]
-struct ProcedureCache<S> {
-    state: Option<S>,
+#[derive(Debug, Serialize, Deserialize)]
+struct ProcedureCache {
+    state: Option<String>,
     first_steps: Vec<ProcedureStepDescription>,
     last_step: ProcedureStepDescription,
 }
 
-impl<S> ProcedureCache<S> {
-    fn new(state: Option<S>, step: ProcedureStepDescription) -> Self {
-        Self {
-            state,
+impl ProcedureCache {
+    fn new<S: Serialize>(state: &S, step: ProcedureStepDescription) -> Result<Self> {
+        Ok(Self {
+            state: Some(serde_json::to_string(state)?),
             first_steps: Vec::new(),
             last_step: step,
-        }
+        })
+    }
+
+    fn deserialize_state<S: DeserializeOwned>(&self) -> Result<Option<S>> {
+        Ok(self
+            .state
+            .as_deref()
+            .map(serde_json::from_str)
+            .transpose()?)
+    }
+
+    fn serialize_state<S: Serialize>(&mut self, state: &Option<S>) -> Result<()> {
+        self.state = state.as_ref().map(serde_json::to_string).transpose()?;
+        Ok(())
     }
 
     fn push_step(&mut self, step: ProcedureStepDescription) {
@@ -197,7 +204,7 @@ impl<S> ProcedureCache<S> {
     }
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 struct ProcedureStepDescription {
     index: usize,
     description: String,
