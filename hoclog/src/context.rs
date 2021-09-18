@@ -1,0 +1,146 @@
+use std::{io::Write, sync::Weak};
+
+use console::{Style, Term};
+
+use crate::{
+    log::LogType, prefix::PrefixPrefs, status::Status, styling::Styling, wrapping::Wrapping,
+};
+
+pub struct PrintContext {
+    pub failure: bool,
+    pub stdout: Term,
+    statuses: Vec<Weak<Status>>,
+    last_log_type: Option<LogType>,
+}
+
+impl PrintContext {
+    pub fn new() -> Self {
+        PrintContext {
+            failure: false,
+            stdout: Term::buffered_stdout(),
+            statuses: Vec::new(),
+            last_log_type: None,
+        }
+    }
+
+    pub fn status_level(&self) -> usize {
+        self.statuses.len()
+    }
+
+    pub fn push_status(&mut self, status: Weak<Status>) {
+        self.statuses.push(status);
+    }
+
+    pub fn pop_status(&mut self) {
+        self.statuses.pop();
+    }
+
+    pub fn set_last_log_type(&mut self, log_type: LogType) {
+        self.last_log_type.replace(log_type);
+    }
+
+    pub fn decorated_println(
+        &mut self,
+        text: impl AsRef<str>,
+        log_type: LogType,
+        first_line_prefix_prefs: PrefixPrefs,
+        line_prefix_prefs: PrefixPrefs,
+    ) {
+        self.print_spacing_if_needed(log_type);
+
+        let prefix = self.create_line_prefix(first_line_prefix_prefs);
+        let prefix_len = prefix.char_count_without_styling();
+
+        let text_len = text.as_ref().chars().count();
+        let text_max_width = self
+            .stdout
+            .size_checked()
+            .and_then(|s| (s.1 as usize).checked_sub(prefix_len))
+            .filter(|l| *l > 0)
+            .unwrap_or(text_len);
+        let normalized_text = text.as_ref().normalize_styling();
+        let mut text_chunks = normalized_text.wrapped_lines(text_max_width);
+
+        let first_line = prefix + &text_chunks.next().unwrap_or_default();
+        self.println(first_line);
+
+        for chunk in text_chunks {
+            let mut line = self.create_line_prefix(line_prefix_prefs);
+            line += &chunk;
+            self.println(line);
+        }
+
+        self.last_log_type.replace(log_type);
+    }
+
+    pub fn create_line_prefix(&self, prefs: PrefixPrefs) -> String {
+        let mut line_prefix = String::new();
+
+        let level = self.status_level();
+
+        if level > 0 {
+            for outer_level in 1..level {
+                line_prefix += &self
+                    .get_status_level_color(outer_level)
+                    .apply_to("│ ")
+                    .to_string();
+            }
+
+            let status_level_color = self.get_status_level_color(self.status_level());
+            line_prefix += &status_level_color.apply_to(prefs.connector).to_string();
+            line_prefix += &status_level_color.apply_to(prefs.flag).to_string();
+        } else {
+            line_prefix += prefs.flag;
+        }
+
+        line_prefix += " ";
+
+        if prefs.label.len() > 0 {
+            line_prefix += prefs.label;
+            line_prefix += " ";
+        }
+
+        line_prefix
+    }
+
+    fn print(&mut self, msg: impl AsRef<str>, flush: bool) {
+        self.stdout
+            .write(msg.as_ref().as_bytes())
+            .unwrap_or_else(|e| panic!("failed printing to stdout: {}", e));
+        if flush {
+            self.stdout
+                .flush()
+                .unwrap_or_else(|e| panic!("failed flushing to stdout: {}", e));
+        }
+    }
+
+    fn println(&mut self, msg: impl AsRef<str>) {
+        self.print(msg, false);
+        self.print("\n", true);
+    }
+
+    fn print_spacing_if_needed(&mut self, current_log_type: LogType) {
+        let level = self.status_level();
+        if (current_log_type == LogType::Flat && level == 0
+            || current_log_type == LogType::NestedStart && level == 1)
+            && self.last_log_type.is_some()
+            && self.last_log_type != Some(current_log_type)
+        {
+            self.println("");
+        }
+    }
+
+    fn get_status_level_color(&self, status_level: usize) -> Style {
+        let style = Style::new();
+        match status_level {
+            0 | 1 => style.white(),
+            2 => style.white().bright(),
+            3 => style.cyan(),
+            4 => style.cyan().bright(),
+            5 => style.blue(),
+            6 => style.blue().bright(),
+            7 => style.magenta(),
+            _ => style.magenta().bright(),
+        }
+    }
+}
