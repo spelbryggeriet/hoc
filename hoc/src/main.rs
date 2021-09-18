@@ -3,6 +3,7 @@ use std::{
     env::{self, VarError},
     fs::{self, File, OpenOptions},
     io::{self, Seek, SeekFrom},
+    mem,
     path::PathBuf,
     result::Result as StdResult,
 };
@@ -105,49 +106,34 @@ impl Context {
         let mut file = OpenOptions::new().write(true).open(context_dir)?;
 
         let mut cache = self.get_procedure_cache::<P::State>(P::NAME, &mut file)?;
-        if cache.steps.len() > 1 {
-            for proc_step in cache.steps.iter().take(cache.steps.len() - 1) {
-                status!(("[CACHED] Skipping step {}: {}", proc_step.step, proc_step.description) => ());
+        if !cache.first_steps.is_empty() {
+            for proc_step in cache.first_steps.iter() {
+                status!(("[CACHED] Skipping step {}: {}", proc_step.index, proc_step.description) => ());
             }
         }
 
         loop {
-            cache = if let ProcedureCache {
-                state: Some(inner_state),
-                mut steps,
-            } = cache
-            {
-                let proc_step = steps.last().unwrap();
-                status!(("Step {}: {}", proc_step.step, inner_state.description()) => {
-                    let step = proc_step.step + 1;
-
-                    match proc.run(inner_state)? {
+            if let Some(inner_state) = cache.state {
+                status!(("Step {}: {}", cache.last_step.index, inner_state.description()) => {
+                    let index = cache.last_step.index + 1;
+                    let (description, state) = match proc.run(inner_state)? {
                         Halt::Yield(inner_state) => {
-                            let description = inner_state.description();
-
-                            steps.push(ProcedureStepDescription { step, description: description.to_owned()});
-                            ProcedureCache { state: Some(inner_state), steps }
-                        },
-                        Halt::Finish => {
-                            let description = String::new();
-
-                            steps.push(ProcedureStepDescription { step, description });
-                            ProcedureCache {
-                                state: None,
-                                steps,
-                            }
+                            (inner_state.description().to_owned(), Some(inner_state))
                         }
+                        Halt::Finish => (String::new(), None),
+                    };
+
+                    cache.state = state;
+                    cache.push_step(ProcedureStepDescription { index, description });
+                    self.save_state(P::NAME, &cache, &mut file)?;
+
+                    if cache.state.is_none() {
+                        break;
                     }
-                })
+                });
             } else {
-                cache
-            };
-
-            self.save_state(P::NAME, &cache, &mut file)?;
-
-            if cache.state.is_none() {
                 break;
-            }
+            };
         }
 
         Ok(())
@@ -161,15 +147,15 @@ impl Context {
         if !self.proc_states.contains_key(name) {
             let inner_state = S::INITIAL_STATE;
             let description = inner_state.description();
-            let state = ProcedureCache {
-                state: Some(inner_state),
-                steps: vec![ProcedureStepDescription {
-                    step: 1,
+            let cache = ProcedureCache::new(
+                Some(inner_state),
+                ProcedureStepDescription {
+                    index: 1,
                     description: description.to_owned(),
-                }],
-            };
-            self.save_state(name, &state, file)?;
-            return Ok(state);
+                },
+            );
+            self.save_state(name, &cache, file)?;
+            return Ok(cache);
         } else {
             return Ok(serde_json::from_str(&self.proc_states[name])?);
         }
@@ -194,12 +180,28 @@ impl Context {
 #[derive(Serialize, Deserialize)]
 struct ProcedureCache<S> {
     state: Option<S>,
-    steps: Vec<ProcedureStepDescription>,
+    first_steps: Vec<ProcedureStepDescription>,
+    last_step: ProcedureStepDescription,
+}
+
+impl<S> ProcedureCache<S> {
+    fn new(state: Option<S>, step: ProcedureStepDescription) -> Self {
+        Self {
+            state,
+            first_steps: Vec::new(),
+            last_step: step,
+        }
+    }
+
+    fn push_step(&mut self, step: ProcedureStepDescription) {
+        self.first_steps
+            .push(mem::replace(&mut self.last_step, step));
+    }
 }
 
 #[derive(Serialize, Deserialize)]
 struct ProcedureStepDescription {
-    step: usize,
+    index: usize,
     description: String,
 }
 
