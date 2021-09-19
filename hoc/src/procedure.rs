@@ -17,8 +17,7 @@ pub trait Procedure {
 pub trait ProcedureState: Serialize + DeserializeOwned {
     type Procedure: Procedure;
 
-    const INITIAL_STATE: Self;
-
+    fn initial_state() -> Self;
     fn description(&self) -> &'static str;
 
     #[allow(unused_variables)]

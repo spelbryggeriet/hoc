@@ -97,7 +97,7 @@ impl ProcedureCache {
     pub fn new<S: ProcedureState>() -> Result<Self> {
         Ok(Self {
             completed_steps: Vec::new(),
-            current_step: Some(serde_json::to_string(&S::INITIAL_STATE)?),
+            current_step: Some(serde_json::to_string(&S::initial_state())?),
         })
     }
 

@@ -62,7 +62,9 @@ pub enum FlashState {
 impl ProcedureState for FlashState {
     type Procedure = Flash;
 
-    const INITIAL_STATE: Self = Self::Download;
+    fn initial_state() -> Self {
+        Self::Download
+    }
 
     fn description(&self) -> &'static str {
         match self {
