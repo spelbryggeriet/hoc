@@ -19,46 +19,49 @@ lazy_static! {
 
 #[macro_export]
 macro_rules! info {
-    ($fmt:expr) => {
+    ($fmt:expr $(,)?) => {
         $crate::LOG.info($fmt)
     };
 
     ($($fmt:tt)*) => {
-        info!(format!($($fmt)*))
+        $crate::LOG.info(format!($($fmt)*))
     };
 }
 
 #[macro_export]
 macro_rules! status {
-    (($($fmt:tt)*) $($rest:tt)*) =>  {
-        status!(format!($($fmt)*) $($rest)*)
-    };
+    (($($fmt:tt)*) $(, label=$label:expr)? $(=> $code:expr)? $(,)?) => {{
+        let __status = $crate::LOG.status(format!($($fmt)*))
+            $(.with_label($label))?;
+        $($code)?
+    }};
 
-    ($fmt:expr => $code:expr) => {{
+    ($fmt:expr $(, label=$label:expr)? $(=> $code:expr)? $(,)?) => {{
         let __status = $crate::LOG.status($fmt);
-        $code
+            $(.with_label($label))?;
+        $($code)?
     }};
 }
 
 #[macro_export]
 macro_rules! warning {
-    ($fmt:expr) => {
+    ($fmt:expr $(,)?) => {
         $crate::LOG.warning($fmt)
     };
 
     ($($fmt:tt)*) => {
-        warning!(format!($($fmt)*))
+        $crate::LOG.warning(format!($($fmt)*))
     };
 }
 
 #[macro_export]
 macro_rules! error {
-    ($fmt:expr) => {
+    ($fmt:expr $(,)?) => {
         $crate::LOG.error($fmt)
     };
 
     ($($fmt:tt)*) => {
-        error!(format!($($fmt)*))
+        $crate::LOG.error(format!($($fmt)*))
     };
 }
 

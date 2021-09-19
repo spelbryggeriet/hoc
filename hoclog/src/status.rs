@@ -6,32 +6,20 @@ use crate::{context::PrintContext, log::LogType, prefix::PrefixPrefs};
 
 pub struct Status {
     print_context: Arc<Mutex<PrintContext>>,
-    tracking: bool,
+    custom_label: Option<String>,
 }
 
 impl Status {
-    pub fn register(
-        message: impl AsRef<str>,
-        print_context: &Arc<Mutex<PrintContext>>,
-        tracking: bool,
-    ) -> Arc<Self> {
-        let mut print_context_unlocked = print_context.lock().unwrap();
+    pub(super) fn new(print_context: Arc<Mutex<PrintContext>>) -> Self {
+        Status {
+            print_context,
+            custom_label: None,
+        }
+    }
 
-        let status = Arc::new(Status {
-            print_context: Arc::clone(&print_context),
-            tracking,
-        });
-
-        print_context_unlocked.push_status(Arc::downgrade(&status));
-
-        print_context_unlocked.decorated_println(
-            message,
-            LogType::NestedStart,
-            PrefixPrefs::with_connector("╓╴").flag("*"),
-            PrefixPrefs::in_status_overflow(),
-        );
-
-        status
+    pub fn with_label(mut self, label: impl ToString) -> Self {
+        self.custom_label.replace(label.to_string());
+        self
     }
 }
 
@@ -42,19 +30,17 @@ impl Drop for Status {
         let level = print_context.status_level();
 
         let mut line = String::new();
-        if self.tracking {
-            if !print_context.failure {
-                if level == 1 {
-                    line += &Style::new().green().apply_to("SUCCESS").to_string();
-                } else {
-                    line += "DONE";
-                }
+        if !print_context.failure {
+            if let Some(label) = &self.custom_label {
+                line += &label;
+            } else if level == 1 {
+                line += &Style::new().green().apply_to("SUCCESS").to_string();
             } else {
-                line += &Style::new().red().apply_to("FAILURE").to_string();
+                line += "DONE";
             }
         } else {
-            line += "DONE";
-        };
+            line += &Style::new().red().apply_to("FAILURE").to_string();
+        }
 
         print_context.decorated_println(
             line,
@@ -62,7 +48,6 @@ impl Drop for Status {
             PrefixPrefs::with_connector("╙─").flag("─"),
             PrefixPrefs::with_connector("  ").flag(" "),
         );
-
-        print_context.pop_status();
+        print_context.decrement_status();
     }
 }

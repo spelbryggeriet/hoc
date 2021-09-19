@@ -1,15 +1,13 @@
-use std::{io::Write, sync::Weak};
+use std::io::Write;
 
 use console::{Style, Term};
 
-use crate::{
-    log::LogType, prefix::PrefixPrefs, status::Status, styling::Styling, wrapping::Wrapping,
-};
+use crate::{log::LogType, prefix::PrefixPrefs, styling::Styling, wrapping::Wrapping};
 
 pub struct PrintContext {
     pub failure: bool,
     pub stdout: Term,
-    statuses: Vec<Weak<Status>>,
+    statuses: usize,
     last_log_type: Option<LogType>,
 }
 
@@ -18,21 +16,21 @@ impl PrintContext {
         PrintContext {
             failure: false,
             stdout: Term::buffered_stdout(),
-            statuses: Vec::new(),
+            statuses: 0,
             last_log_type: None,
         }
     }
 
     pub fn status_level(&self) -> usize {
-        self.statuses.len()
+        self.statuses
     }
 
-    pub fn push_status(&mut self, status: Weak<Status>) {
-        self.statuses.push(status);
+    pub fn increment_status(&mut self) {
+        self.statuses += 1;
     }
 
-    pub fn pop_status(&mut self) {
-        self.statuses.pop();
+    pub fn decrement_status(&mut self) {
+        self.statuses -= 1;
     }
 
     pub fn set_last_log_type(&mut self, log_type: LogType) {

@@ -43,12 +43,18 @@ impl Log {
         Stream::new(self)
     }
 
-    pub fn status(&self, message: impl AsRef<str>) -> Arc<Status> {
-        Status::register(message, &self.print_context, true)
-    }
+    pub fn status(&self, message: impl AsRef<str>) -> Status {
+        let mut print_context = self.print_context.lock().unwrap();
 
-    pub fn status_no_track(&self, message: impl AsRef<str>) -> Arc<Status> {
-        Status::register(message, &self.print_context, false)
+        print_context.increment_status();
+        print_context.decorated_println(
+            message,
+            LogType::NestedStart,
+            PrefixPrefs::with_connector("╓╴").flag("*"),
+            PrefixPrefs::in_status_overflow(),
+        );
+
+        Status::new(Arc::clone(&self.print_context))
     }
 
     pub fn info(&self, message: impl AsRef<str>) {

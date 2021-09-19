@@ -36,7 +36,10 @@ where
             invalidate_state.replace(index);
             break;
         }
-        status!(("[COMPLETED] Skipping step {}: {}", index, step.description()) => ());
+        status!(
+            ("Skipping step {}: {}", index, step.description()),
+            label = "CACHED"
+        );
     }
 
     if let Some(index) = invalidate_state {

@@ -5,7 +5,7 @@ use crate::{
     procedure::{Halt, Procedure, ProcedureState},
     Result,
 };
-use hoclog::{error, info};
+use hoclog::{error, info, status};
 
 #[derive(StructOpt)]
 pub struct Flash {
@@ -36,7 +36,7 @@ impl Procedure for Flash {
 
 impl Flash {
     fn download(&self) -> Result<Halt<FlashState>> {
-        info!("download");
+        status!("downloading" => info!("bytes are flowing"));
         if self.fail_download {
             error!("download error")?;
         }
