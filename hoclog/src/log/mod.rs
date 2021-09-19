@@ -7,7 +7,12 @@ use console::Style;
 use dialoguer::{theme::Theme, Confirm, Input, Password, Select};
 use thiserror::Error;
 
-use crate::{context::PrintContext, prefix::PrefixPrefs, status::Status, stream::Stream, Never};
+use crate::{context::PrintContext, prefix::PrefixPrefs, Never};
+pub use status::Status;
+pub use stream::Stream;
+
+mod status;
+mod stream;
 
 const INFO_FLAG: &str = "~";
 const ERROR_FLAG: &str = "⚠︎";

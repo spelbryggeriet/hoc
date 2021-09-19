@@ -3,15 +3,13 @@ mod wrapping;
 
 use lazy_static::lazy_static;
 
-pub use log::{Log, LogError};
+pub use log::{Log, LogError, Status, Stream};
 pub use styling::Styling;
 pub use wrapping::Wrapping;
 
 mod context;
 mod log;
 mod prefix;
-mod status;
-mod stream;
 
 lazy_static! {
     pub static ref LOG: Log = Log::new();

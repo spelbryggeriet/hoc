@@ -38,7 +38,7 @@ where
         }
         status!(
             ("Skipping step {}: {}", index, step.description()),
-            label = "CACHED"
+            label = "CACHED",
         );
     }
 

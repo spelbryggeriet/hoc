@@ -11,7 +11,7 @@ pub struct Stream<'a> {
 }
 
 impl<'a> Stream<'a> {
-    pub fn new(log: &'a Log) -> Self {
+    pub(super) fn new(log: &'a Log) -> Self {
         Self {
             log,
             line: Mutex::new(String::new()),
@@ -20,13 +20,12 @@ impl<'a> Stream<'a> {
 
     pub fn process(&self, stream: impl AsRef<str>) {
         let mut chunks = stream.as_ref().split('\n');
+        let mut line = self.line.lock().unwrap();
 
         // Always append the first chunk unconditionally.
-        *self.line.lock().unwrap() += chunks.next().unwrap();
+        *line += chunks.next().unwrap();
 
         for chunk in chunks {
-            let mut line = self.line.lock().unwrap();
-
             let active_code = line.active_ansi_escape_code().map(ToString::to_string);
             if active_code.is_some() {
                 *line += styling::CLEAR_STYLE;
