@@ -80,7 +80,7 @@ fn main() {
     };
 
     match wrapper() {
-        Ok(_) | Err(Error::LogError(_)) => (),
+        Ok(_) | Err(Error::LogError(hoclog::Error::ErrorLogged)) => (),
         Err(error) => {
             let _ = error!("hoc error: {}", error);
         }

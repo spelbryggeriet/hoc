@@ -5,7 +5,7 @@ use crate::{
     procedure::{Halt, Procedure, ProcedureState},
     Result,
 };
-use hoclog::{error, info, status};
+use hoclog::{error, info, status, warning};
 
 #[derive(StructOpt)]
 pub struct Flash {
@@ -45,6 +45,7 @@ impl Flash {
 
     fn flash(&self) -> Result<Halt<FlashState>> {
         info!("flash");
+        warning!("flash warning")?;
         if self.fail_flash {
             error!("flash error")?;
         }

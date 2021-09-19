@@ -3,7 +3,6 @@ use std::{env::VarError, io};
 use thiserror::Error;
 
 use crate::context::Context;
-use hoclog::LogError;
 
 fn get_context_display_text() -> String {
     Context::get_context_dir()
@@ -32,7 +31,7 @@ pub enum Error {
     ProcedureStateSerde(#[from] serde_json::Error),
 
     #[error(transparent)]
-    LogError(#[from] LogError),
+    LogError(#[from] hoclog::Error),
 
     #[error(transparent)]
     Io(#[from] io::Error),

@@ -7,7 +7,7 @@ use console::Style;
 use dialoguer::{theme::Theme, Confirm, Input, Password, Select};
 use thiserror::Error;
 
-use crate::{context::PrintContext, prefix::PrefixPrefs, Never};
+use crate::{context::PrintContext, prefix::PrefixPrefs, Never, Result};
 pub use status::Status;
 pub use stream::Stream;
 
@@ -18,8 +18,13 @@ const INFO_FLAG: &str = "~";
 const ERROR_FLAG: &str = "⚠︎";
 
 #[derive(Debug, Error)]
-#[error("a log error was printed")]
-pub struct LogError;
+pub enum Error {
+    #[error("a log error was printed")]
+    ErrorLogged,
+
+    #[error("the operation was aborted")]
+    UserAborted,
+}
 
 #[derive(PartialEq, Eq, Clone, Copy)]
 pub enum LogType {
@@ -92,7 +97,7 @@ impl Log {
         );
     }
 
-    pub fn warning(&self, message: impl AsRef<str>) {
+    pub fn warning(&self, message: impl AsRef<str>) -> Result<()> {
         let mut print_context = self.print_context.lock().unwrap();
 
         let yellow = Style::new().yellow();
@@ -103,9 +108,16 @@ impl Log {
             PrefixPrefs::in_status().flag(&yellow.apply_to(ERROR_FLAG).to_string()),
             PrefixPrefs::in_status_overflow(),
         );
+
+        if self.prompt_impl(&mut print_context, "Do you want to continue?") {
+            Ok(())
+        } else {
+            print_context.failure = true;
+            Err(Error::UserAborted)
+        }
     }
 
-    pub fn error(&self, message: impl AsRef<str>) -> Result<Never, LogError> {
+    pub fn error(&self, message: impl AsRef<str>) -> Result<Never> {
         let mut print_context = self.print_context.lock().unwrap();
 
         let red = Style::new().red();
@@ -118,12 +130,14 @@ impl Log {
             PrefixPrefs::in_status_overflow(),
         );
 
-        Err(LogError)
+        Err(Error::ErrorLogged)
     }
 
     pub fn prompt(&self, message: impl AsRef<str>) -> bool {
-        let mut print_context = self.print_context.lock().unwrap();
+        self.prompt_impl(&mut self.print_context.lock().unwrap(), message)
+    }
 
+    fn prompt_impl(&self, print_context: &mut PrintContext, message: impl AsRef<str>) -> bool {
         let cyan = Style::new().cyan();
 
         let mut prompt = print_context.create_line_prefix(PrefixPrefs::in_status().flag("?"));

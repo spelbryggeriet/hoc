@@ -1,15 +1,16 @@
-mod styling;
-mod wrapping;
-
-use lazy_static::lazy_static;
-
-pub use log::{Log, LogError, Status, Stream};
-pub use styling::Styling;
-pub use wrapping::Wrapping;
-
 mod context;
 mod log;
 mod prefix;
+mod styling;
+mod wrapping;
+
+use std::result::Result as StdResult;
+
+use lazy_static::lazy_static;
+
+pub use log::{Error, Log, Status, Stream};
+pub use styling::Styling;
+pub use wrapping::Wrapping;
 
 lazy_static! {
     pub static ref LOG: Log = Log::new();
@@ -64,3 +65,5 @@ macro_rules! error {
 }
 
 pub enum Never {}
+
+pub type Result<T> = StdResult<T, Error>;
