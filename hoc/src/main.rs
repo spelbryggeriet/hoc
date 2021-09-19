@@ -29,8 +29,8 @@ fn run_procedure<P: Procedure>(context: &mut Context, mut proc: P) -> Result<()>
     }
 
     let cache = &context[P::NAME];
-    for proc_step in cache.cached_steps() {
-        status!(("[CACHED] Skipping step {}: {}", proc_step.index, proc_step.description) => ());
+    for proc_step in cache.completed_steps() {
+        status!(("[COMPLETED] Skipping step {}: {}", proc_step.index, proc_step.description) => ());
     }
 
     let mut state = cache.current_state::<P::State>()?;

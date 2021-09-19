@@ -91,8 +91,8 @@ impl Context {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ProcedureCache {
     state: Option<String>,
-    first_steps: Vec<ProcedureStepDescription>,
-    last_step: ProcedureStepDescription,
+    completed_steps: Vec<ProcedureStepDescription>,
+    current_step: ProcedureStepDescription,
 }
 
 impl ProcedureCache {
@@ -102,8 +102,8 @@ impl ProcedureCache {
 
         Ok(Self {
             state: Some(serde_json::to_string(state)?),
-            first_steps: Vec::new(),
-            last_step: ProcedureStepDescription {
+            completed_steps: Vec::new(),
+            current_step: ProcedureStepDescription {
                 state_hash: hasher.finish(),
                 index: 1,
                 description: S::INITIAL_STATE.description().to_owned(),
@@ -111,12 +111,12 @@ impl ProcedureCache {
         })
     }
 
-    pub fn cached_steps(&self) -> &[ProcedureStepDescription] {
-        &self.first_steps
+    pub fn completed_steps(&self) -> &[ProcedureStepDescription] {
+        &self.completed_steps
     }
 
     pub fn current_step(&self) -> &ProcedureStepDescription {
-        &self.last_step
+        &self.current_step
     }
 
     pub fn advance<S: ProcedureState>(&mut self, state: &Option<S>) -> Result<()> {
@@ -125,7 +125,7 @@ impl ProcedureCache {
 
         let proc_step = ProcedureStepDescription {
             state_hash: hasher.finish(),
-            index: self.last_step.index + 1,
+            index: self.current_step.index + 1,
             description: state
                 .as_ref()
                 .map(S::description)
@@ -134,8 +134,8 @@ impl ProcedureCache {
         };
 
         self.state = state.as_ref().map(serde_json::to_string).transpose()?;
-        self.first_steps
-            .push(mem::replace(&mut self.last_step, proc_step));
+        self.completed_steps
+            .push(mem::replace(&mut self.current_step, proc_step));
         Ok(())
     }
 
