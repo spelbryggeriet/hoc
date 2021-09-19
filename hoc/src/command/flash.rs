@@ -8,7 +8,19 @@ use crate::{
 use hoclog::{error, info};
 
 #[derive(StructOpt)]
-pub struct Flash {}
+pub struct Flash {
+    #[structopt(long)]
+    redownload: bool,
+
+    #[structopt(long)]
+    reflash: bool,
+
+    #[structopt(long)]
+    fail_download: bool,
+
+    #[structopt(long)]
+    fail_flash: bool,
+}
 
 impl Procedure for Flash {
     type State = FlashState;
@@ -25,12 +37,17 @@ impl Procedure for Flash {
 impl Flash {
     fn download(&self) -> Result<Halt<FlashState>> {
         info!("download");
+        if self.fail_download {
+            error!("download error")?;
+        }
         Ok(Halt::Yield(FlashState::Flash))
     }
 
     fn flash(&self) -> Result<Halt<FlashState>> {
         info!("flash");
-        error!("flash error")?;
+        if self.fail_flash {
+            error!("flash error")?;
+        }
 
         Ok(Halt::Finish)
     }
@@ -43,12 +60,21 @@ pub enum FlashState {
 }
 
 impl ProcedureState for FlashState {
+    type Procedure = Flash;
+
     const INITIAL_STATE: Self = Self::Download;
 
     fn description(&self) -> &'static str {
         match self {
             Self::Download => "Download operating system image",
             Self::Flash => "Flash memory card",
+        }
+    }
+
+    fn needs_update(&self, flash: &Flash) -> bool {
+        match self {
+            Self::Download => flash.redownload,
+            Self::Flash => flash.reflash,
         }
     }
 }

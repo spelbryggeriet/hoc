@@ -1,5 +1,3 @@
-use std::hash::Hash;
-
 use serde::{de::DeserializeOwned, Serialize};
 
 use crate::Result;
@@ -16,8 +14,15 @@ pub trait Procedure {
     fn run(&mut self, state: Self::State) -> Result<Halt<Self::State>>;
 }
 
-pub trait ProcedureState: Serialize + DeserializeOwned + Hash {
+pub trait ProcedureState: Serialize + DeserializeOwned {
+    type Procedure: Procedure;
+
     const INITIAL_STATE: Self;
 
     fn description(&self) -> &'static str;
+
+    #[allow(unused_variables)]
+    fn needs_update(&self, procedure: &Self::Procedure) -> bool {
+        false
+    }
 }

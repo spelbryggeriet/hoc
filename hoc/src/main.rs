@@ -14,32 +14,42 @@ mod procedure;
 
 type Result<T> = StdResult<T, Error>;
 
-fn run_procedure<P: Procedure>(context: &mut Context, mut proc: P) -> Result<()> {
+fn run_procedure<P, S>(context: &mut Context, mut proc: P) -> Result<()>
+where
+    P: Procedure<State = S>,
+    S: ProcedureState<Procedure = P>,
+{
     let mut context_dir = Context::get_context_dir()?;
     context_dir.push(Context::CONTEXT_FILE_NAME);
 
     let mut file = OpenOptions::new().write(true).open(context_dir)?;
 
     if !context.is_procedure_cached(P::NAME) {
-        context.update_procedure_cache(
-            P::NAME.to_string(),
-            ProcedureCache::new(&P::State::INITIAL_STATE)?,
-        );
+        context.update_procedure_cache(P::NAME.to_string(), ProcedureCache::new::<P::State>()?);
         context.persist(&mut file)?;
     }
 
-    let cache = &context[P::NAME];
-    for proc_step in cache.completed_steps() {
-        status!(("[COMPLETED] Skipping step {}: {}", proc_step.index, proc_step.description) => ());
+    let mut invalidate_state = None;
+    for step in context[P::NAME].completed_steps::<P::State>() {
+        let (index, step) = step?;
+        if step.needs_update(&proc) {
+            invalidate_state.replace(index);
+            break;
+        }
+        status!(("[COMPLETED] Skipping step {}: {}", index, step.description()) => ());
     }
 
-    let mut state = cache.current_state::<P::State>()?;
+    if let Some(index) = invalidate_state {
+        context[P::NAME].invalidate_state::<P::State>(index)?;
+        context.persist(&mut file)?;
+    }
+    let mut state = context[P::NAME].current_state::<P::State>()?;
 
     loop {
         let cache = &mut context[P::NAME];
         if let Some(inner_state) = state {
-            let step = cache.current_step();
-            status!(("Step {}: {}", step.index, step.description) => {
+            let index = cache.last_index();
+            status!(("Step {}: {}", index, inner_state.description()) => {
                 state = match proc.run(inner_state)? {
                     Halt::Yield(inner_state) => Some(inner_state),
                     Halt::Finish => None,

@@ -1,10 +1,9 @@
 use std::{
-    collections::{hash_map::DefaultHasher, HashMap},
+    collections::HashMap,
     env,
     fs::{self, File},
-    hash::{Hash, Hasher},
     io::{self, Seek, SeekFrom},
-    mem,
+    num::NonZeroUsize,
     ops::{Index, IndexMut},
     path::PathBuf,
 };
@@ -90,67 +89,69 @@ impl Context {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ProcedureCache {
-    state: Option<String>,
-    completed_steps: Vec<ProcedureStepDescription>,
-    current_step: ProcedureStepDescription,
+    completed_steps: Vec<String>,
+    current_step: Option<String>,
 }
 
 impl ProcedureCache {
-    pub fn new<S: ProcedureState>(state: &S) -> Result<Self> {
-        let mut hasher = DefaultHasher::new();
-        state.hash(&mut hasher);
-
+    pub fn new<S: ProcedureState>() -> Result<Self> {
         Ok(Self {
-            state: Some(serde_json::to_string(state)?),
             completed_steps: Vec::new(),
-            current_step: ProcedureStepDescription {
-                state_hash: hasher.finish(),
-                index: 1,
-                description: S::INITIAL_STATE.description().to_owned(),
-            },
+            current_step: Some(serde_json::to_string(&S::INITIAL_STATE)?),
         })
     }
 
-    pub fn completed_steps(&self) -> &[ProcedureStepDescription] {
-        &self.completed_steps
+    pub fn completed_steps<S: DeserializeOwned>(
+        &self,
+    ) -> impl Iterator<Item = Result<(NonZeroUsize, S)>> + '_ {
+        self.completed_steps.iter().enumerate().map(|(i, s)| {
+            // Safety: adding 1 to any `usize` value will always result in a non-zero value.
+            let index = unsafe { NonZeroUsize::new_unchecked(i + 1) };
+            Ok((index, serde_json::from_str(s)?))
+        })
     }
 
-    pub fn current_step(&self) -> &ProcedureStepDescription {
-        &self.current_step
-    }
-
-    pub fn advance<S: ProcedureState>(&mut self, state: &Option<S>) -> Result<()> {
-        let mut hasher = DefaultHasher::new();
-        state.hash(&mut hasher);
-
-        let proc_step = ProcedureStepDescription {
-            state_hash: hasher.finish(),
-            index: self.current_step.index + 1,
-            description: state
-                .as_ref()
-                .map(S::description)
-                .unwrap_or_default()
-                .to_owned(),
-        };
-
-        self.state = state.as_ref().map(serde_json::to_string).transpose()?;
-        self.completed_steps
-            .push(mem::replace(&mut self.current_step, proc_step));
-        Ok(())
+    pub fn last_index(&self) -> NonZeroUsize {
+        // Safety: `new` and `advance` will assure that either `current_step` or `completed_steps`
+        // will contain at least one element.
+        unsafe {
+            NonZeroUsize::new_unchecked(
+                self.completed_steps.len() + self.current_step.as_ref().map(|_| 1).unwrap_or(0),
+            )
+        }
     }
 
     pub fn current_state<S: DeserializeOwned>(&self) -> Result<Option<S>> {
-        Ok(self
-            .state
-            .as_deref()
-            .map(serde_json::from_str)
-            .transpose()?)
+        self.current_step
+            .as_ref()
+            .map(|s| Ok(serde_json::from_str(s)?))
+            .transpose()
     }
-}
 
-#[derive(Debug, Serialize, Deserialize)]
-pub struct ProcedureStepDescription {
-    pub state_hash: u64,
-    pub index: usize,
-    pub description: String,
+    pub fn advance<S: ProcedureState>(&mut self, state: &Option<S>) -> Result<()> {
+        if let Some(state) = state {
+            if let Some(current_step) = self.current_step.take() {
+                let proc_step = serde_json::to_string(state)?;
+
+                self.completed_steps.push(current_step);
+                self.current_step.replace(proc_step);
+            }
+        } else if let Some(current_step) = self.current_step.take() {
+            self.completed_steps.push(current_step);
+        }
+
+        Ok(())
+    }
+
+    pub fn invalidate_state<S: ProcedureState>(&mut self, index: NonZeroUsize) -> Result<()> {
+        if index.get() == 1 {
+            *self = Self::new::<S>()?;
+        } else if index <= self.last_index() {
+            self.completed_steps.truncate(index.get());
+            self.current_step
+                .replace(self.completed_steps.remove(index.get() - 1));
+        }
+
+        Ok(())
+    }
 }
