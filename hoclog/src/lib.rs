@@ -18,12 +18,23 @@ lazy_static! {
 
 #[macro_export]
 macro_rules! info {
+    ($($fmt:tt)*) => {
+        $crate::LOG.info(format!($($fmt)*))
+    };
+
     ($fmt:expr $(,)?) => {
         $crate::LOG.info($fmt)
     };
+}
 
-    ($($fmt:tt)*) => {
-        $crate::LOG.info(format!($($fmt)*))
+#[macro_export]
+macro_rules! choose {
+    (($($fmt:tt)*), items=$items:expr $(, default_index=$default_index:expr)? $(,)?) => {
+        $crate::LOG.choose(format!($($fmt)*), $items, $( if true { $default_index } else )? { 0 })
+    };
+
+    ($fmt:expr, items=$items:expr $(, default_index=$default_index:expr)? $(,)?) => {
+        $crate::LOG.choose($fmt, $items, $( if true { $default_index } else )? { 0 })
     };
 }
 

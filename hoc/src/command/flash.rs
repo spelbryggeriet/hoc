@@ -1,11 +1,39 @@
+use std::fmt::{self, Display, Formatter};
+
 use serde::{Deserialize, Serialize};
 use structopt::StructOpt;
+use strum::{EnumIter, IntoEnumIterator};
 
 use crate::{
     procedure::{Halt, Procedure, ProcedureState},
     Result,
 };
-use hoclog::{error, info, status, warning};
+use hoclog::{choose, error, info, warning};
+
+#[derive(Clone, Copy, EnumIter, Eq, PartialEq)]
+enum Image {
+    Raspbian2021_05_07,
+}
+
+impl Display for Image {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        self.description().fmt(f)
+    }
+}
+
+impl Image {
+    pub const fn description(&self) -> &'static str {
+        match self {
+            Self::Raspbian2021_05_07 => "Raspbian (2021-05-07)",
+        }
+    }
+
+    pub const fn url(&self) -> &'static str {
+        match self {
+            Self::Raspbian2021_05_07 => "https://downloads.raspberrypi.org/raspios_lite_armhf/images/raspios_lite_armhf-2021-05-28/2021-05-07-raspios-buster-armhf-lite.zip",
+        }
+    }
+}
 
 #[derive(StructOpt)]
 pub struct Flash {
@@ -14,9 +42,6 @@ pub struct Flash {
 
     #[structopt(long)]
     reflash: bool,
-
-    #[structopt(long)]
-    fail_download: bool,
 
     #[structopt(long)]
     fail_flash: bool,
@@ -36,10 +61,15 @@ impl Procedure for Flash {
 
 impl Flash {
     fn download(&self) -> Result<Halt<FlashState>> {
-        status!("downloading" => info!("bytes are flowing"));
-        if self.fail_download {
-            error!("download error")?;
-        }
+        let index = choose!(
+            "Which image do you want to use?",
+            items = Image::iter().map(|i| i.description()),
+        );
+
+        let image = Image::iter().nth(index).unwrap();
+        info!("Image: {}", image);
+        info!("URL  : {}", image.url());
+
         Ok(Halt::Yield(FlashState::Flash))
     }
 
