@@ -1,4 +1,4 @@
-use std::{fs::OpenOptions, result::Result as StdResult};
+use std::result::Result as StdResult;
 
 use context::ProcedureCache;
 use hoclog::{error, status};
@@ -19,14 +19,9 @@ where
     P: Procedure<State = S>,
     S: ProcedureState<Procedure = P>,
 {
-    let mut context_dir = Context::get_context_dir()?;
-    context_dir.push(Context::CONTEXT_FILE_NAME);
-
-    let mut file = OpenOptions::new().write(true).open(context_dir)?;
-
     if !context.is_procedure_cached(P::NAME) {
         context.update_procedure_cache(P::NAME.to_string(), ProcedureCache::new::<P::State>()?);
-        context.persist(&mut file)?;
+        context.persist()?;
     }
 
     let mut invalidate_state = None;
@@ -44,7 +39,7 @@ where
 
     if let Some(index) = invalidate_state {
         context[P::NAME].invalidate_state::<P::State>(index)?;
-        context.persist(&mut file)?;
+        context.persist()?;
     }
     let mut state = context[P::NAME].current_state::<P::State>()?;
 
@@ -59,7 +54,7 @@ where
                 };
 
                 cache.advance(&state)?;
-                context.persist(&mut file)?;
+                context.persist()?;
             });
         } else {
             break;

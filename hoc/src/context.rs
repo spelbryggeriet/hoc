@@ -1,7 +1,7 @@
 use std::{
     collections::HashMap,
     env,
-    fs::{self, File},
+    fs::{self, File, OpenOptions},
     io::{self, Seek, SeekFrom},
     num::NonZeroUsize,
     ops::{Index, IndexMut},
@@ -14,9 +14,12 @@ use crate::{procedure::ProcedureState, Error, Result};
 
 const ENV_HOME: &str = "HOME";
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize)]
 pub struct Context {
     proc_caches: HashMap<String, ProcedureCache>,
+
+    #[serde(skip_serializing)]
+    file: File,
 }
 
 impl Index<&str> for Context {
@@ -48,13 +51,36 @@ impl Context {
 
         context_path.push(Self::CONTEXT_FILE_NAME);
 
-        match File::open(&context_path) {
-            Ok(file) => Ok(serde_yaml::from_reader(file)?),
+        match OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&context_path)
+        {
+            Ok(file) => {
+                let mut map: HashMap<String, HashMap<String, ProcedureCache>> =
+                    serde_yaml::from_reader(&file)?;
+                let proc_caches = map
+                    .remove("proc_caches")
+                    .ok_or_else::<serde_yaml::Error, _>(|| {
+                        serde::de::Error::missing_field("proc_caches")
+                    })?;
+                if let Some((key, _)) = map.drain().next() {
+                    return Err(serde_yaml::Error::from(serde::de::Error::custom(format!(
+                        "unexpected extra field `{}`",
+                        key
+                    )))
+                    .into());
+                }
+
+                Ok(Context { proc_caches, file })
+            }
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                let file = File::create(context_path)?;
                 let context = Self {
                     proc_caches: Default::default(),
+                    file,
                 };
-                serde_yaml::to_writer(File::create(context_path)?, &context)?;
+                serde_yaml::to_writer(&context.file, &context)?;
                 Ok(context)
             }
             Err(error) => Err(error.into()),
@@ -78,10 +104,10 @@ impl Context {
         self.proc_caches.insert(name, cache);
     }
 
-    pub fn persist(&self, file: &mut File) -> Result<()> {
-        file.set_len(0)?;
-        file.seek(SeekFrom::Start(0))?;
-        serde_yaml::to_writer(&*file, self)?;
+    pub fn persist(&mut self) -> Result<()> {
+        self.file.set_len(0)?;
+        self.file.seek(SeekFrom::Start(0))?;
+        serde_yaml::to_writer(&self.file, self)?;
 
         Ok(())
     }
