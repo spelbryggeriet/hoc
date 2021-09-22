@@ -1,10 +1,11 @@
 use std::{
     collections::HashMap,
     env,
+    ffi::OsStr,
     fs::{self, File, OpenOptions},
     io::{self, Seek, SeekFrom},
     ops::{Index, IndexMut},
-    path::PathBuf,
+    path::{Path, PathBuf},
 };
 
 use serde::{Deserialize, Serialize};
@@ -193,5 +194,54 @@ impl ProcedureStep {
 
     pub fn state<S: ProcedureState>(&self) -> Result<S> {
         Ok(serde_json::from_str(&self.state)?)
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct FileRef {
+    path: PathBuf,
+}
+
+impl FileRef {
+    pub fn new<S>(path: &S) -> Result<Self>
+    where
+        S: AsRef<OsStr>,
+    {
+        let mut path_buf = Context::get_context_dir()?;
+        path_buf.push("files");
+        path_buf.push(path.as_ref());
+
+        Ok(Self { path: path_buf })
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    pub fn exists(&self) -> Result<bool> {
+        match fs::metadata(&self.path) {
+            Ok(_) => Ok(true),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    pub fn writer(&self) -> Result<File> {
+        if let Some(parent) = self.path.parent() {
+            match fs::metadata(parent) {
+                Ok(_) => (),
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                    fs::create_dir_all(parent)?;
+                }
+                Err(error) => return Err(error.into()),
+            }
+        }
+
+        let file = OpenOptions::new()
+            .create(true)
+            .write(true)
+            .open(&self.path)?;
+
+        Ok(file)
     }
 }

@@ -15,7 +15,6 @@ use crate::{
 mod command;
 mod context;
 mod error;
-mod file_ref;
 mod procedure;
 
 type Result<T> = StdResult<T, Error>;

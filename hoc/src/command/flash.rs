@@ -5,11 +5,11 @@ use structopt::StructOpt;
 use strum::{EnumDiscriminants, EnumIter, IntoEnumIterator};
 
 use crate::{
-    file_ref::FileRef,
+    context::FileRef,
     procedure::{Halt, Procedure, ProcedureState, ProcedureStateId, UpdateInfo},
     Result,
 };
-use hoclog::{choose, error, info, warning};
+use hoclog::{choose, error, info, status, warning};
 
 #[derive(Clone, Copy, EnumIter, Eq, PartialEq)]
 enum Image {
@@ -71,9 +71,12 @@ impl Flash {
         info!("Image: {}", image);
         info!("URL  : {}", image.url());
 
-        Ok(Halt::Yield(FlashState::Flash {
-            image: FileRef::new("test"),
-        }))
+        let image_ref = FileRef::new(&"image")?;
+        status!("Downloading image" => {
+            reqwest::blocking::get(image.url())?.copy_to(&mut image_ref.writer()?)?
+        });
+
+        Ok(Halt::Yield(FlashState::Flash { image: image_ref }))
     }
 
     fn flash(&self, image: FileRef) -> Result<Halt<FlashState>> {

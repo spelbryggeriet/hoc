@@ -37,6 +37,9 @@ pub enum Error {
     LogError(#[from] hoclog::Error),
 
     #[error(transparent)]
+    Request(#[from] reqwest::Error),
+
+    #[error(transparent)]
     Io(#[from] io::Error),
 }
 
