@@ -131,7 +131,7 @@ impl ProcedureState for FlashState {
                 .then(|| {
                     UpdateInfo::invalid_state(
                         FlashStateId::Download,
-                        format!("image file '{}' has changed", image.path().display()),
+                        format!("image file '{}' does not exist", image.path().display()),
                     )
                 })
                 .or(flash.reflash.then(|| {
