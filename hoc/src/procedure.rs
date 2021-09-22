@@ -19,13 +19,13 @@ pub trait Procedure {
     fn run(&mut self, state: Self::State) -> Result<Halt<Self::State>>;
 }
 
-pub trait ProcedureStateId: Hash + Eq
+pub trait ProcedureStateId: Hash + Eq + Ord
 where
     Self: Sized,
 {
     type MemberIter: Iterator<Item = Self>;
 
-    fn ordered_members() -> Self::MemberIter;
+    fn members() -> Self::MemberIter;
 
     fn to_hash(&self) -> u64 {
         let mut hasher = DefaultHasher::new();
@@ -34,7 +34,7 @@ where
     }
 
     fn from_hash(hash: u64) -> Result<Self> {
-        Self::ordered_members()
+        Self::members()
             .find(|s| s.to_hash() == hash)
             .ok_or(Error::InvalidProcedureStateIdHash(hash))
     }

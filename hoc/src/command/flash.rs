@@ -88,7 +88,7 @@ impl Flash {
 }
 
 #[derive(Serialize, Deserialize, EnumDiscriminants)]
-#[strum_discriminants(derive(Hash, EnumIter))]
+#[strum_discriminants(derive(Hash, PartialOrd, Ord, EnumIter))]
 #[strum_discriminants(name(FlashStateId))]
 pub enum FlashState {
     Download,
@@ -129,7 +129,7 @@ impl ProcedureState for FlashState {
 impl ProcedureStateId for FlashStateId {
     type MemberIter = FlashStateIdIter;
 
-    fn ordered_members() -> Self::MemberIter {
+    fn members() -> Self::MemberIter {
         FlashStateId::iter()
     }
 }
