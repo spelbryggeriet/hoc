@@ -95,19 +95,27 @@ pub enum FlashState {
     Flash { image: FileRef },
 }
 
+impl ProcedureStateId for FlashStateId {
+    type MemberIter = FlashStateIdIter;
+
+    fn members() -> Self::MemberIter {
+        FlashStateId::iter()
+    }
+
+    fn description(&self) -> &'static str {
+        match self {
+            Self::Download => "Download operating system image",
+            Self::Flash => "Flash memory card",
+        }
+    }
+}
+
 impl ProcedureState for FlashState {
     type Procedure = Flash;
     type Id = FlashStateId;
 
     fn initial_state() -> Self {
         Self::Download
-    }
-
-    fn description(state_id: Self::Id) -> &'static str {
-        match state_id {
-            FlashStateId::Download => "Download operating system image",
-            FlashStateId::Flash => "Flash memory card",
-        }
     }
 
     fn id(&self) -> Self::Id {
@@ -123,13 +131,5 @@ impl ProcedureState for FlashState {
         };
 
         Ok(state_id)
-    }
-}
-
-impl ProcedureStateId for FlashStateId {
-    type MemberIter = FlashStateIdIter;
-
-    fn members() -> Self::MemberIter {
-        FlashStateId::iter()
     }
 }

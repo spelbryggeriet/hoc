@@ -43,7 +43,7 @@ where
                     warning!(
                         r#"Step {} with description "{}" is invalid. The script needs to rewind back to step {}."#,
                         index + 1,
-                        P::State::description(step.id::<P::State>()?),
+                        step.id::<P::State>()?.description(),
                         rewind_index + 1,
                     )?;
                     invalidate_state.replace(state_id);
@@ -68,7 +68,7 @@ where
             (
                 "Skipping step {}: {}",
                 index + 1,
-                P::State::description(step.id::<P::State>()?)
+                step.id::<P::State>()?.description(),
             ),
             label = "CACHED",
         );
@@ -80,7 +80,7 @@ where
         let cache = &mut context[P::NAME];
         if let Some(inner_state) = state {
             let index = cache.completed_steps().count() + 1;
-            status!(("Step {}: {}", index, P::State::description(inner_state.id())) => {
+            status!(("Step {}: {}", index, inner_state.id().description()) => {
                 state = match proc.run(inner_state)? {
                     Halt::Yield(inner_state) => Some(inner_state),
                     Halt::Finish => None,

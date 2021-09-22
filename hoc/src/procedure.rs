@@ -26,6 +26,7 @@ where
     type MemberIter: Iterator<Item = Self>;
 
     fn members() -> Self::MemberIter;
+    fn description(&self) -> &'static str;
 
     fn to_hash(&self) -> u64 {
         let mut hasher = DefaultHasher::new();
@@ -45,7 +46,6 @@ pub trait ProcedureState: Serialize + DeserializeOwned {
     type Id: ProcedureStateId;
 
     fn initial_state() -> Self;
-    fn description(state_id: Self::Id) -> &'static str;
     fn id(&self) -> Self::Id;
 
     #[allow(unused_variables)]
