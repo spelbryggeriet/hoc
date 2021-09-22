@@ -2,11 +2,11 @@ use std::fmt::{self, Display, Formatter};
 
 use serde::{Deserialize, Serialize};
 use structopt::StructOpt;
-use strum::{EnumIter, IntoEnumIterator};
+use strum::{EnumDiscriminants, EnumIter, IntoEnumIterator};
 
 use crate::{
     file_ref::FileRef,
-    procedure::{Halt, Procedure, ProcedureState},
+    procedure::{Halt, Procedure, ProcedureState, ProcedureStateId},
     Result,
 };
 use hoclog::{choose, error, info, warning};
@@ -87,7 +87,9 @@ impl Flash {
     }
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, EnumDiscriminants)]
+#[strum_discriminants(derive(Hash, EnumIter))]
+#[strum_discriminants(name(FlashStateId))]
 pub enum FlashState {
     Download,
     Flash { image: FileRef },
@@ -95,24 +97,39 @@ pub enum FlashState {
 
 impl ProcedureState for FlashState {
     type Procedure = Flash;
+    type Id = FlashStateId;
 
     fn initial_state() -> Self {
         Self::Download
     }
 
-    fn description(&self) -> &'static str {
-        match self {
-            Self::Download => "Download operating system image",
-            Self::Flash { .. } => "Flash memory card",
+    fn description(state_id: Self::Id) -> &'static str {
+        match state_id {
+            FlashStateId::Download => "Download operating system image",
+            FlashStateId::Flash => "Flash memory card",
         }
     }
 
-    fn needs_update(&self, flash: &Flash) -> Result<bool> {
-        let needs_update = match self {
-            Self::Download => flash.redownload,
-            Self::Flash { image } => flash.reflash || !image.exists()?,
+    fn id(&self) -> Self::Id {
+        self.into()
+    }
+
+    fn needs_update(&self, flash: &Self::Procedure) -> Result<Option<Self::Id>> {
+        let state_id = match self {
+            Self::Download => flash.redownload.then(|| FlashStateId::Download),
+            Self::Flash { image } => (!image.exists()?)
+                .then(|| FlashStateId::Download)
+                .or(flash.reflash.then(|| FlashStateId::Flash)),
         };
 
-        Ok(needs_update)
+        Ok(state_id)
+    }
+}
+
+impl ProcedureStateId for FlashStateId {
+    type MemberIter = FlashStateIdIter;
+
+    fn ordered_members() -> Self::MemberIter {
+        FlashStateId::iter()
     }
 }

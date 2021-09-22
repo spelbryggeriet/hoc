@@ -56,6 +56,10 @@ impl Log {
     pub fn status(&self, message: impl AsRef<str>) -> Status {
         let mut print_context = self.print_context.lock().unwrap();
 
+        if print_context.status_level() == 0 {
+            print_context.failure = false;
+        }
+
         print_context.increment_status();
         print_context.decorated_println(
             message,

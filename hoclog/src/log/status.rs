@@ -40,6 +40,7 @@ impl Drop for Status {
             }
         } else {
             line += &Style::new().red().apply_to("FAILURE").to_string();
+            print_context.failure = false;
         }
 
         print_context.decorated_println(

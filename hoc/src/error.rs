@@ -30,6 +30,9 @@ pub enum Error {
     #[error("procedure state could not be serialized/deserialized: {0}")]
     ProcedureStateSerde(#[from] serde_json::Error),
 
+    #[error("hash `{0}` could not be converted into a `ProcedureStateId`")]
+    InvalidProcedureStateIdHash(u64),
+
     #[error(transparent)]
     LogError(#[from] hoclog::Error),
 

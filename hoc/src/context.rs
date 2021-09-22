@@ -3,14 +3,16 @@ use std::{
     env,
     fs::{self, File, OpenOptions},
     io::{self, Seek, SeekFrom},
-    num::NonZeroUsize,
     ops::{Index, IndexMut},
     path::PathBuf,
 };
 
-use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use serde::{Deserialize, Serialize};
 
-use crate::{procedure::ProcedureState, Error, Result};
+use crate::{
+    procedure::{ProcedureState, ProcedureStateId},
+    Error, Result,
+};
 
 const ENV_HOME: &str = "HOME";
 
@@ -115,49 +117,37 @@ impl Context {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ProcedureCache {
-    completed_steps: Vec<String>,
-    current_step: Option<String>,
+    completed_steps: Vec<ProcedureStep>,
+    current_step: Option<ProcedureStep>,
 }
 
 impl ProcedureCache {
     pub fn new<S: ProcedureState>() -> Result<Self> {
         Ok(Self {
             completed_steps: Vec::new(),
-            current_step: Some(serde_json::to_string(&S::initial_state())?),
+            current_step: Some(ProcedureStep::new(&S::initial_state())?),
         })
     }
 
-    pub fn completed_steps<S: DeserializeOwned>(
-        &self,
-    ) -> impl Iterator<Item = Result<(NonZeroUsize, S)>> + '_ {
-        self.completed_steps.iter().enumerate().map(|(i, s)| {
-            // Safety: adding 1 to any `usize` value will always result in a non-zero value.
-            let index = unsafe { NonZeroUsize::new_unchecked(i + 1) };
-            Ok((index, serde_json::from_str(s)?))
-        })
+    pub fn completed_steps(&self) -> impl Iterator<Item = &ProcedureStep> + '_ {
+        self.completed_steps.iter()
     }
 
-    pub fn last_index(&self) -> NonZeroUsize {
-        // Safety: `new` and `advance` will assure that either `current_step` or `completed_steps`
-        // will contain at least one element.
-        unsafe {
-            NonZeroUsize::new_unchecked(
-                self.completed_steps.len() + self.current_step.as_ref().map(|_| 1).unwrap_or(0),
-            )
-        }
+    pub fn current_step(&self) -> Option<&ProcedureStep> {
+        self.current_step.as_ref()
     }
 
-    pub fn current_state<S: DeserializeOwned>(&self) -> Result<Option<S>> {
+    pub fn current_state<S: ProcedureState>(&self) -> Result<Option<S>> {
         self.current_step
             .as_ref()
-            .map(|s| Ok(serde_json::from_str(s)?))
+            .map(|s| Ok(s.state()?))
             .transpose()
     }
 
     pub fn advance<S: ProcedureState>(&mut self, state: &Option<S>) -> Result<()> {
         if let Some(state) = state {
             if let Some(current_step) = self.current_step.take() {
-                let proc_step = serde_json::to_string(state)?;
+                let proc_step = ProcedureStep::new(state)?;
 
                 self.completed_steps.push(current_step);
                 self.current_step.replace(proc_step);
@@ -169,15 +159,39 @@ impl ProcedureCache {
         Ok(())
     }
 
-    pub fn invalidate_state<S: ProcedureState>(&mut self, index: NonZeroUsize) -> Result<()> {
-        if index.get() == 1 {
-            *self = Self::new::<S>()?;
-        } else if index <= self.last_index() {
-            self.completed_steps.truncate(index.get());
-            self.current_step
-                .replace(self.completed_steps.remove(index.get() - 1));
+    pub fn invalidate_state<S: ProcedureState>(&mut self, id: S::Id) -> Result<()> {
+        for (index, step) in self.completed_steps.iter().enumerate() {
+            if step.id::<S>()? == id {
+                self.completed_steps.truncate(index + 1);
+                self.current_step
+                    .replace(self.completed_steps.remove(index));
+                break;
+            }
         }
 
         Ok(())
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ProcedureStep {
+    id: u64,
+    state: String,
+}
+
+impl ProcedureStep {
+    fn new<S: ProcedureState>(state: &S) -> Result<Self> {
+        Ok(Self {
+            id: state.id().to_hash(),
+            state: serde_json::to_string(&state)?,
+        })
+    }
+
+    pub fn id<S: ProcedureState>(&self) -> Result<S::Id> {
+        S::Id::from_hash(self.id)
+    }
+
+    pub fn state<S: ProcedureState>(&self) -> Result<S> {
+        Ok(serde_json::from_str(&self.state)?)
     }
 }
