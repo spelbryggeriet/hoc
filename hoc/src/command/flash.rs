@@ -6,7 +6,7 @@ use strum::{EnumDiscriminants, EnumIter, IntoEnumIterator};
 
 use crate::{
     file_ref::FileRef,
-    procedure::{Halt, Procedure, ProcedureState, ProcedureStateId},
+    procedure::{Halt, Procedure, ProcedureState, ProcedureStateId, UpdateInfo},
     Result,
 };
 use hoclog::{choose, error, info, warning};
@@ -122,12 +122,21 @@ impl ProcedureState for FlashState {
         self.into()
     }
 
-    fn needs_update(&self, flash: &Self::Procedure) -> Result<Option<Self::Id>> {
+    fn needs_update(&self, flash: &Self::Procedure) -> Result<Option<UpdateInfo<Self::Id>>> {
         let state_id = match self {
-            Self::Download => flash.redownload.then(|| FlashStateId::Download),
+            Self::Download => flash.redownload.then(|| {
+                UpdateInfo::user_update(FlashStateId::Download, "re-download was requested")
+            }),
             Self::Flash { image } => (!image.exists()?)
-                .then(|| FlashStateId::Download)
-                .or(flash.reflash.then(|| FlashStateId::Flash)),
+                .then(|| {
+                    UpdateInfo::invalid_state(
+                        FlashStateId::Download,
+                        format!("image file '{}' has changed", image.path().display()),
+                    )
+                })
+                .or(flash.reflash.then(|| {
+                    UpdateInfo::user_update(FlashStateId::Flash, "re-flash was requested")
+                })),
         };
 
         Ok(state_id)

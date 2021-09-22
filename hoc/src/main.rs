@@ -1,7 +1,7 @@
 use std::result::Result as StdResult;
 
 use context::ProcedureCache;
-use hoclog::{error, status, warning};
+use hoclog::{error, info, status, warning};
 use procedure::{Procedure, ProcedureState};
 use structopt::StructOpt;
 
@@ -37,24 +37,43 @@ where
         .chain(cache.current_step())
         .enumerate()
     {
-        if let Some(state_id) = step.state::<P::State>()?.needs_update(&proc)? {
+        if let Some(update_info) = step.state::<P::State>()?.needs_update(&proc)? {
+            let state_id = step.id::<P::State>()?;
+            if update_info.state_id > state_id {
+                panic!(
+                    "State with hash `{}` reported as invalid, but that state has not been run yet.",
+                    update_info.state_id.to_hash(),
+                );
+            }
+
             for (rewind_index, rewind_step) in cache.completed_steps().enumerate() {
-                if rewind_step.id::<P::State>()? == state_id {
-                    warning!(
-                        r#"Step {} with description "{}" is invalid. The script needs to rewind back to step {}."#,
-                        index + 1,
-                        step.id::<P::State>()?.description(),
-                        rewind_index + 1,
-                    )?;
-                    invalidate_state.replace(state_id);
+                if rewind_step.id::<P::State>()? == update_info.state_id {
+                    if update_info.user_choice {
+                        info!(
+                            "Rewinding back to step {} ({}) because: {}.",
+                            rewind_index + 1,
+                            update_info.state_id.description(),
+                            update_info.description,
+                        );
+                    } else {
+                        warning!(
+                            r#"Step {} ({}) is invalid because: {}. The script needs to rewind back to step {} ({})."#,
+                            index + 1,
+                            step.id::<P::State>()?.description(),
+                            update_info.description,
+                            rewind_index + 1,
+                            update_info.state_id.description(),
+                        )?;
+                    }
+                    invalidate_state.replace(update_info.state_id);
                     break 'outer;
                 }
             }
 
-            error!(
-                "Could not find state with hash `{}` in the completed steps",
-                state_id.to_hash(),
-            )?;
+            panic!(
+                "Could not find state with hash `{}` in the completed steps.",
+                update_info.state_id.to_hash(),
+            );
         }
     }
 

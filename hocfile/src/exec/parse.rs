@@ -63,7 +63,14 @@ impl HocLineParseError {
 
 pub fn parse_hoc_line(
     line: &str,
-) -> Result<Option<(&'static str, &'static str, VecDeque<(&str, Option<HocValue>)>)>, HocLineParseError> {
+) -> Result<
+    Option<(
+        &'static str,
+        &'static str,
+        VecDeque<(&str, Option<HocValue>)>,
+    )>,
+    HocLineParseError,
+> {
     let s = if let Some(s) = consume_hoc_prefix(line) {
         s
     } else {

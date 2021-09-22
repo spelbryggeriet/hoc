@@ -49,7 +49,34 @@ pub trait ProcedureState: Serialize + DeserializeOwned {
     fn id(&self) -> Self::Id;
 
     #[allow(unused_variables)]
-    fn needs_update(&self, procedure: &Self::Procedure) -> Result<Option<Self::Id>> {
+    fn needs_update(&self, procedure: &Self::Procedure) -> Result<Option<UpdateInfo<Self::Id>>> {
         Ok(None)
+    }
+}
+
+pub struct UpdateInfo<I> {
+    pub state_id: I,
+    pub description: String,
+    pub user_choice: bool,
+}
+
+impl<I> UpdateInfo<I>
+where
+    I: ProcedureStateId,
+{
+    pub fn user_update(state_id: I, description: impl ToString) -> Self {
+        Self {
+            state_id,
+            description: description.to_string(),
+            user_choice: true,
+        }
+    }
+
+    pub fn invalid_state(state_id: I, cause: impl ToString) -> Self {
+        Self {
+            state_id,
+            description: cause.to_string(),
+            user_choice: false,
+        }
     }
 }

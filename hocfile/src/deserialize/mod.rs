@@ -143,7 +143,8 @@ impl Hocfile {
     }
 
     pub fn find_script(&self, name: &str) -> Option<&ScriptSource> {
-        self.script.predefined
+        self.script
+            .predefined
             .iter()
             .find(|script| script.name.deref() == name)
     }
@@ -268,10 +269,7 @@ pub struct ProcedureStep {
 #[serde(untagged)]
 pub enum ProcedureStepCondition {
     Expr(String),
-    Options {
-        expression: String,
-        message: String,
-    }
+    Options { expression: String, message: String },
 }
 
 impl ProcedureStepCondition {
@@ -313,12 +311,16 @@ pub enum ProcedureStepType {
 impl ProcedureStepType {
     pub fn description<'s: 'hf, 'hf>(&'s self, hocfile: &'hf Hocfile) -> &'hf str {
         match self {
-            Self::BuiltIn { description, built_in_fn } => {
-                description.as_deref().unwrap_or(built_in_fn.description())
-            }
-            Self::ScriptRef { description, script_ref } => {
-                description.as_deref().unwrap_or(&hocfile.find_script(script_ref).unwrap().description)
-            }
+            Self::BuiltIn {
+                description,
+                built_in_fn,
+            } => description.as_deref().unwrap_or(built_in_fn.description()),
+            Self::ScriptRef {
+                description,
+                script_ref,
+            } => description
+                .as_deref()
+                .unwrap_or(&hocfile.find_script(script_ref).unwrap().description),
             Self::Script { description, .. } => description,
         }
     }

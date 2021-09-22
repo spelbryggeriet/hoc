@@ -7,7 +7,7 @@ mod tree;
 
 use std::collections::HashMap;
 
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 
 pub use deserialize::*;
 pub use exec::exec_hoc_line;

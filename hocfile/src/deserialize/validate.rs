@@ -11,7 +11,12 @@ impl Hocfile {
             None,
             self.optional_sets.iter().map(|ops| &ops.name),
         );
-        helper(errors, SCR, None, self.script.predefined.iter().map(|scr| &scr.name));
+        helper(
+            errors,
+            SCR,
+            None,
+            self.script.predefined.iter().map(|scr| &scr.name),
+        );
 
         for command in &self.commands {
             helper(
