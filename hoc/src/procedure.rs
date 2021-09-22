@@ -21,7 +21,7 @@ pub trait ProcedureState: Serialize + DeserializeOwned {
     fn description(&self) -> &'static str;
 
     #[allow(unused_variables)]
-    fn needs_update(&self, procedure: &Self::Procedure) -> bool {
-        false
+    fn needs_update(&self, procedure: &Self::Procedure) -> Result<bool> {
+        Ok(false)
     }
 }

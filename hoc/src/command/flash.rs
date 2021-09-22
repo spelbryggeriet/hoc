@@ -5,6 +5,7 @@ use structopt::StructOpt;
 use strum::{EnumIter, IntoEnumIterator};
 
 use crate::{
+    file_ref::FileRef,
     procedure::{Halt, Procedure, ProcedureState},
     Result,
 };
@@ -54,7 +55,7 @@ impl Procedure for Flash {
     fn run(&mut self, state: FlashState) -> Result<Halt<FlashState>> {
         match state {
             FlashState::Download => self.download(),
-            FlashState::Flash => self.flash(),
+            FlashState::Flash { image } => self.flash(image),
         }
     }
 }
@@ -70,11 +71,13 @@ impl Flash {
         info!("Image: {}", image);
         info!("URL  : {}", image.url());
 
-        Ok(Halt::Yield(FlashState::Flash))
+        Ok(Halt::Yield(FlashState::Flash {
+            image: FileRef::new("test"),
+        }))
     }
 
-    fn flash(&self) -> Result<Halt<FlashState>> {
-        info!("flash");
+    fn flash(&self, image: FileRef) -> Result<Halt<FlashState>> {
+        info!("flashing {}", image.path().display());
         warning!("flash warning")?;
         if self.fail_flash {
             error!("flash error")?;
@@ -84,10 +87,10 @@ impl Flash {
     }
 }
 
-#[derive(Serialize, Deserialize, Hash)]
+#[derive(Serialize, Deserialize)]
 pub enum FlashState {
     Download,
-    Flash,
+    Flash { image: FileRef },
 }
 
 impl ProcedureState for FlashState {
@@ -100,14 +103,16 @@ impl ProcedureState for FlashState {
     fn description(&self) -> &'static str {
         match self {
             Self::Download => "Download operating system image",
-            Self::Flash => "Flash memory card",
+            Self::Flash { .. } => "Flash memory card",
         }
     }
 
-    fn needs_update(&self, flash: &Flash) -> bool {
-        match self {
+    fn needs_update(&self, flash: &Flash) -> Result<bool> {
+        let needs_update = match self {
             Self::Download => flash.redownload,
-            Self::Flash => flash.reflash,
-        }
+            Self::Flash { image } => flash.reflash || !image.exists()?,
+        };
+
+        Ok(needs_update)
     }
 }

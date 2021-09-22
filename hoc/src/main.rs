@@ -10,6 +10,7 @@ use crate::{command::Command, context::Context, error::Error, procedure::Halt};
 mod command;
 mod context;
 mod error;
+mod file_ref;
 mod procedure;
 
 type Result<T> = StdResult<T, Error>;
@@ -27,7 +28,7 @@ where
     let mut invalidate_state = None;
     for step in context[P::NAME].completed_steps::<P::State>() {
         let (index, step) = step?;
-        if step.needs_update(&proc) {
+        if step.needs_update(&proc)? {
             invalidate_state.replace(index);
             break;
         }
