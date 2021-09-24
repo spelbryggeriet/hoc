@@ -2,7 +2,7 @@ use std::{env::VarError, io};
 
 use thiserror::Error;
 
-use crate::context::Context;
+use crate::context::{dir_state, Context};
 
 fn get_context_display_text() -> String {
     Context::get_context_dir()
@@ -32,6 +32,9 @@ pub enum Error {
 
     #[error("hash `{0}` could not be converted into a `ProcedureStateId`")]
     InvalidProcedureStateIdHash(u64),
+
+    #[error(transparent)]
+    FileRef(#[from] dir_state::ConvertError),
 
     #[error(transparent)]
     LogError(#[from] hoclog::Error),

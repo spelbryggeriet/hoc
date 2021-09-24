@@ -5,7 +5,7 @@ use std::{
 
 use serde::{de::DeserializeOwned, Serialize};
 
-use crate::{error::Error, Result};
+use crate::{context::ProcedureStep, error::Error, Result};
 
 pub enum Halt<S> {
     Yield(S),
@@ -16,7 +16,7 @@ pub trait Procedure {
     type State: ProcedureState;
     const NAME: &'static str;
 
-    fn run(&mut self, state: Self::State) -> Result<Halt<Self::State>>;
+    fn run(&mut self, proc_step: &mut ProcedureStep) -> Result<Halt<Self::State>>;
 }
 
 pub trait ProcedureStateId: Hash + Eq + Ord

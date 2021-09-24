@@ -5,7 +5,7 @@ use structopt::StructOpt;
 use strum::{EnumDiscriminants, EnumIter, IntoEnumIterator};
 
 use crate::{
-    context::FileRef,
+    context::{dir_state::FileRef, ProcedureStep},
     procedure::{Halt, Procedure, ProcedureState, ProcedureStateId, UpdateInfo},
     Result,
 };
@@ -52,16 +52,16 @@ impl Procedure for Flash {
     type State = FlashState;
     const NAME: &'static str = "flash";
 
-    fn run(&mut self, state: FlashState) -> Result<Halt<FlashState>> {
-        match state {
-            FlashState::Download => self.download(),
+    fn run(&mut self, proc_step: &mut ProcedureStep) -> Result<Halt<FlashState>> {
+        match proc_step.state()? {
+            FlashState::Download => self.download(proc_step),
             FlashState::Flash { image } => self.flash(image),
         }
     }
 }
 
 impl Flash {
-    fn download(&self) -> Result<Halt<FlashState>> {
+    fn download(&self, proc_step: &mut ProcedureStep) -> Result<Halt<FlashState>> {
         let index = choose!(
             "Which image do you want to use?",
             items = Image::iter().map(|i| i.description()),
@@ -71,16 +71,17 @@ impl Flash {
         info!("Image: {}", image);
         info!("URL  : {}", image.url());
 
-        let image_ref = FileRef::new(&"image")?;
+        let mut image_writer = proc_step.file_writer(&"image")?;
         status!("Downloading image" => {
-            reqwest::blocking::get(image.url())?.copy_to(&mut image_ref.writer()?)?
+            reqwest::blocking::get(image.url())?.copy_to(&mut image_writer)?
         });
+        let image_ref = image_writer.finish()?;
 
         Ok(Halt::Yield(FlashState::Flash { image: image_ref }))
     }
 
     fn flash(&self, image: FileRef) -> Result<Halt<FlashState>> {
-        info!("flashing {}", image.path().display());
+        info!("flashing {}", image);
         warning!("flash warning")?;
         if self.fail_flash {
             error!("flash error")?;
@@ -130,16 +131,9 @@ impl ProcedureState for FlashState {
             Self::Download => flash.redownload.then(|| {
                 UpdateInfo::user_update(FlashStateId::Download, "re-download was requested")
             }),
-            Self::Flash { image } => (!image.exists()?)
-                .then(|| {
-                    UpdateInfo::invalid_state(
-                        FlashStateId::Download,
-                        format!("image file '{}' does not exist", image.path().display()),
-                    )
-                })
-                .or(flash.reflash.then(|| {
-                    UpdateInfo::user_update(FlashStateId::Flash, "re-flash was requested")
-                })),
+            Self::Flash { .. } => flash
+                .reflash
+                .then(|| UpdateInfo::user_update(FlashStateId::Flash, "re-flash was requested")),
         };
 
         Ok(state_id)

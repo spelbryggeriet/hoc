@@ -25,7 +25,7 @@ where
     S: ProcedureState<Procedure = P>,
 {
     if !context.is_procedure_cached(P::NAME) {
-        context.update_procedure_cache(P::NAME.to_string(), ProcedureCache::new::<P::State>()?);
+        context.update_procedure_cache(P::NAME.to_string(), ProcedureCache::new::<S>()?);
         context.persist()?;
     }
 
@@ -36,8 +36,8 @@ where
         .chain(cache.current_step())
         .enumerate()
     {
-        if let Some(update_info) = step.state::<P::State>()?.needs_update(&proc)? {
-            let state_id = step.id::<P::State>()?;
+        if let Some(update_info) = step.state::<S>()?.needs_update(&proc)? {
+            let state_id = step.id::<S>()?;
             if update_info.state_id > state_id {
                 panic!(
                     "State with hash `{}` reported as invalid, but that state has not been run yet.",
@@ -45,8 +45,13 @@ where
                 );
             }
 
-            for (rewind_index, rewind_step) in cache.completed_steps().enumerate() {
-                if rewind_step.id::<P::State>()? == update_info.state_id {
+            let mut members: Vec<_> = S::Id::members()
+                .filter(|m| *m <= update_info.state_id)
+                .collect();
+            members.sort();
+
+            for (rewind_index, rewind_id) in members.into_iter().enumerate() {
+                if rewind_id == update_info.state_id {
                     if update_info.user_choice {
                         info!(
                             "Rewinding back to step {} ({}) because: {}.",
@@ -58,7 +63,7 @@ where
                         warning!(
                             r#"Step {} ({}) is invalid because: {}. The script needs to rewind back to step {} ({})."#,
                             index + 1,
-                            step.id::<P::State>()?.description(),
+                            step.id::<S>()?.description(),
                             update_info.description,
                             rewind_index + 1,
                             update_info.state_id.description(),
@@ -68,38 +73,29 @@ where
                     break 'outer;
                 }
             }
-
-            panic!(
-                "Could not find state with hash `{}` in the completed steps.",
-                update_info.state_id.to_hash(),
-            );
         }
     }
 
     if let Some(state_id) = invalidate_state {
-        context[P::NAME].invalidate_state::<P::State>(state_id)?;
+        context[P::NAME].invalidate_state::<S>(state_id)?;
         context.persist()?;
     }
 
-    for (index, step) in context[P::NAME].completed_steps().enumerate() {
+    let mut index = 1;
+    for (i, step) in context[P::NAME].completed_steps().enumerate() {
         status!(
-            (
-                "Skipping step {}: {}",
-                index + 1,
-                step.id::<P::State>()?.description(),
-            ),
+            ("Skipping step {}: {}", i + 1, step.id::<S>()?.description(),),
             label = "CACHED",
         );
+        index += 1;
     }
-
-    let mut state = context[P::NAME].current_state::<P::State>()?;
 
     loop {
         let cache = &mut context[P::NAME];
-        if let Some(inner_state) = state {
-            let index = cache.completed_steps().count() + 1;
-            status!(("Step {}: {}", index, inner_state.id().description()) => {
-                state = match proc.run(inner_state)? {
+        if let Some(some_proc_step) = cache.current_step_mut() {
+            let state_id = some_proc_step.id::<S>()?;
+            status!(("Step {}: {}", index, state_id.description()) => {
+                let state = match proc.run(some_proc_step)? {
                     Halt::Yield(inner_state) => Some(inner_state),
                     Halt::Finish => None,
                 };
@@ -107,6 +103,7 @@ where
                 cache.advance(&state)?;
                 context.persist()?;
             });
+            index += 1;
         } else {
             break;
         };

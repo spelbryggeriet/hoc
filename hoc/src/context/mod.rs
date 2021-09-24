@@ -15,6 +15,10 @@ use crate::{
     Error, Result,
 };
 
+use self::dir_state::{DirectoryState, FileWriter};
+
+pub mod dir_state;
+
 const ENV_HOME: &str = "HOME";
 
 #[derive(Debug, Serialize)]
@@ -41,23 +45,29 @@ impl IndexMut<&str> for Context {
 
 impl Context {
     pub const CONTEXT_FILE_NAME: &'static str = "context.yaml";
-    const CONTEXT_DIR: &'static str = ".hoc";
+    pub const CONTEXT_DIR: &'static str = ".hoc";
+    pub const WORK_DIR: &'static str = "workdir";
+    pub const FILES_DIR: &'static str = "files";
 
     pub fn load() -> Result<Self> {
-        let mut context_path = Self::get_context_dir()?;
+        let mut work_dir_path = Self::get_work_dir()?;
 
-        match fs::metadata(&context_path) {
+        match fs::metadata(&work_dir_path) {
             Ok(_) => (),
-            Err(error) if error.kind() == io::ErrorKind::NotFound => fs::create_dir(&context_path)?,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                fs::create_dir_all(&work_dir_path)?;
+            }
             Err(error) => return Err(error.into()),
         }
 
-        context_path.push(Self::CONTEXT_FILE_NAME);
+        work_dir_path.pop();
+        work_dir_path.push(Self::CONTEXT_FILE_NAME);
+        let context_dir_path = work_dir_path;
 
         match OpenOptions::new()
             .read(true)
             .write(true)
-            .open(&context_path)
+            .open(&context_dir_path)
         {
             Ok(file) => {
                 let mut map: HashMap<String, HashMap<String, ProcedureCache>> =
@@ -75,10 +85,10 @@ impl Context {
                     .into());
                 }
 
-                Ok(Context { proc_caches, file })
+                Ok(Self { proc_caches, file })
             }
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                let file = File::create(context_path)?;
+                let file = File::create(&context_dir_path)?;
                 let context = Self {
                     proc_caches: Default::default(),
                     file,
@@ -97,6 +107,12 @@ impl Context {
         context_path.push(Self::CONTEXT_DIR);
 
         Ok(context_path)
+    }
+
+    pub fn get_work_dir() -> Result<PathBuf> {
+        let mut path = Self::get_context_dir()?;
+        path.push(Self::WORK_DIR);
+        Ok(path)
     }
 
     pub fn is_procedure_cached(&self, name: &str) -> bool {
@@ -136,6 +152,10 @@ impl ProcedureCache {
 
     pub fn current_step(&self) -> Option<&ProcedureStep> {
         self.current_step.as_ref()
+    }
+
+    pub fn current_step_mut(&mut self) -> Option<&mut ProcedureStep> {
+        self.current_step.as_mut()
     }
 
     pub fn current_state<S: ProcedureState>(&self) -> Result<Option<S>> {
@@ -178,6 +198,7 @@ impl ProcedureCache {
 pub struct ProcedureStep {
     id: u64,
     state: String,
+    work_dir_state: DirectoryState,
 }
 
 impl ProcedureStep {
@@ -185,6 +206,7 @@ impl ProcedureStep {
         Ok(Self {
             id: state.id().to_hash(),
             state: serde_json::to_string(&state)?,
+            work_dir_state: DirectoryState::new(&OsStr::new(Context::WORK_DIR)),
         })
     }
 
@@ -195,53 +217,12 @@ impl ProcedureStep {
     pub fn state<S: ProcedureState>(&self) -> Result<S> {
         Ok(serde_json::from_str(&self.state)?)
     }
-}
 
-#[derive(Serialize, Deserialize)]
-pub struct FileRef {
-    path: PathBuf,
-}
+    pub fn file_writer<P: AsRef<Path>>(&mut self, path: P) -> Result<FileWriter> {
+        let mut actual_path = Context::get_work_dir()?;
+        actual_path.push(Context::FILES_DIR);
+        actual_path.extend(path.as_ref().iter());
 
-impl FileRef {
-    pub fn new<S>(path: &S) -> Result<Self>
-    where
-        S: AsRef<OsStr>,
-    {
-        let mut path_buf = Context::get_context_dir()?;
-        path_buf.push("files");
-        path_buf.push(path.as_ref());
-
-        Ok(Self { path: path_buf })
-    }
-
-    pub fn path(&self) -> &Path {
-        &self.path
-    }
-
-    pub fn exists(&self) -> Result<bool> {
-        match fs::metadata(&self.path) {
-            Ok(_) => Ok(true),
-            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
-            Err(error) => Err(error.into()),
-        }
-    }
-
-    pub fn writer(&self) -> Result<File> {
-        if let Some(parent) = self.path.parent() {
-            match fs::metadata(parent) {
-                Ok(_) => (),
-                Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                    fs::create_dir_all(parent)?;
-                }
-                Err(error) => return Err(error.into()),
-            }
-        }
-
-        let file = OpenOptions::new()
-            .create(true)
-            .write(true)
-            .open(&self.path)?;
-
-        Ok(file)
+        self.work_dir_state.file_writer(path, &actual_path)
     }
 }
