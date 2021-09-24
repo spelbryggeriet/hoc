@@ -30,6 +30,88 @@ fn split_virtual_path_by_file_name<'p, P: AsRef<Path>>(
     Ok((file_name, dirs))
 }
 
+#[derive(Debug, Error)]
+pub enum ConvertError {
+    #[error("`FileRef` cannot be created from an absolute path")]
+    AbsolutePath,
+
+    #[error("`FileRef` cannot be created from an empty path")]
+    EmptyPath,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct DirectoryStateDiff<'a> {
+    pub dir_name: &'a str,
+    pub removed: bool,
+    pub dir_states_changes: Vec<DirectoryStateDiff<'a>>,
+    pub file_states_changes: Vec<FileStateDiff<'a>>,
+}
+
+impl<'a> DirectoryStateDiff<'a> {
+    pub fn new<S: AsRef<str>>(dir_name: &'a S) -> Self {
+        Self {
+            dir_name: dir_name.as_ref(),
+            removed: false,
+            dir_states_changes: Vec::new(),
+            file_states_changes: Vec::new(),
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        !self.removed
+            && self.dir_states_changes.iter().all(Self::is_empty)
+            && self.file_states_changes.iter().all(FileStateDiff::is_empty)
+    }
+
+    pub fn changed_paths(&self) -> Vec<(String, &'static str)> {
+        if self.removed {
+            vec![(self.dir_name.to_owned(), "removed")]
+        } else {
+            self.file_states_changes
+                .iter()
+                .map(|fsc| {
+                    (
+                        format!("{}/{}", self.dir_name, fsc.file_name),
+                        if fsc.removed {
+                            "removed"
+                        } else {
+                            fsc.modified_change.map_or("unchanged", |_| "modified")
+                        },
+                    )
+                })
+                .chain(self.dir_states_changes.iter().flat_map(|dsc| {
+                    dsc.changed_paths()
+                        .into_iter()
+                        .map(move |(path, change_type)| {
+                            (format!("{}/{}", self.dir_name, path), change_type)
+                        })
+                }))
+                .collect()
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct FileStateDiff<'a> {
+    pub file_name: &'a str,
+    pub removed: bool,
+    pub modified_change: Option<SystemTime>,
+}
+
+impl<'a> FileStateDiff<'a> {
+    pub fn new<S: AsRef<str>>(file_name: &'a S) -> Self {
+        Self {
+            file_name: file_name.as_ref(),
+            removed: false,
+            modified_change: None,
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        !self.removed && self.modified_change.is_none()
+    }
+}
+
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DirectoryState {
     dir_name: String,
@@ -78,7 +160,7 @@ impl Index<&FileRef> for DirectoryState {
 }
 
 impl DirectoryState {
-    pub fn new(dir_name: &impl AsRef<OsStr>) -> Self {
+    pub fn new<S: AsRef<OsStr>>(dir_name: S) -> Self {
         Self {
             dir_name: dir_name.as_ref().to_string_lossy().into_owned(),
             dir_states: Vec::new(),
@@ -112,6 +194,53 @@ impl DirectoryState {
             dir_states,
             file_states,
         })
+    }
+
+    pub fn diff(&self, other: &Self) -> DirectoryStateDiff {
+        let mut diff = DirectoryStateDiff::new(&self.dir_name);
+
+        if self.dir_name != other.dir_name {
+            diff.removed = true;
+            return diff;
+        }
+
+        diff.dir_states_changes = self
+            .dir_states
+            .iter()
+            .map(|ds| {
+                other
+                    .dir_states
+                    .iter()
+                    .find(|ds_other| ds_other.dir_name == ds.dir_name)
+                    .map(|ds_other| ds.diff(ds_other))
+                    .unwrap_or_else(|| {
+                        let mut ds_diff = DirectoryStateDiff::new(&ds.dir_name);
+                        ds_diff.removed = true;
+                        ds_diff
+                    })
+            })
+            .filter(|diff| !diff.is_empty())
+            .collect();
+
+        diff.file_states_changes = self
+            .file_states
+            .iter()
+            .map(|fs| {
+                other
+                    .file_states
+                    .iter()
+                    .find(|fs_other| fs.file_name == fs_other.file_name)
+                    .map(|fs_other| fs.diff(&fs_other))
+                    .unwrap_or_else(|| {
+                        let mut fs_diff = FileStateDiff::new(&fs.file_name);
+                        fs_diff.removed = true;
+                        fs_diff
+                    })
+            })
+            .filter(|diff| !diff.is_empty())
+            .collect();
+
+        diff
     }
 
     pub fn file_writer<P1, P2>(&mut self, virtual_path: P1, actual_path: P2) -> Result<FileWriter>
@@ -161,22 +290,6 @@ impl DirectoryState {
 
         Ok((file_state, file_ref))
     }
-
-    pub fn get_or_create_dir_state_mut(
-        &mut self,
-        dir_name: &impl AsRef<OsStr>,
-    ) -> &mut DirectoryState {
-        if let Some(index) = self
-            .dir_states
-            .iter()
-            .position(|ds| OsStr::new(&ds.dir_name) == dir_name.as_ref())
-        {
-            &mut self.dir_states[index]
-        } else {
-            self.dir_states.push(Self::new(dir_name));
-            self.dir_states.last_mut().unwrap()
-        }
-    }
 }
 
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -211,18 +324,15 @@ impl FileState {
         })
     }
 
+    fn diff(&self, other: &Self) -> FileStateDiff {
+        let mut diff = FileStateDiff::new(&self.file_name);
+        diff.modified_change = (self.modified != other.modified).then(|| other.modified);
+        diff
+    }
+
     fn update_modified_time(&mut self, modified: SystemTime) {
         self.modified = modified;
     }
-}
-
-#[derive(Debug, Error)]
-pub enum ConvertError {
-    #[error("`FileRef` cannot be created from an absolute path")]
-    AbsolutePath,
-
-    #[error("`FileRef` cannot be created from an empty path")]
-    EmptyPath,
 }
 
 #[derive(Default, Serialize, Deserialize)]

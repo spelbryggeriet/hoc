@@ -106,12 +106,14 @@ impl Log {
 
         let yellow = Style::new().yellow();
 
-        print_context.decorated_println(
-            yellow.apply_to(message.as_ref()).to_string(),
-            LogType::Flat,
-            PrefixPrefs::in_status().flag(&yellow.apply_to(ERROR_FLAG).to_string()),
-            PrefixPrefs::in_status_overflow(),
-        );
+        for line in message.as_ref().lines() {
+            print_context.decorated_println(
+                yellow.apply_to(line).to_string(),
+                LogType::Flat,
+                PrefixPrefs::in_status().flag(&yellow.apply_to(ERROR_FLAG).to_string()),
+                PrefixPrefs::in_status_overflow(),
+            );
+        }
 
         if self.prompt_impl(&mut print_context, "Do you want to continue?") {
             Ok(())

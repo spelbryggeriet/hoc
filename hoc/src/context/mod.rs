@@ -1,7 +1,6 @@
 use std::{
     collections::HashMap,
     env,
-    ffi::OsStr,
     fs::{self, File, OpenOptions},
     io::{self, Seek, SeekFrom},
     ops::{Index, IndexMut},
@@ -23,6 +22,7 @@ const ENV_HOME: &str = "HOME";
 
 #[derive(Debug, Serialize)]
 pub struct Context {
+    #[serde(flatten)]
     proc_caches: HashMap<String, ProcedureCache>,
 
     #[serde(skip_serializing)]
@@ -47,7 +47,6 @@ impl Context {
     pub const CONTEXT_FILE_NAME: &'static str = "context.yaml";
     pub const CONTEXT_DIR: &'static str = ".hoc";
     pub const WORK_DIR: &'static str = "workdir";
-    pub const FILES_DIR: &'static str = "files";
 
     pub fn load() -> Result<Self> {
         let mut work_dir_path = Self::get_work_dir()?;
@@ -70,21 +69,7 @@ impl Context {
             .open(&context_dir_path)
         {
             Ok(file) => {
-                let mut map: HashMap<String, HashMap<String, ProcedureCache>> =
-                    serde_yaml::from_reader(&file)?;
-                let proc_caches = map
-                    .remove("proc_caches")
-                    .ok_or_else::<serde_yaml::Error, _>(|| {
-                        serde::de::Error::missing_field("proc_caches")
-                    })?;
-                if let Some((key, _)) = map.drain().next() {
-                    return Err(serde_yaml::Error::from(serde::de::Error::custom(format!(
-                        "unexpected extra field `{}`",
-                        key
-                    )))
-                    .into());
-                }
-
+                let proc_caches: HashMap<String, ProcedureCache> = serde_yaml::from_reader(&file)?;
                 Ok(Self { proc_caches, file })
             }
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
@@ -206,7 +191,7 @@ impl ProcedureStep {
         Ok(Self {
             id: state.id().to_hash(),
             state: serde_json::to_string(&state)?,
-            work_dir_state: DirectoryState::new(&OsStr::new(Context::WORK_DIR)),
+            work_dir_state: DirectoryState::new(Context::WORK_DIR),
         })
     }
 
@@ -218,9 +203,12 @@ impl ProcedureStep {
         Ok(serde_json::from_str(&self.state)?)
     }
 
+    pub fn work_dir_state(&self) -> &DirectoryState {
+        &self.work_dir_state
+    }
+
     pub fn file_writer<P: AsRef<Path>>(&mut self, path: P) -> Result<FileWriter> {
         let mut actual_path = Context::get_work_dir()?;
-        actual_path.push(Context::FILES_DIR);
         actual_path.extend(path.as_ref().iter());
 
         self.work_dir_state.file_writer(path, &actual_path)

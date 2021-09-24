@@ -1,6 +1,6 @@
 use std::result::Result as StdResult;
 
-use context::ProcedureCache;
+use context::{dir_state::DirectoryState, ProcedureCache};
 use hoclog::{error, info, status, warning};
 use procedure::{Procedure, ProcedureState};
 use structopt::StructOpt;
@@ -29,6 +29,8 @@ where
         context.persist()?;
     }
 
+    let cur_dir_state = DirectoryState::get_snapshot(&Context::get_work_dir()?)?;
+
     let mut invalidate_state = None;
     let cache = &context[P::NAME];
     'outer: for (index, step) in cache
@@ -36,6 +38,25 @@ where
         .chain(cache.current_step())
         .enumerate()
     {
+        let diff = step.work_dir_state().diff(&cur_dir_state);
+        if !diff.is_empty() {
+            let state_id = step.id::<S>()?;
+
+            warning!(
+                "Previously completed step {} ({}) has become invalid because the working directory state has changed:\n\n{}",
+                index + 1,
+                state_id.description(),
+                diff.changed_paths()
+                    .into_iter()
+                    .map(|(path, change_type)| format!(r#""{}" ({})"#, path, change_type))
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            )?;
+
+            invalidate_state.replace((index, state_id));
+            break;
+        }
+
         if let Some(update_info) = step.state::<S>()?.needs_update(&proc)? {
             let state_id = step.id::<S>()?;
             if update_info.state_id > state_id {
@@ -52,14 +73,7 @@ where
 
             for (rewind_index, rewind_id) in members.into_iter().enumerate() {
                 if rewind_id == update_info.state_id {
-                    if update_info.user_choice {
-                        info!(
-                            "Rewinding back to step {} ({}) because: {}.",
-                            rewind_index + 1,
-                            update_info.state_id.description(),
-                            update_info.description,
-                        );
-                    } else {
+                    if !update_info.user_choice {
                         warning!(
                             r#"Step {} ({}) is invalid because: {}. The script needs to rewind back to step {} ({})."#,
                             index + 1,
@@ -69,14 +83,20 @@ where
                             update_info.state_id.description(),
                         )?;
                     }
-                    invalidate_state.replace(update_info.state_id);
+                    invalidate_state.replace((rewind_index, update_info.state_id));
                     break 'outer;
                 }
             }
         }
     }
 
-    if let Some(state_id) = invalidate_state {
+    if let Some((rewind_index, state_id)) = invalidate_state {
+        info!(
+            "Rewinding back to step {} ({}).",
+            rewind_index + 1,
+            state_id.description(),
+        );
+
         context[P::NAME].invalidate_state::<S>(state_id)?;
         context.persist()?;
     }
