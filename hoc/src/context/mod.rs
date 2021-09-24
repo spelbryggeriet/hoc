@@ -135,19 +135,8 @@ impl ProcedureCache {
         self.completed_steps.iter()
     }
 
-    pub fn current_step(&self) -> Option<&ProcedureStep> {
-        self.current_step.as_ref()
-    }
-
     pub fn current_step_mut(&mut self) -> Option<&mut ProcedureStep> {
         self.current_step.as_mut()
-    }
-
-    pub fn current_state<S: ProcedureState>(&self) -> Result<Option<S>> {
-        self.current_step
-            .as_ref()
-            .map(|s| Ok(s.state()?))
-            .transpose()
     }
 
     pub fn advance<S: ProcedureState>(&mut self, state: &Option<S>) -> Result<()> {

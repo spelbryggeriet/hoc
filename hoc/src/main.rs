@@ -1,15 +1,13 @@
 use std::result::Result as StdResult;
 
-use context::{dir_state::DirectoryState, ProcedureCache};
 use hoclog::{error, info, status, warning};
-use procedure::{Procedure, ProcedureState};
 use structopt::StructOpt;
 
 use crate::{
     command::Command,
-    context::{Context, ProcedureStep},
+    context::{dir_state::DirectoryState, Context, ProcedureCache, ProcedureStep},
     error::Error,
-    procedure::{Halt, ProcedureStateId},
+    procedure::{Halt, Procedure, ProcedureStateId},
 };
 
 mod command;
@@ -39,24 +37,10 @@ fn run_procedure<P: Procedure>(context: &mut Context, mut proc: P) -> Result<()>
         }
     }
 
-    if let Some((rewind_index, state_id)) = invalidate_state {
-        info!(
-            "Rewinding back to step {} ({}).",
-            rewind_index + 1,
-            state_id.description(),
-        );
-
-        context[P::NAME].invalidate_state::<P::State>(state_id)?;
-        context.persist()?;
-    }
-
     let cur_dir_state = DirectoryState::get_snapshot(&Context::get_work_dir()?)?;
-
-    let cache = &context[P::NAME];
-    let mut invalidate_state = None;
-    for (index, step) in cache
+    for (index, step) in context[P::NAME]
         .completed_steps()
-        .chain(cache.current_step())
+        .take(invalidate_state.as_ref().map_or(usize::MAX, |(i, _)| *i))
         .enumerate()
     {
         let diff = step.work_dir_state().diff(&cur_dir_state);
@@ -64,7 +48,8 @@ fn run_procedure<P: Procedure>(context: &mut Context, mut proc: P) -> Result<()>
             let state_id = step.id::<P::State>()?;
 
             warning!(
-                "Previously completed step {} ({}) has become invalid because the working directory state has changed:\n\n{}",
+                "Previously completed step {} ({}) has become invalid because the working directory \
+                 state has changed:\n\n{}",
                 index + 1,
                 state_id.description(),
                 diff.changed_paths()
