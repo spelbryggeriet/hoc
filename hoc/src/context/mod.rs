@@ -169,8 +169,10 @@ impl ProcedureCache {
         for (index, step) in self.completed_steps.iter().enumerate() {
             if step.id::<S>()? == id {
                 self.completed_steps.truncate(index + 1);
-                self.current_step
-                    .replace(self.completed_steps.remove(index));
+
+                let mut current_step = self.completed_steps.remove(index);
+                current_step.work_dir_state.clear();
+                self.current_step.replace(current_step);
                 break;
             }
         }

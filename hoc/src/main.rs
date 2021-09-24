@@ -38,25 +38,6 @@ where
         .chain(cache.current_step())
         .enumerate()
     {
-        let diff = step.work_dir_state().diff(&cur_dir_state);
-        if !diff.is_empty() {
-            let state_id = step.id::<S>()?;
-
-            warning!(
-                "Previously completed step {} ({}) has become invalid because the working directory state has changed:\n\n{}",
-                index + 1,
-                state_id.description(),
-                diff.changed_paths()
-                    .into_iter()
-                    .map(|(path, change_type)| format!(r#""{}" ({})"#, path, change_type))
-                    .collect::<Vec<_>>()
-                    .join("\n"),
-            )?;
-
-            invalidate_state.replace((index, state_id));
-            break;
-        }
-
         if let Some(update_info) = step.state::<S>()?.needs_update(&proc)? {
             let state_id = step.id::<S>()?;
             if update_info.state_id > state_id {
@@ -87,6 +68,25 @@ where
                     break 'outer;
                 }
             }
+        }
+
+        let diff = step.work_dir_state().diff(&cur_dir_state);
+        if !diff.is_empty() {
+            let state_id = step.id::<S>()?;
+
+            warning!(
+                "Previously completed step {} ({}) has become invalid because the working directory state has changed:\n\n{}",
+                index + 1,
+                state_id.description(),
+                diff.changed_paths()
+                    .into_iter()
+                    .map(|(path, change_type)| format!(r#""{}" ({})"#, path, change_type))
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            )?;
+
+            invalidate_state.replace((index, state_id));
+            break;
         }
     }
 

@@ -168,6 +168,11 @@ impl DirectoryState {
         }
     }
 
+    pub fn clear(&mut self) {
+        self.dir_states.clear();
+        self.file_states.clear();
+    }
+
     pub fn get_snapshot<P>(path: &P) -> Result<Self>
     where
         P: AsRef<Path>,
