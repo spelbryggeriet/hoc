@@ -16,10 +16,11 @@ pub trait Procedure {
     type State: ProcedureState;
     const NAME: &'static str;
 
+    fn rewind_state(&self) -> Option<<Self::State as ProcedureState>::Id>;
     fn run(&mut self, proc_step: &mut ProcedureStep) -> Result<Halt<Self::State>>;
 }
 
-pub trait ProcedureStateId: Hash + Eq + Ord
+pub trait ProcedureStateId: Clone + Copy + Hash + Eq + Ord
 where
     Self: Sized,
 {
@@ -42,41 +43,8 @@ where
 }
 
 pub trait ProcedureState: Serialize + DeserializeOwned {
-    type Procedure: Procedure;
     type Id: ProcedureStateId;
 
     fn initial_state() -> Self;
     fn id(&self) -> Self::Id;
-
-    #[allow(unused_variables)]
-    fn needs_update(&self, procedure: &Self::Procedure) -> Result<Option<UpdateInfo<Self::Id>>> {
-        Ok(None)
-    }
-}
-
-pub struct UpdateInfo<I> {
-    pub state_id: I,
-    pub description: String,
-    pub user_choice: bool,
-}
-
-impl<I> UpdateInfo<I>
-where
-    I: ProcedureStateId,
-{
-    pub fn user_update(state_id: I, description: impl ToString) -> Self {
-        Self {
-            state_id,
-            description: description.to_string(),
-            user_choice: true,
-        }
-    }
-
-    pub fn invalid_state(state_id: I, cause: impl ToString) -> Self {
-        Self {
-            state_id,
-            description: cause.to_string(),
-            user_choice: false,
-        }
-    }
 }

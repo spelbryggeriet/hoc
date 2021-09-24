@@ -6,7 +6,7 @@ use strum::{EnumDiscriminants, EnumIter, IntoEnumIterator};
 
 use crate::{
     context::{dir_state::FileRef, ProcedureStep},
-    procedure::{Halt, Procedure, ProcedureState, ProcedureStateId, UpdateInfo},
+    procedure::{Halt, Procedure, ProcedureState, ProcedureStateId},
     Result,
 };
 use hoclog::{choose, error, info, status, warning};
@@ -51,6 +51,12 @@ pub struct Flash {
 impl Procedure for Flash {
     type State = FlashState;
     const NAME: &'static str = "flash";
+
+    fn rewind_state(&self) -> Option<FlashStateId> {
+        self.redownload
+            .then(|| FlashStateId::Download)
+            .or(self.reflash.then(|| FlashStateId::Flash))
+    }
 
     fn run(&mut self, proc_step: &mut ProcedureStep) -> Result<Halt<FlashState>> {
         match proc_step.state()? {
@@ -115,7 +121,6 @@ impl ProcedureStateId for FlashStateId {
 }
 
 impl ProcedureState for FlashState {
-    type Procedure = Flash;
     type Id = FlashStateId;
 
     fn initial_state() -> Self {
@@ -124,18 +129,5 @@ impl ProcedureState for FlashState {
 
     fn id(&self) -> Self::Id {
         self.into()
-    }
-
-    fn needs_update(&self, flash: &Self::Procedure) -> Result<Option<UpdateInfo<Self::Id>>> {
-        let state_id = match self {
-            Self::Download => flash.redownload.then(|| {
-                UpdateInfo::user_update(FlashStateId::Download, "re-download was requested")
-            }),
-            Self::Flash { .. } => flash
-                .reflash
-                .then(|| UpdateInfo::user_update(FlashStateId::Flash, "re-flash was requested")),
-        };
-
-        Ok(state_id)
     }
 }
