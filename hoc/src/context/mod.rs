@@ -127,7 +127,7 @@ impl ProcedureCache {
     pub fn new<S: ProcedureState>() -> Result<Self> {
         Ok(Self {
             completed_steps: Vec::new(),
-            current_step: Some(ProcedureStep::new(&S::initial_state())?),
+            current_step: Some(ProcedureStep::new(&S::default())?),
         })
     }
 
@@ -172,7 +172,7 @@ impl ProcedureCache {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ProcedureStep {
-    id: u64,
+    id: String,
     state: String,
     work_dir_state: DirectoryState,
 }
@@ -180,14 +180,14 @@ pub struct ProcedureStep {
 impl ProcedureStep {
     fn new<S: ProcedureState>(state: &S) -> Result<Self> {
         Ok(Self {
-            id: state.id().to_hash(),
+            id: state.id().as_str().to_string(),
             state: serde_json::to_string(&state)?,
             work_dir_state: DirectoryState::new(Context::WORK_DIR),
         })
     }
 
     pub fn id<S: ProcedureState>(&self) -> Result<S::Id> {
-        S::Id::from_hash(self.id)
+        Ok(S::Id::parse(&self.id)?)
     }
 
     pub fn state<S: ProcedureState>(&self) -> Result<S> {

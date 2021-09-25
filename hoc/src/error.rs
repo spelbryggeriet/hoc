@@ -27,20 +27,20 @@ pub enum Error {
     )]
     ContextSerde(#[from] serde_yaml::Error),
 
-    #[error("procedure state could not be serialized/deserialized: {0}")]
+    #[error("`ProcedureState` could not be serialized/deserialized: {0}")]
     ProcedureStateSerde(#[from] serde_json::Error),
 
-    #[error("hash `{0}` could not be converted into a `ProcedureStateId`")]
-    InvalidProcedureStateIdHash(u64),
+    #[error("`ProcedureStateId` could not be deserialized: {0}")]
+    ProcedureStateIdDeserialize(#[from] strum::ParseError),
 
-    #[error(transparent)]
+    #[error("`FileRef` could not be converted: {0}")]
     FileRef(#[from] dir_state::ConvertError),
+
+    #[error("a request failed: {0}")]
+    Request(#[from] reqwest::Error),
 
     #[error(transparent)]
     LogError(#[from] hoclog::Error),
-
-    #[error(transparent)]
-    Request(#[from] reqwest::Error),
 
     #[error(transparent)]
     Io(#[from] io::Error),

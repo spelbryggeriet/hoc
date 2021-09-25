@@ -2,7 +2,7 @@ use std::fmt::{self, Display, Formatter};
 
 use serde::{Deserialize, Serialize};
 use structopt::StructOpt;
-use strum::{EnumDiscriminants, EnumIter, IntoEnumIterator};
+use strum::{EnumDiscriminants, EnumIter, EnumString, IntoEnumIterator, IntoStaticStr};
 
 use crate::{
     context::{dir_state::FileRef, ProcedureStep},
@@ -98,7 +98,7 @@ impl Flash {
 }
 
 #[derive(Serialize, Deserialize, EnumDiscriminants)]
-#[strum_discriminants(derive(Hash, PartialOrd, Ord, EnumIter))]
+#[strum_discriminants(derive(Hash, PartialOrd, Ord, EnumString, IntoStaticStr))]
 #[strum_discriminants(name(FlashStateId))]
 pub enum FlashState {
     Download,
@@ -106,11 +106,7 @@ pub enum FlashState {
 }
 
 impl ProcedureStateId for FlashStateId {
-    type MemberIter = FlashStateIdIter;
-
-    fn members() -> Self::MemberIter {
-        FlashStateId::iter()
-    }
+    type DeserializeError = strum::ParseError;
 
     fn description(&self) -> &'static str {
         match self {
@@ -120,12 +116,14 @@ impl ProcedureStateId for FlashStateId {
     }
 }
 
+impl Default for FlashState {
+    fn default() -> Self {
+        FlashState::Download
+    }
+}
+
 impl ProcedureState for FlashState {
     type Id = FlashStateId;
-
-    fn initial_state() -> Self {
-        Self::Download
-    }
 
     fn id(&self) -> Self::Id {
         self.into()

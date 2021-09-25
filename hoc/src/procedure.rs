@@ -1,7 +1,4 @@
-use std::{
-    collections::hash_map::DefaultHasher,
-    hash::{Hash, Hasher},
-};
+use std::str::FromStr;
 
 use serde::{de::DeserializeOwned, Serialize};
 
@@ -20,31 +17,29 @@ pub trait Procedure {
     fn run(&mut self, proc_step: &mut ProcedureStep) -> Result<Halt<Self::State>>;
 }
 
-pub trait ProcedureStateId: Clone + Copy + Hash + Eq + Ord
+pub trait ProcedureStateId:
+    Clone + Copy + Eq + Ord + FromStr<Err = Self::DeserializeError> + Into<&'static str>
 where
     Self: Sized,
 {
-    type MemberIter: Iterator<Item = Self>;
+    type DeserializeError: Into<Error>;
 
-    fn members() -> Self::MemberIter;
     fn description(&self) -> &'static str;
 
-    fn to_hash(&self) -> u64 {
-        let mut hasher = DefaultHasher::new();
-        self.hash(&mut hasher);
-        hasher.finish()
+    fn as_str(self) -> &'static str {
+        self.into()
     }
 
-    fn from_hash(hash: u64) -> Result<Self> {
-        Self::members()
-            .find(|s| s.to_hash() == hash)
-            .ok_or(Error::InvalidProcedureStateIdHash(hash))
+    fn parse<S: AsRef<str>>(input: S) -> Result<Self> {
+        match Self::from_str(input.as_ref()) {
+            Ok(id) => Ok(id),
+            Err(err) => Err(err.into()),
+        }
     }
 }
 
-pub trait ProcedureState: Serialize + DeserializeOwned {
+pub trait ProcedureState: Serialize + DeserializeOwned + Default {
     type Id: ProcedureStateId;
 
-    fn initial_state() -> Self;
     fn id(&self) -> Self::Id;
 }
