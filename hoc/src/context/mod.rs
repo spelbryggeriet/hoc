@@ -131,7 +131,7 @@ impl ProcedureCache {
         })
     }
 
-    pub fn completed_steps(&self) -> impl Iterator<Item = &ProcedureStep> + '_ {
+    pub fn completed_steps(&self) -> impl DoubleEndedIterator<Item = &ProcedureStep> + '_ {
         self.completed_steps.iter()
     }
 

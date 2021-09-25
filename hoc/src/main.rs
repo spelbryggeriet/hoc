@@ -1,5 +1,6 @@
 use std::result::Result as StdResult;
 
+use context::dir_state::FileStateDiff;
 use hoclog::{error, info, status, warning};
 use structopt::StructOpt;
 
@@ -23,48 +24,59 @@ fn run_procedure<P: Procedure>(context: &mut Context, mut proc: P) -> Result<()>
         context.persist()?;
     }
 
+    let cache = &context[P::NAME];
+
     let mut invalidate_state = None;
     if let Some(state_id) = proc.rewind_state() {
-        for (rewind_index, rewind_id) in context[P::NAME]
+        for (rewind_index, rewind_id) in cache
             .completed_steps()
             .map(ProcedureStep::id::<P::State>)
             .enumerate()
         {
             if rewind_id? == state_id {
-                invalidate_state.replace((rewind_index, state_id));
+                invalidate_state.replace((rewind_index, state_id, None));
                 break;
             }
         }
     }
 
-    let cur_dir_state = DirectoryState::get_snapshot(&Context::get_work_dir()?)?;
-    for (index, step) in context[P::NAME]
+    let mut cur_dir_state = DirectoryState::get_snapshot(&Context::get_work_dir()?)?;
+    let mut valid_files = DirectoryState::new(Context::WORK_DIR);
+    let completed_steps = cache.completed_steps().count();
+    for (step, index) in cache
         .completed_steps()
-        .take(invalidate_state.as_ref().map_or(usize::MAX, |(i, _)| *i))
-        .enumerate()
+        .rev()
+        .zip((0..completed_steps).rev())
     {
-        let diff = step.work_dir_state().diff(&cur_dir_state);
-        if !diff.is_empty() {
-            let state_id = step.id::<P::State>()?;
+        let mut step_dir_state = step.work_dir_state().clone();
+        step_dir_state.remove_files(&valid_files);
+        let diff = step_dir_state.file_changes(&cur_dir_state);
+
+        if !diff.is_empty() && invalidate_state.as_ref().map_or(true, |(j, ..)| index < *j) {
+            invalidate_state.replace((index, step.id::<P::State>()?, Some(diff)));
+            step_dir_state.remove_files(&step_dir_state.changed_files(&cur_dir_state));
+        }
+
+        valid_files.merge(cur_dir_state.remove_files(&step_dir_state));
+    }
+
+    if let Some((rewind_index, state_id, diff)) = invalidate_state {
+        if let Some(diff) = diff {
+            let diff_line = diff
+                .iter()
+                .map(FileStateDiff::to_string)
+                .collect::<Vec<_>>()
+                .join("\n");
 
             warning!(
                 "Previously completed step {} ({}) has become invalid because the working directory \
-                 state has changed:\n\n{}",
-                index + 1,
+                     state has changed:\n\n{}",
+                rewind_index + 1,
                 state_id.description(),
-                diff.changed_paths()
-                    .into_iter()
-                    .map(|(path, change_type)| format!(r#""{}" ({})"#, path, change_type))
-                    .collect::<Vec<_>>()
-                    .join("\n"),
+                diff_line,
             )?;
-
-            invalidate_state.replace((index, state_id));
-            break;
         }
-    }
 
-    if let Some((rewind_index, state_id)) = invalidate_state {
         info!(
             "Rewinding back to step {} ({}).",
             rewind_index + 1,

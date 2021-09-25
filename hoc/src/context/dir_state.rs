@@ -1,11 +1,12 @@
 use std::{
     borrow::Cow,
     ffi::OsStr,
+    fmt::{self, Display, Formatter},
     fs::{self, File, Metadata, OpenOptions},
     io,
     io::Write,
     os::unix::prelude::MetadataExt,
-    path::{Iter, Path},
+    path::{Iter, Path, PathBuf},
     result::Result as StdResult,
     time::{Duration, SystemTime},
 };
@@ -43,79 +44,44 @@ pub enum VirtualPathError {
 }
 
 #[derive(Debug, PartialEq, Eq)]
-pub struct DirectoryStateDiff<'a> {
-    pub dir_name: &'a str,
+pub struct FileStateDiff {
+    pub path: PathBuf,
     pub removed: bool,
-    pub dir_states_changes: Vec<DirectoryStateDiff<'a>>,
-    pub file_states_changes: Vec<FileStateDiff<'a>>,
+    pub modified: bool,
 }
 
-impl<'a> DirectoryStateDiff<'a> {
-    pub fn new<S: AsRef<str>>(dir_name: &'a S) -> Self {
-        Self {
-            dir_name: dir_name.as_ref(),
-            removed: false,
-            dir_states_changes: Vec::new(),
-            file_states_changes: Vec::new(),
-        }
-    }
-
-    pub fn is_empty(&self) -> bool {
-        !self.removed
-            && self.dir_states_changes.iter().all(Self::is_empty)
-            && self.file_states_changes.iter().all(FileStateDiff::is_empty)
-    }
-
-    pub fn changed_paths(&self) -> Vec<(String, &'static str)> {
-        if self.removed {
-            vec![(self.dir_name.to_owned(), "removed")]
+impl Display for FileStateDiff {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        let change_type = if self.removed {
+            "removed"
+        } else if self.modified {
+            "modified"
         } else {
-            self.file_states_changes
-                .iter()
-                .map(|fsc| {
-                    (
-                        format!("{}/{}", self.dir_name, fsc.file_name),
-                        if fsc.removed {
-                            "removed"
-                        } else {
-                            fsc.modified_change.map_or("unchanged", |_| "modified")
-                        },
-                    )
-                })
-                .chain(self.dir_states_changes.iter().flat_map(|dsc| {
-                    dsc.changed_paths()
-                        .into_iter()
-                        .map(move |(path, change_type)| {
-                            (format!("{}/{}", self.dir_name, path), change_type)
-                        })
-                }))
-                .collect()
-        }
+            "unchanged"
+        };
+        write!(f, r#""{}" ({})"#, self.path.to_string_lossy(), change_type)
     }
 }
 
-#[derive(Debug, PartialEq, Eq)]
-pub struct FileStateDiff<'a> {
-    pub file_name: &'a str,
-    pub removed: bool,
-    pub modified_change: Option<SystemTime>,
-}
-
-impl<'a> FileStateDiff<'a> {
-    pub fn new<S: AsRef<str>>(file_name: &'a S) -> Self {
+impl FileStateDiff {
+    pub fn removed(path: PathBuf) -> Self {
         Self {
-            file_name: file_name.as_ref(),
-            removed: false,
-            modified_change: None,
+            path,
+            removed: true,
+            modified: false,
         }
     }
 
-    pub fn is_empty(&self) -> bool {
-        !self.removed && self.modified_change.is_none()
+    pub fn modified(path: PathBuf) -> Self {
+        Self {
+            path,
+            removed: false,
+            modified: true,
+        }
     }
 }
 
-#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DirectoryState {
     dir_name: String,
     dir_states: Vec<DirectoryState>,
@@ -134,6 +100,10 @@ impl DirectoryState {
     pub fn clear(&mut self) {
         self.dir_states.clear();
         self.file_states.clear();
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.file_states.is_empty() && self.dir_states.iter().all(Self::is_empty)
     }
 
     pub fn get_snapshot<P>(path: &P) -> Result<Self>
@@ -164,51 +134,154 @@ impl DirectoryState {
         })
     }
 
-    pub fn diff(&self, other: &Self) -> DirectoryStateDiff {
-        let mut diff = DirectoryStateDiff::new(&self.dir_name);
-
+    pub fn merge(&mut self, other: Self) {
         if self.dir_name != other.dir_name {
-            diff.removed = true;
-            return diff;
+            return;
         }
 
-        diff.dir_states_changes = self
-            .dir_states
-            .iter()
-            .map(|ds| {
-                other
+        for other_fs in other.file_states {
+            if let Some(fs) = self
+                .file_states
+                .iter_mut()
+                .find(|fs| fs.file_name == other_fs.file_name)
+            {
+                if fs.modified < other_fs.modified {
+                    *fs = other_fs;
+                }
+            } else {
+                self.file_states.push(other_fs);
+            }
+        }
+
+        for other_ds in other.dir_states {
+            if let Some(ds) = self
+                .dir_states
+                .iter_mut()
+                .find(|ds| ds.dir_name == other_ds.dir_name)
+            {
+                ds.merge(other_ds);
+            } else {
+                self.dir_states.push(other_ds);
+            }
+        }
+    }
+
+    pub fn remove_files(&mut self, other: &Self) -> Self {
+        let mut removed_files = Self::new(self.dir_name.clone());
+
+        if self.dir_name != other.dir_name {
+            return removed_files;
+        }
+
+        let mut i = 0;
+        while i < self.file_states.len() {
+            if other
+                .file_states
+                .iter()
+                .find(|fs_other| self.file_states[i].file_name == fs_other.file_name)
+                .is_some()
+            {
+                removed_files.file_states.push(self.file_states.remove(i));
+            } else {
+                i += 1;
+            }
+        }
+
+        i = 0;
+        while i < self.dir_states.len() {
+            let ds = &mut self.dir_states[i];
+            if let Some(ds_other) = other
+                .dir_states
+                .iter()
+                .find(|ds_other| ds.dir_name == ds_other.dir_name)
+            {
+                removed_files.dir_states.push(ds.remove_files(ds_other));
+            } else {
+                i += 1;
+            }
+        }
+
+        removed_files
+    }
+
+    pub fn changed_files(&self, other: &Self) -> Self {
+        let mut modified = Self::new(&self.dir_name);
+
+        if self.dir_name != other.dir_name {
+            return modified;
+        }
+
+        for fs in &self.file_states {
+            if let Some(other_fs) = other
+                .file_states
+                .iter()
+                .find(|other_fs| fs.file_name == other_fs.file_name)
+            {
+                if fs.modified != other_fs.modified {
+                    modified.file_states.push(fs.clone());
+                }
+            } else {
+                modified.file_states.push(fs.clone());
+            }
+        }
+
+        for ds in &self.dir_states {
+            if let Some(other_ds) = other
+                .dir_states
+                .iter()
+                .find(|other_ds| ds.dir_name == other_ds.dir_name)
+            {
+                let ds_modified = ds.changed_files(other_ds);
+                if !ds_modified.is_empty() {
+                    modified.dir_states.push(ds_modified);
+                }
+            }
+        }
+
+        modified
+    }
+
+    pub fn file_changes(&self, other: &Self) -> Vec<FileStateDiff> {
+        let mut file_state_changes = Vec::new();
+
+        if self.dir_name != other.dir_name {
+            return file_state_changes;
+        }
+
+        let mut stack = vec![((self, other), PathBuf::from(&self.dir_name))];
+        while let Some(((dir_state, other_dir_state), mut path)) = stack.pop() {
+            for ds in dir_state.dir_states.iter().rev() {
+                if let Some(other_ds) = other_dir_state
                     .dir_states
                     .iter()
-                    .find(|ds_other| ds_other.dir_name == ds.dir_name)
-                    .map(|ds_other| ds.diff(ds_other))
-                    .unwrap_or_else(|| {
-                        let mut ds_diff = DirectoryStateDiff::new(&ds.dir_name);
-                        ds_diff.removed = true;
-                        ds_diff
-                    })
-            })
-            .filter(|diff| !diff.is_empty())
-            .collect();
+                    .find(|other_ds| ds.dir_name == other_ds.dir_name)
+                {
+                    let mut path = path.clone();
+                    path.push(&ds.dir_name);
+                    stack.push(((ds, other_ds), path));
+                }
+            }
 
-        diff.file_states_changes = self
-            .file_states
-            .iter()
-            .map(|fs| {
-                other
+            for fs in &dir_state.file_states {
+                path.push(&fs.file_name);
+
+                if let Some(other_fs) = other_dir_state
                     .file_states
                     .iter()
-                    .find(|fs_other| fs.file_name == fs_other.file_name)
-                    .map(|fs_other| fs.diff(&fs_other))
-                    .unwrap_or_else(|| {
-                        let mut fs_diff = FileStateDiff::new(&fs.file_name);
-                        fs_diff.removed = true;
-                        fs_diff
-                    })
-            })
-            .filter(|diff| !diff.is_empty())
-            .collect();
+                    .find(|other_fs| fs.file_name == other_fs.file_name)
+                {
+                    if fs.modified != other_fs.modified {
+                        file_state_changes.push(FileStateDiff::modified(path.clone()));
+                    }
+                } else {
+                    file_state_changes.push(FileStateDiff::removed(path.clone()));
+                }
 
-        diff
+                path.pop();
+            }
+        }
+
+        file_state_changes
     }
 
     pub fn file_reader<P: AsRef<Path>>(&self, path: P) -> Result<File> {
@@ -260,7 +333,7 @@ impl DirectoryState {
     }
 }
 
-#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FileState {
     file_name: String,
     modified: SystemTime,
@@ -290,12 +363,6 @@ impl FileState {
             file_name: path.file_name().unwrap().to_string_lossy().into_owned(),
             modified,
         })
-    }
-
-    fn diff(&self, other: &Self) -> FileStateDiff {
-        let mut diff = FileStateDiff::new(&self.file_name);
-        diff.modified_change = (self.modified != other.modified).then(|| other.modified);
-        diff
     }
 
     fn update_modified_time(&mut self, modified: SystemTime) {
