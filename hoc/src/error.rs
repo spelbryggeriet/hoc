@@ -33,11 +33,11 @@ pub enum Error {
     #[error("`ProcedureStateId` could not be deserialized: {0}")]
     ProcedureStateIdDeserialize(#[from] strum::ParseError),
 
-    #[error("`FileRef` could not be converted: {0}")]
-    FileRef(#[from] dir_state::ConvertError),
-
     #[error("a request failed: {0}")]
     Request(#[from] reqwest::Error),
+
+    #[error(transparent)]
+    VirtualPath(#[from] dir_state::VirtualPathError),
 
     #[error(transparent)]
     LogError(#[from] hoclog::Error),

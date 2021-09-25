@@ -8,12 +8,19 @@ use std::result::Result as StdResult;
 
 use lazy_static::lazy_static;
 
-pub use log::{Error, Log, Status, Stream};
+pub use log::{Error, Log, LogErr, Status, Stream};
 pub use styling::Styling;
 pub use wrapping::Wrapping;
 
 lazy_static! {
-    pub static ref LOG: Log = Log::new();
+    pub static ref LOG: Log = {
+        let current_hook = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            LOG.set_failure();
+            current_hook(info);
+        }));
+        Log::new()
+    };
 }
 
 #[macro_export]
@@ -75,6 +82,18 @@ macro_rules! error {
     };
 }
 
+#[macro_export]
+macro_rules! bail {
+    ($fmt:expr $(,)?) => {
+        return Err($crate::LOG.error($fmt).unwrap_err().into());
+    };
+
+    ($($fmt:tt)*) => {
+        return Err($crate::LOG.error(format!($($fmt)*)).unwrap_err().into());
+    };
+}
+
+#[derive(Debug)]
 pub enum Never {}
 
 pub type Result<T> = StdResult<T, Error>;

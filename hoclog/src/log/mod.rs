@@ -1,5 +1,6 @@
 use std::{
     fmt,
+    result::Result as StdResult,
     sync::{Arc, Mutex},
 };
 
@@ -7,7 +8,7 @@ use console::Style;
 use dialoguer::{theme::Theme, Confirm, Input, Password, Select};
 use thiserror::Error;
 
-use crate::{context::PrintContext, prefix::PrefixPrefs, Never, Result};
+use crate::{context::PrintContext, prefix::PrefixPrefs, Never, Result, LOG};
 pub use status::Status;
 pub use stream::Stream;
 
@@ -26,16 +27,30 @@ pub enum Error {
     UserAborted,
 }
 
+pub trait LogErr<T> {
+    type Err;
+
+    fn log_err<S: AsRef<str>, F: FnOnce(Self::Err) -> S>(self, f: F) -> Result<T>;
+}
+
+impl<T, E> LogErr<T> for StdResult<T, E> {
+    type Err = E;
+
+    fn log_err<S: AsRef<str>, F: FnOnce(<Self as LogErr<T>>::Err) -> S>(self, f: F) -> Result<T> {
+        self.map_err(|err| LOG.error(f(err)).unwrap_err())
+    }
+}
+
 #[derive(PartialEq, Eq, Clone, Copy)]
 pub enum LogType {
-    /// The start part of a nested log, such as status.
-    NestedStart,
-
-    /// The end part of a nested log, such as status.
-    NestedEnd,
-
-    /// All other logs ar flat.
-    Flat,
+    StatusStart,
+    StatusEnd,
+    Info,
+    Warning,
+    Error,
+    Input,
+    Choose,
+    Prompt,
 }
 
 pub struct Log {
@@ -49,6 +64,10 @@ impl Log {
         }
     }
 
+    pub(crate) fn set_failure(&self) {
+        self.print_context.lock().unwrap().failure = true;
+    }
+
     pub fn stream(&self) -> Stream {
         Stream::new(self)
     }
@@ -60,10 +79,11 @@ impl Log {
             print_context.failure = false;
         }
 
+        print_context.print_spacing_if_needed(LogType::StatusStart);
         print_context.increment_status();
         print_context.decorated_println(
             message,
-            LogType::NestedStart,
+            LogType::StatusStart,
             PrefixPrefs::with_connector("╓╴").flag("*"),
             PrefixPrefs::in_status_overflow(),
         );
@@ -76,7 +96,7 @@ impl Log {
 
         print_context.decorated_println(
             message,
-            LogType::Flat,
+            LogType::Info,
             PrefixPrefs::in_status().flag(INFO_FLAG),
             PrefixPrefs::in_status_overflow(),
         );
@@ -95,7 +115,7 @@ impl Log {
 
         print_context.decorated_println(
             message,
-            LogType::Flat,
+            LogType::Info,
             PrefixPrefs::in_status().flag(INFO_FLAG).label(&label),
             PrefixPrefs::in_status_overflow().label(&" ".repeat(1 + label_len)),
         );
@@ -105,11 +125,10 @@ impl Log {
         let mut print_context = self.print_context.lock().unwrap();
 
         let yellow = Style::new().yellow();
-
         for line in message.as_ref().lines() {
             print_context.decorated_println(
                 yellow.apply_to(line).to_string(),
-                LogType::Flat,
+                LogType::Warning,
                 PrefixPrefs::in_status().flag(&yellow.apply_to(ERROR_FLAG).to_string()),
                 PrefixPrefs::in_status_overflow(),
             );
@@ -126,15 +145,17 @@ impl Log {
     pub fn error(&self, message: impl AsRef<str>) -> Result<Never> {
         let mut print_context = self.print_context.lock().unwrap();
 
-        let red = Style::new().red();
         print_context.failure = true;
 
-        print_context.decorated_println(
-            red.apply_to(message.as_ref()).to_string(),
-            LogType::Flat,
-            PrefixPrefs::in_status().flag(&red.apply_to(ERROR_FLAG).to_string()),
-            PrefixPrefs::in_status_overflow(),
-        );
+        let red = Style::new().red();
+        for line in message.as_ref().lines() {
+            print_context.decorated_println(
+                red.apply_to(line).to_string(),
+                LogType::Error,
+                PrefixPrefs::in_status().flag(&red.apply_to(ERROR_FLAG).to_string()),
+                PrefixPrefs::in_status_overflow(),
+            );
+        }
 
         Err(Error::ErrorLogged)
     }
@@ -144,18 +165,17 @@ impl Log {
     }
 
     fn prompt_impl(&self, print_context: &mut PrintContext, message: impl AsRef<str>) -> bool {
-        let cyan = Style::new().cyan();
+        print_context.print_spacing_if_needed(LogType::Prompt);
 
         let mut prompt = print_context.create_line_prefix(PrefixPrefs::in_status().flag("?"));
         prompt += message.as_ref();
 
+        let cyan = Style::new().cyan();
         let want_continue = Confirm::new()
             .with_prompt(cyan.apply_to(prompt).to_string())
             .default(false)
             .interact_on(&print_context.stdout)
             .unwrap_or_else(|e| panic!("failed printing to stdout: {}", e));
-
-        print_context.set_last_log_type(LogType::Flat);
 
         want_continue
     }
@@ -163,17 +183,16 @@ impl Log {
     pub fn input(&self, message: impl AsRef<str>) -> String {
         let mut print_context = self.print_context.lock().unwrap();
 
-        let cyan = Style::new().cyan();
+        print_context.print_spacing_if_needed(LogType::Input);
 
         let mut prompt = print_context.create_line_prefix(PrefixPrefs::in_status().flag("?"));
         prompt += message.as_ref();
 
+        let cyan = Style::new().cyan();
         let input = Input::new()
             .with_prompt(cyan.apply_to(prompt).to_string())
             .interact_on(&print_context.stdout)
             .unwrap_or_else(|e| panic!("failed printing to stdout: {}", e));
-
-        print_context.set_last_log_type(LogType::Flat);
 
         input
     }
@@ -181,17 +200,16 @@ impl Log {
     pub fn hidden_input(&self, message: impl AsRef<str>) -> String {
         let mut print_context = self.print_context.lock().unwrap();
 
-        let cyan = Style::new().cyan();
+        print_context.print_spacing_if_needed(LogType::Input);
 
         let mut prompt = print_context.create_line_prefix(PrefixPrefs::in_status().flag("?"));
         prompt += message.as_ref();
 
+        let cyan = Style::new().cyan();
         let password = Password::new()
             .with_prompt(cyan.apply_to(prompt).to_string())
             .interact_on(&print_context.stdout)
             .unwrap_or_else(|e| panic!("failed printing to stdout: {}", e));
-
-        print_context.set_last_log_type(LogType::Flat);
 
         password
     }
@@ -204,7 +222,8 @@ impl Log {
     ) -> usize {
         let mut print_context = self.print_context.lock().unwrap();
 
-        let cyan = Style::new().cyan();
+        print_context.print_spacing_if_needed(LogType::Choose);
+
         let items: Vec<_> = items.into_iter().collect();
 
         let mut prompt = print_context.create_line_prefix(PrefixPrefs::in_status().flag("#"));
@@ -228,6 +247,7 @@ impl Log {
             }
         }
 
+        let cyan = Style::new().cyan();
         let index = Select::with_theme(&ChooseTheme {
             print_context: &print_context,
         })
@@ -236,8 +256,6 @@ impl Log {
         .default(default_index)
         .interact_on_opt(&print_context.stdout)
         .unwrap_or_else(|e| panic!("failed printing to stdout: {}", e));
-
-        print_context.set_last_log_type(LogType::Flat);
 
         if let Some(index) = index {
             index

@@ -33,10 +33,6 @@ impl PrintContext {
         self.statuses -= 1;
     }
 
-    pub fn set_last_log_type(&mut self, log_type: LogType) {
-        self.last_log_type.replace(log_type);
-    }
-
     pub fn decorated_println(
         &mut self,
         text: impl AsRef<str>,
@@ -67,8 +63,6 @@ impl PrintContext {
             line += &chunk;
             self.println(line);
         }
-
-        self.last_log_type.replace(log_type);
     }
 
     pub fn create_line_prefix(&self, prefs: PrefixPrefs) -> String {
@@ -101,6 +95,14 @@ impl PrintContext {
         line_prefix
     }
 
+    pub fn print_spacing_if_needed(&mut self, current_log_type: LogType) {
+        if self.last_log_type.is_some() && self.last_log_type != Some(current_log_type) {
+            self.println(self.create_line_prefix(PrefixPrefs::in_status_overflow()));
+        }
+
+        self.last_log_type.replace(current_log_type);
+    }
+
     fn print(&mut self, msg: impl AsRef<str>, flush: bool) {
         self.stdout
             .write(msg.as_ref().as_bytes())
@@ -115,17 +117,6 @@ impl PrintContext {
     fn println(&mut self, msg: impl AsRef<str>) {
         self.print(msg, false);
         self.print("\n", true);
-    }
-
-    fn print_spacing_if_needed(&mut self, current_log_type: LogType) {
-        let level = self.status_level();
-        if (current_log_type == LogType::Flat && level == 0
-            || current_log_type == LogType::NestedStart && level == 1)
-            && self.last_log_type.is_some()
-            && self.last_log_type != Some(current_log_type)
-        {
-            self.println("");
-        }
     }
 
     fn get_status_level_color(&self, status_level: usize) -> Style {

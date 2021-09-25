@@ -16,5 +16,6 @@ serde_yaml = "0.8.21"
 structopt = "0.3.23"
 strum = { version = "0.21.0", features = ["derive"] }
 thiserror = "1.0.29"
+zip = "0.5.13"
 
 hoclog = { path = "../hoclog" }

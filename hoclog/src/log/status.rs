@@ -40,12 +40,14 @@ impl Drop for Status {
             }
         } else {
             line += &Style::new().red().apply_to("FAILURE").to_string();
-            print_context.failure = false;
+            if level == 1 {
+                print_context.failure = false;
+            }
         }
 
         print_context.decorated_println(
             line,
-            LogType::NestedEnd,
+            LogType::StatusEnd,
             PrefixPrefs::with_connector("╙─").flag("─"),
             PrefixPrefs::with_connector("  ").flag(" "),
         );

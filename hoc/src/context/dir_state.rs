@@ -1,16 +1,13 @@
 use std::{
     borrow::Cow,
-    convert::TryFrom,
     ffi::OsStr,
-    fmt::{self, Display, Formatter},
-    fs::{self, File, OpenOptions},
+    fs::{self, File, Metadata, OpenOptions},
     io,
     io::Write,
-    mem,
-    ops::{Index, IndexMut},
+    os::unix::prelude::MetadataExt,
     path::{Iter, Path},
     result::Result as StdResult,
-    time::SystemTime,
+    time::{Duration, SystemTime},
 };
 
 use serde::{Deserialize, Serialize};
@@ -20,18 +17,24 @@ use crate::Result;
 
 fn split_virtual_path_by_file_name<'p, P: AsRef<Path>>(
     virtual_path: &'p P,
-) -> StdResult<(&'p OsStr, Iter<'p>), ConvertError> {
+) -> StdResult<(&'p OsStr, Iter<'p>), VirtualPathError> {
     if virtual_path.as_ref().is_absolute() {
-        return Err(ConvertError::AbsolutePath);
+        return Err(VirtualPathError::AbsolutePath);
     }
 
     let mut dirs = virtual_path.as_ref().iter();
-    let file_name = dirs.next_back().ok_or(ConvertError::EmptyPath)?;
+    let file_name = dirs.next_back().ok_or(VirtualPathError::EmptyPath)?;
     Ok((file_name, dirs))
 }
 
+fn ctime_to_system_time(metadata: Metadata) -> SystemTime {
+    let ctime = metadata.ctime() as u64;
+    let ctime_nsec = metadata.ctime_nsec() as u32;
+    SystemTime::UNIX_EPOCH + Duration::new(ctime, ctime_nsec)
+}
+
 #[derive(Debug, Error)]
-pub enum ConvertError {
+pub enum VirtualPathError {
     #[error("`FileRef` cannot be created from an absolute path")]
     AbsolutePath,
 
@@ -117,46 +120,6 @@ pub struct DirectoryState {
     dir_name: String,
     dir_states: Vec<DirectoryState>,
     file_states: Vec<FileState>,
-}
-
-impl IndexMut<&FileRef> for DirectoryState {
-    fn index_mut(&mut self, file_ref: &FileRef) -> &mut Self::Output {
-        let mut dir_state = self;
-        for dir_name in &file_ref.parents {
-            dir_state = dir_state
-                .dir_states
-                .iter_mut()
-                .find(|ds| &ds.dir_name == dir_name)
-                .unwrap();
-        }
-
-        dir_state
-            .file_states
-            .iter_mut()
-            .find(|fs| fs.file_name == file_ref.file_name)
-            .unwrap()
-    }
-}
-
-impl Index<&FileRef> for DirectoryState {
-    type Output = FileState;
-
-    fn index(&self, file_ref: &FileRef) -> &Self::Output {
-        let mut dir_state = self;
-        for dir_name in &file_ref.parents {
-            dir_state = dir_state
-                .dir_states
-                .iter()
-                .find(|ds| &ds.dir_name == dir_name)
-                .unwrap();
-        }
-
-        dir_state
-            .file_states
-            .iter()
-            .find(|fs| fs.file_name == file_ref.file_name)
-            .unwrap()
-    }
 }
 
 impl DirectoryState {
@@ -248,28 +211,28 @@ impl DirectoryState {
         diff
     }
 
+    pub fn file_reader<P: AsRef<Path>>(&self, path: P) -> Result<File> {
+        Ok(File::open(path)?)
+    }
+
     pub fn file_writer<P1, P2>(&mut self, virtual_path: P1, actual_path: P2) -> Result<FileWriter>
     where
         P1: AsRef<Path>,
         P2: AsRef<Path>,
     {
-        let (file_state, file_ref) = self.get_or_create_file_info(virtual_path)?;
+        let file_state = self.get_or_create_file_state_mut(virtual_path)?;
 
-        FileWriter::new(&actual_path, file_ref, file_state)
+        FileWriter::new(&actual_path, file_state)
     }
 
-    fn get_or_create_file_info<P: AsRef<Path>>(
+    fn get_or_create_file_state_mut<P: AsRef<Path>>(
         &mut self,
         virtual_path: P,
-    ) -> Result<(&mut FileState, FileRef)> {
+    ) -> Result<&mut FileState> {
         let (file_name, dirs) = split_virtual_path_by_file_name(&virtual_path)?;
-
-        let mut file_ref = FileRef::new(file_name);
 
         let mut dir_state = self;
         for dir_name in dirs {
-            file_ref.push_parent(dir_name);
-
             if let Some(index) = dir_state
                 .dir_states
                 .iter()
@@ -293,7 +256,7 @@ impl DirectoryState {
             dir_state.file_states.last_mut().unwrap()
         };
 
-        Ok((file_state, file_ref))
+        Ok(file_state)
     }
 }
 
@@ -321,7 +284,7 @@ impl FileState {
             path = Cow::Owned(fs::read_link(path)?);
         }
 
-        let modified = fs::metadata(&path)?.modified()?;
+        let modified = ctime_to_system_time(fs::metadata(&path)?);
 
         Ok(Self {
             file_name: path.file_name().unwrap().to_string_lossy().into_owned(),
@@ -340,57 +303,9 @@ impl FileState {
     }
 }
 
-#[derive(Default, Serialize, Deserialize)]
-pub struct FileRef {
-    file_name: String,
-    parents: Vec<String>,
-}
-
-impl Display for FileRef {
-    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
-        for dir_name in &self.parents {
-            write!(f, "{}/", dir_name)?;
-        }
-        self.file_name.fmt(f)
-    }
-}
-
-impl TryFrom<&Path> for FileRef {
-    type Error = ConvertError;
-
-    fn try_from(path: &Path) -> StdResult<Self, Self::Error> {
-        if path.is_absolute() {
-            return Err(ConvertError::AbsolutePath);
-        }
-
-        let mut parents: Vec<_> = path
-            .into_iter()
-            .map(|s| s.to_string_lossy().into_owned())
-            .collect();
-        let file_name = parents.pop().ok_or(ConvertError::EmptyPath)?;
-
-        Ok(Self { file_name, parents })
-    }
-}
-
-impl FileRef {
-    fn new<S: AsRef<OsStr>>(file_name: S) -> Self {
-        Self {
-            file_name: file_name.as_ref().to_string_lossy().into_owned(),
-            parents: Vec::new(),
-        }
-    }
-
-    fn push_parent<S: AsRef<OsStr>>(&mut self, dir_name: S) {
-        self.parents
-            .push(dir_name.as_ref().to_string_lossy().into_owned());
-    }
-}
-
 pub struct FileWriter<'a> {
     file: File,
     file_state: &'a mut FileState,
-    file_ref: FileRef,
     is_finished: bool,
 }
 
@@ -411,11 +326,7 @@ impl Drop for FileWriter<'_> {
 }
 
 impl<'f> FileWriter<'f> {
-    pub fn new<P: AsRef<Path>>(
-        path: P,
-        file_ref: FileRef,
-        file_state: &'f mut FileState,
-    ) -> Result<Self> {
+    pub fn new<P: AsRef<Path>>(path: P, file_state: &'f mut FileState) -> Result<Self> {
         if let Some(parent) = path.as_ref().parent() {
             match fs::metadata(parent) {
                 Ok(_) => (),
@@ -432,20 +343,24 @@ impl<'f> FileWriter<'f> {
             .truncate(true)
             .open(path)?;
 
-        file_state.modified = file.metadata()?.modified()?;
+        file_state.modified = ctime_to_system_time(file.metadata()?);
 
         Ok(Self {
             file,
             file_state,
-            file_ref,
             is_finished: false,
         })
     }
 
-    pub fn finish(mut self) -> Result<FileRef> {
+    pub fn write_and_finish(mut self, buf: &[u8]) -> Result<()> {
+        self.write(buf)?;
+        self.finish()
+    }
+
+    pub fn finish(mut self) -> Result<()> {
         self.file_state
-            .update_modified_time(self.file.metadata()?.modified()?);
+            .update_modified_time(ctime_to_system_time(self.file.metadata()?));
         self.is_finished = true;
-        Ok(mem::take(&mut self.file_ref))
+        Ok(())
     }
 }
