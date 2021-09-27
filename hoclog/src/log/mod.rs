@@ -1,4 +1,5 @@
 use std::{
+    error::Error as StdError,
     fmt,
     result::Result as StdResult,
     sync::{Arc, Mutex},
@@ -25,18 +26,34 @@ pub enum Error {
 
     #[error("the operation was aborted")]
     UserAborted,
+
+    #[error("an empty list of items was sent to `choose`")]
+    ChooseNoItems,
 }
 
 pub trait LogErr<T> {
-    type Err;
+    type Err: StdError;
 
-    fn log_err<S: AsRef<str>, F: FnOnce(Self::Err) -> S>(self, f: F) -> Result<T>;
+    fn log_err(self) -> Result<T>;
+    fn log_context<S: AsRef<str>>(self, msg: S) -> Result<T>;
+    fn log_with_context<S: AsRef<str>, F: FnOnce(Self::Err) -> S>(self, f: F) -> Result<T>;
 }
 
-impl<T, E> LogErr<T> for StdResult<T, E> {
+impl<T, E: StdError> LogErr<T> for StdResult<T, E> {
     type Err = E;
 
-    fn log_err<S: AsRef<str>, F: FnOnce(<Self as LogErr<T>>::Err) -> S>(self, f: F) -> Result<T> {
+    fn log_err(self) -> Result<T> {
+        self.map_err(|err| LOG.error(err.to_string()).unwrap_err())
+    }
+
+    fn log_context<S: AsRef<str>>(self, msg: S) -> Result<T> {
+        self.map_err(|err| LOG.error(format!("{}: {}", msg.as_ref(), err)).unwrap_err())
+    }
+
+    fn log_with_context<S: AsRef<str>, F: FnOnce(<Self as LogErr<T>>::Err) -> S>(
+        self,
+        f: F,
+    ) -> Result<T> {
         self.map_err(|err| LOG.error(f(err)).unwrap_err())
     }
 }
@@ -219,12 +236,15 @@ impl Log {
         message: impl AsRef<str>,
         items: impl IntoIterator<Item = impl ToString>,
         default_index: usize,
-    ) -> usize {
+    ) -> Result<usize> {
+        let items: Vec<_> = items.into_iter().collect();
+        if items.len() == 0 {
+            return Err(Error::ChooseNoItems);
+        }
+
         let mut print_context = self.print_context.lock().unwrap();
 
         print_context.print_spacing_if_needed(LogType::Choose);
-
-        let items: Vec<_> = items.into_iter().collect();
 
         let mut prompt = print_context.create_line_prefix(PrefixPrefs::in_status().flag("#"));
         prompt += message.as_ref();
@@ -258,10 +278,9 @@ impl Log {
         .unwrap_or_else(|e| panic!("failed printing to stdout: {}", e));
 
         if let Some(index) = index {
-            index
+            Ok(index)
         } else {
-            // anyhow::bail!("User cancelled operation");
-            panic!("User cancelled operation");
+            Err(Error::UserAborted)
         }
     }
 }

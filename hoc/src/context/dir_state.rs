@@ -284,8 +284,8 @@ impl DirectoryState {
         file_state_changes
     }
 
-    pub fn file_reader<P: AsRef<Path>>(&self, path: P) -> Result<File> {
-        Ok(File::open(path)?)
+    pub fn file_reader<P: AsRef<Path>>(&self, virtual_path: P) -> Result<File> {
+        Ok(File::open(virtual_path)?)
     }
 
     pub fn file_writer<P1, P2>(&mut self, virtual_path: P1, actual_path: P2) -> Result<FileWriter>

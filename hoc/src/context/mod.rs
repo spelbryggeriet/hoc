@@ -198,17 +198,19 @@ impl ProcedureStep {
         &self.work_dir_state
     }
 
-    pub fn file_writer<P: AsRef<Path>>(&mut self, virtual_path: P) -> Result<FileWriter> {
+    pub fn file_path<P: AsRef<Path>>(&self, virtual_path: P) -> Result<PathBuf> {
         let mut actual_path = Context::get_work_dir()?;
         actual_path.extend(virtual_path.as_ref().iter());
-
-        self.work_dir_state.file_writer(virtual_path, actual_path)
+        Ok(actual_path)
     }
 
     pub fn file_reader<P: AsRef<Path>>(&self, virtual_path: P) -> Result<File> {
-        let mut actual_path = Context::get_work_dir()?;
-        actual_path.extend(virtual_path.as_ref().iter());
-
+        let actual_path = self.file_path(virtual_path)?;
         self.work_dir_state.file_reader(actual_path)
+    }
+
+    pub fn file_writer<P: AsRef<Path>>(&mut self, virtual_path: P) -> Result<FileWriter> {
+        let actual_path = self.file_path(&virtual_path)?;
+        self.work_dir_state.file_writer(virtual_path, actual_path)
     }
 }
