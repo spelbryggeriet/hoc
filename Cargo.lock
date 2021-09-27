@@ -377,6 +377,7 @@ dependencies = [
  "serde_yaml",
  "structopt",
  "strum",
+ "tempfile",
  "thiserror",
  "zip",
 ]

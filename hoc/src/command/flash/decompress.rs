@@ -10,7 +10,7 @@ impl Flash {
         proc_step: &mut ProcedureStep,
         archive_path: PathBuf,
     ) -> hoclog::Result<Halt<FlashState>> {
-        let archive_data = status!("Reading archive" => {
+        let archive_data = status!("Reading archive", {
             let image_reader = proc_step.file_reader(&archive_path).log_err()?;
 
             let mut archive = ZipArchive::new(image_reader).log_err()?;
@@ -26,7 +26,7 @@ impl Flash {
                     info!("Found image at index {} among {} items.", i, archive_len);
 
                     let mut data = Vec::new();
-                    status!("Decompressing image" => {
+                    status!("Decompressing image", {
                         archive_file
                             .read_to_end(&mut data)
                             .log_context("Failed to read image in Zip archive")?;
@@ -43,7 +43,7 @@ impl Flash {
             }
         });
 
-        status!("Save decompressed image to file" => {
+        status!("Save decompressed image to file", {
             proc_step
                 .file_writer(&archive_path)
                 .log_context("Failed to open file writer")?

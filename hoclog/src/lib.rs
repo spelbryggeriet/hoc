@@ -25,12 +25,12 @@ lazy_static! {
 
 #[macro_export]
 macro_rules! info {
-    ($($fmt:tt)*) => {
-        $crate::LOG.info(format!($($fmt)*))
-    };
-
     ($fmt:expr $(,)?) => {
         $crate::LOG.info($fmt)
+    };
+
+    ($($fmt:tt)*) => {
+        $crate::LOG.info(format!($($fmt)*))
     };
 }
 
@@ -47,15 +47,13 @@ macro_rules! choose {
 
 #[macro_export]
 macro_rules! status {
-    (($($fmt:tt)*) $(, label=$label:expr)? $(=> $code:expr)? $(,)?) => {{
-        let __status = $crate::LOG.status(format!($($fmt)*))
-            $(.with_label($label))?;
+    (($($fmt:tt)*) $(, $code:expr)? $(,)?) => {{
+        let __status = $crate::LOG.status(format!($($fmt)*));
         $($code)?
     }};
 
-    ($fmt:expr $(, label=$label:expr)? $(=> $code:expr)? $(,)?) => {{
+    ($fmt:expr $(, $code:expr)? $(,)?) => {{
         let __status = $crate::LOG.status($fmt);
-            $(.with_label($label))?;
         $($code)?
     }};
 }

@@ -4,7 +4,6 @@ use serde::{Deserialize, Serialize};
 use structopt::StructOpt;
 use strum::{EnumDiscriminants, EnumString, IntoStaticStr};
 
-use super::*;
 use crate::{
     context::ProcedureStep,
     procedure::{Halt, Procedure, ProcedureState, ProcedureStateId},

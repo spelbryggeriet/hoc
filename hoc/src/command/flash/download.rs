@@ -47,7 +47,7 @@ impl Flash {
         info!("URL  : {}", image.url());
 
         let archive_path = PathBuf::from("image");
-        status!("Downloading image" => {
+        status!("Downloading image", {
             let mut image_writer = proc_step.file_writer(&archive_path).log_err()?;
             reqwest::blocking::get(image.url())
                 .log_err()?

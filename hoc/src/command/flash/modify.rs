@@ -1,6 +1,5 @@
-use std::process::Command;
-
 use serde::Deserialize;
+use tempfile::TempDir;
 
 use super::*;
 
@@ -57,52 +56,66 @@ impl Flash {
         proc_step: &mut ProcedureStep,
         image_path: PathBuf,
     ) -> hoclog::Result<Halt<FlashState>> {
-        status!("Attaching disk" => {
-            run_system_command(
-                Command::new("hdiutil")
-                    .args(&[
-                        "attach",
-                        "-imagekey",
-                        "diskimage-class=CRawDiskImage",
-                        "-nomount",
-                    ])
-                    .arg(proc_step.file_path(image_path).log_err()?),
-            )?;
+        status!(
+            "Attaching disk",
+            cmd!(
+                "hdiutil",
+                "attach",
+                "-imagekey",
+                "diskimage-class=CRawDiskImage",
+                "-nomount",
+                proc_step.file_path(image_path).log_err()?,
+            ),
+        );
+
+        let disk_id = status!("Searching for the correct disk", {
+            let stdout = cmd_silent!("diskutil", "list", "-plist", "external", "virtual");
+
+            let mut attached_disks_info: Vec<_> = plist::from_bytes::<DiskutilOutput>(&stdout)
+                .log_context("Failed to parse output of 'diskutil'")?
+                .all_disks_and_partitions
+                .into_iter()
+                .filter(|adi| adi.partitions.iter().any(|p| p.name == "boot"))
+                .collect();
+
+            let boot_disk_descs = attached_disks_info.iter().map(|adi| {
+                let mut desc = unamed_if_empty(&adi.name);
+                if !adi.partitions.is_empty() {
+                    desc += &format!(
+                        " ({} partition{}: {})",
+                        adi.partitions.len(),
+                        if adi.partitions.len() == 1 { "" } else { "s" },
+                        adi.partitions
+                            .iter()
+                            .map(|p| unamed_if_empty(&p.name))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    );
+                }
+                desc + &format!(", {:.2} GB", adi.size as f64 / 1e9)
+            });
+
+            let index = choose!("Which disk do you want to use?", items = boot_disk_descs)
+                .log_context("Failed to present list of disks to choose from")?;
+
+            attached_disks_info
+                .remove(index)
+                .partitions
+                .into_iter()
+                .find(|p| p.name == "boot")
+                .unwrap()
+                .id
         });
 
-        status!("Searching for the correct disk" => {
-            let stdout = Command::new("diskutil")
-                .args(&["list", "-plist", "external", "virtual"])
-                .output()
-                .log_context("Failed running command 'diskutil'")?
-                .stdout;
-
-            let attached_disks_info = plist::from_bytes::<DiskutilOutput>(&stdout)
-                .log_context("Failed to parse output of 'diskutil'")?
-                .all_disks_and_partitions;
-
-            let boot_disk_descs = attached_disks_info
-                .iter()
-                .filter(|adi| adi.partitions.iter().any(|p| p.name == "boot"))
-                .map(|adi| {
-                    let mut desc = unamed_if_empty(&adi.name);
-                    if !adi.partitions.is_empty() {
-                        desc += &format!(
-                            " ({} partition{}: {})",
-                            adi.partitions.len(),
-                            if adi.partitions.len() == 1 { "" } else { "s" },
-                            adi.partitions
-                                .iter()
-                                .map(|p| unamed_if_empty(&p.name))
-                                .collect::<Vec<_>>()
-                                .join(", ")
-                        );
-                    }
-                    desc + &format!(", {:.2} GB", adi.size as f64 / 1e9)
-                });
-
-            choose!("Which disk do you want to use?", items = boot_disk_descs)
-                .log_context("Failed to present list of disks to choose from")?;
+        status!("Mounting image disk", {
+            let mount_dir = TempDir::new().log_err()?;
+            cmd!(
+                "diskutil",
+                "mount",
+                "-mountPoint",
+                mount_dir.as_ref(),
+                format!("/dev/{}", disk_id),
+            );
         });
 
         Ok(Halt::Finish)

@@ -89,14 +89,13 @@ fn run_procedure<P: Procedure>(context: &mut Context, mut proc: P) -> Result<()>
 
     let mut index = 1;
     for (i, step) in context[P::NAME].completed_steps().enumerate() {
-        status!(
-            (
+        hoclog::LOG
+            .status(format!(
                 "Skipping step {}: {}",
                 i + 1,
-                step.id::<P::State>()?.description(),
-            ),
-            label = "CACHED",
-        );
+                step.id::<P::State>()?.description()
+            ))
+            .with_label("CACHED");
         index += 1;
     }
 
@@ -104,7 +103,7 @@ fn run_procedure<P: Procedure>(context: &mut Context, mut proc: P) -> Result<()>
         let cache = &mut context[P::NAME];
         if let Some(some_proc_step) = cache.current_step_mut() {
             let state_id = some_proc_step.id::<P::State>()?;
-            status!(("Step {}: {}", index, state_id.description()) => {
+            status!(("Step {}: {}", index, state_id.description()), {
                 let state = match proc.run(some_proc_step)? {
                     Halt::Yield(inner_state) => Some(inner_state),
                     Halt::Finish => None,

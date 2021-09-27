@@ -111,12 +111,14 @@ impl Log {
     pub fn info(&self, message: impl AsRef<str>) {
         let mut print_context = self.print_context.lock().unwrap();
 
-        print_context.decorated_println(
-            message,
-            LogType::Info,
-            PrefixPrefs::in_status().flag(INFO_FLAG),
-            PrefixPrefs::in_status_overflow(),
-        );
+        for line in message.as_ref().lines() {
+            print_context.decorated_println(
+                line,
+                LogType::Info,
+                PrefixPrefs::in_status().flag(INFO_FLAG),
+                PrefixPrefs::in_status_overflow(),
+            );
+        }
     }
 
     pub fn labelled_info(&self, label: impl AsRef<str>, message: impl AsRef<str>) {
@@ -130,12 +132,14 @@ impl Log {
 
         let mut print_context = self.print_context.lock().unwrap();
 
-        print_context.decorated_println(
-            message,
-            LogType::Info,
-            PrefixPrefs::in_status().flag(INFO_FLAG).label(&label),
-            PrefixPrefs::in_status_overflow().label(&" ".repeat(1 + label_len)),
-        );
+        for line in message.as_ref().lines() {
+            print_context.decorated_println(
+                line,
+                LogType::Info,
+                PrefixPrefs::in_status().flag(INFO_FLAG).label(&label),
+                PrefixPrefs::in_status_overflow().label(&" ".repeat(1 + label_len)),
+            );
+        }
     }
 
     pub fn warning(&self, message: impl AsRef<str>) -> Result<()> {
