@@ -14,7 +14,7 @@ use crate::{
     Error, Result,
 };
 
-use self::dir_state::{DirectoryState, FileWriter};
+use self::dir_state::DirectoryState;
 
 pub mod dir_state;
 
@@ -141,13 +141,16 @@ impl ProcedureCache {
 
     pub fn advance<S: ProcedureState>(&mut self, state: &Option<S>) -> Result<()> {
         if let Some(state) = state {
-            if let Some(current_step) = self.current_step.take() {
+            if let Some(mut current_step) = self.current_step.take() {
+                current_step.save_work_dir_changes()?;
+
                 let proc_step = ProcedureStep::new(state)?;
 
                 self.completed_steps.push(current_step);
                 self.current_step.replace(proc_step);
             }
-        } else if let Some(current_step) = self.current_step.take() {
+        } else if let Some(mut current_step) = self.current_step.take() {
+            current_step.save_work_dir_changes()?;
             self.completed_steps.push(current_step);
         }
 
@@ -160,7 +163,7 @@ impl ProcedureCache {
                 self.completed_steps.truncate(index + 1);
 
                 let mut current_step = self.completed_steps.remove(index);
-                current_step.work_dir_state.clear();
+                current_step.work_dir_state.unregister_path("")?;
                 self.current_step.replace(current_step);
                 break;
             }
@@ -182,7 +185,7 @@ impl ProcedureStep {
         Ok(Self {
             id: state.id().as_str().to_string(),
             state: serde_json::to_string(&state)?,
-            work_dir_state: DirectoryState::new(Context::WORK_DIR),
+            work_dir_state: DirectoryState::new(Context::get_work_dir()?)?,
         })
     }
 
@@ -198,19 +201,14 @@ impl ProcedureStep {
         &self.work_dir_state
     }
 
-    pub fn file_path<P: AsRef<Path>>(&self, virtual_path: P) -> Result<PathBuf> {
-        let mut actual_path = Context::get_work_dir()?;
-        actual_path.extend(virtual_path.as_ref().iter());
-        Ok(actual_path)
+    pub fn register_path<P: AsRef<Path>>(&mut self, relative_path: P) -> Result<PathBuf> {
+        self.work_dir_state.register_path(&relative_path)?;
+        let mut path = self.work_dir_state.root_path().to_path_buf();
+        path.extend(relative_path.as_ref().iter());
+        Ok(path)
     }
 
-    pub fn file_reader<P: AsRef<Path>>(&self, virtual_path: P) -> Result<File> {
-        let actual_path = self.file_path(virtual_path)?;
-        self.work_dir_state.file_reader(actual_path)
-    }
-
-    pub fn file_writer<P: AsRef<Path>>(&mut self, virtual_path: P) -> Result<FileWriter> {
-        let actual_path = self.file_path(&virtual_path)?;
-        self.work_dir_state.file_writer(virtual_path, actual_path)
+    pub fn save_work_dir_changes(&mut self) -> Result<()> {
+        self.work_dir_state.update_states()
     }
 }

@@ -1,5 +1,6 @@
 use std::{
     fmt::{self, Display, Formatter},
+    fs::File,
     path::PathBuf,
 };
 
@@ -48,12 +49,13 @@ impl Flash {
 
         let archive_path = PathBuf::from("image");
         status!("Downloading image", {
-            let mut image_writer = proc_step.file_writer(&archive_path).log_err()?;
+            let image_real_path = proc_step.register_path(&archive_path).log_err()?;
+            let mut file = File::create(image_real_path).log_err()?;
+
             reqwest::blocking::get(image.url())
                 .log_err()?
-                .copy_to(&mut image_writer)
+                .copy_to(&mut file)
                 .log_err()?;
-            image_writer.finish().log_err()?;
         });
 
         Ok(Halt::Yield(FlashState::Decompress { archive_path }))

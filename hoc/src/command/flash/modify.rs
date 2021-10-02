@@ -1,3 +1,5 @@
+use std::fs::File;
+
 use serde::Deserialize;
 use tempfile::TempDir;
 
@@ -56,15 +58,17 @@ impl Flash {
         proc_step: &mut ProcedureStep,
         image_path: PathBuf,
     ) -> hoclog::Result<Halt<FlashState>> {
+        let image_real_path = proc_step.register_path(&image_path).log_err()?;
+
         status!(
-            "Attaching disk",
+            "Attaching image as disk",
             cmd!(
                 "hdiutil",
                 "attach",
                 "-imagekey",
                 "diskimage-class=CRawDiskImage",
                 "-nomount",
-                proc_step.file_path(image_path).log_err()?,
+                image_real_path,
             ),
         );
 
@@ -107,16 +111,37 @@ impl Flash {
                 .id
         });
 
-        status!("Mounting image disk", {
+        let dev_disk_id = format!("/dev/{}", disk_id);
+
+        let mount_dir = status!("Mounting image disk", {
             let mount_dir = TempDir::new().log_err()?;
             cmd!(
                 "diskutil",
                 "mount",
                 "-mountPoint",
                 mount_dir.as_ref(),
-                format!("/dev/{}", disk_id),
+                &dev_disk_id,
             );
+            mount_dir
         });
+
+        status!("Configure image", {
+            status!("Creating SSH file", {
+                File::create(mount_dir.as_ref().join("ssh")).log_err()?;
+            });
+        });
+
+        status!("Syncing image disk writes", cmd!("sync"));
+
+        status!(
+            "Unmounting image disk",
+            cmd!("diskutil", "unmountDisk", &dev_disk_id)
+        );
+
+        status!(
+            "Unmounting image disk",
+            cmd!("hdiutil", "detach", dev_disk_id)
+        );
 
         Ok(Halt::Finish)
     }

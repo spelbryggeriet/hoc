@@ -37,7 +37,7 @@ pub enum Error {
     Request(#[from] reqwest::Error),
 
     #[error(transparent)]
-    VirtualPath(#[from] dir_state::VirtualPathError),
+    DirState(#[from] dir_state::PathError),
 
     #[error(transparent)]
     LogError(#[from] hoclog::Error),

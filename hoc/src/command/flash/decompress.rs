@@ -1,4 +1,8 @@
-use std::{io::Read, path::PathBuf};
+use std::{
+    fs::{self, File},
+    io::Read,
+    path::PathBuf,
+};
 
 use zip::ZipArchive;
 
@@ -11,9 +15,10 @@ impl Flash {
         archive_path: PathBuf,
     ) -> hoclog::Result<Halt<FlashState>> {
         let archive_data = status!("Reading archive", {
-            let image_reader = proc_step.file_reader(&archive_path).log_err()?;
+            let archive_real_path = proc_step.register_path(&archive_path).log_err()?;
+            let file = File::open(&archive_real_path).log_err()?;
 
-            let mut archive = ZipArchive::new(image_reader).log_err()?;
+            let mut archive = ZipArchive::new(file).log_err()?;
 
             let mut buf = None;
             let archive_len = archive.len();
@@ -44,11 +49,8 @@ impl Flash {
         });
 
         status!("Save decompressed image to file", {
-            proc_step
-                .file_writer(&archive_path)
-                .log_context("Failed to open file writer")?
-                .write_and_finish(&archive_data)
-                .log_context("Failed to write to file")?
+            let archive_real_path = proc_step.register_path(&archive_path).log_err()?;
+            fs::write(archive_real_path, &archive_data).log_err()?;
         });
 
         Ok(Halt::Yield(FlashState::Modify {

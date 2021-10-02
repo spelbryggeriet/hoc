@@ -40,24 +40,28 @@ fn run_procedure<P: Procedure>(context: &mut Context, mut proc: P) -> Result<()>
         }
     }
 
-    let mut cur_dir_state = DirectoryState::get_snapshot(&Context::get_work_dir()?)?;
-    let mut valid_files = DirectoryState::new(Context::WORK_DIR);
+    let work_dir = Context::get_work_dir()?;
+    let mut valid_files = DirectoryState::new_unchecked(&work_dir);
+    let mut cur_dir_state = DirectoryState::new_unchecked(work_dir);
+    cur_dir_state.register_path("")?;
+
     let completed_steps = cache.completed_steps().count();
+
     for (step, index) in cache
         .completed_steps()
         .rev()
         .zip((0..completed_steps).rev())
     {
         let mut step_dir_state = step.work_dir_state().clone();
-        step_dir_state.remove_files(&valid_files);
-        let diff = step_dir_state.file_changes(&cur_dir_state);
+        step_dir_state.unregister_files(&valid_files);
+        let diff = step_dir_state.diff_files(&cur_dir_state);
 
         if !diff.is_empty() && invalidate_state.as_ref().map_or(true, |(j, ..)| index < *j) {
             invalidate_state.replace((index, step.id::<P::State>()?, Some(diff)));
-            step_dir_state.remove_files(&step_dir_state.changed_files(&cur_dir_state));
+            step_dir_state.unregister_files(&step_dir_state.changed_files(&cur_dir_state));
         }
 
-        valid_files.merge(cur_dir_state.remove_files(&step_dir_state));
+        valid_files.merge(cur_dir_state.unregister_files(&step_dir_state));
     }
 
     if let Some((rewind_index, state_id, diff)) = invalidate_state {

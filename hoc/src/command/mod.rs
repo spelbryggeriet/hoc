@@ -3,13 +3,14 @@ use structopt::StructOpt;
 use flash::Flash;
 
 macro_rules! _cmd {
-    ($program:expr, $($args:expr),* $(,)? => [$output_ident:ident] $output:expr) => {{
+    ($program:expr $(, $args:expr)* $(,)? => [$output_ident:ident] $output:expr) => {{
         use ::std::process::Command;
         use ::hoclog::{bail, LogErr};
 
         let program = $program;
         let mut command = Command::new(&program);
 
+        #[allow(unused_mut)]
         let mut command_string = <_ as AsRef<::std::ffi::OsStr>>::as_ref(&program)
             .to_string_lossy()
             .into_owned();

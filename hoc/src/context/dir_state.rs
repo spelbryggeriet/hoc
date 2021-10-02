@@ -1,14 +1,10 @@
 use std::{
-    borrow::Cow,
-    ffi::OsStr,
+    ffi::{OsStr, OsString},
     fmt::{self, Display, Formatter},
-    fs::{self, File, Metadata, OpenOptions},
-    io,
-    io::Write,
+    fs, io,
     os::unix::prelude::MetadataExt,
     path::{Iter, Path, PathBuf},
     result::Result as StdResult,
-    time::{Duration, SystemTime},
 };
 
 use serde::{Deserialize, Serialize};
@@ -16,31 +12,38 @@ use thiserror::Error;
 
 use crate::Result;
 
-fn split_virtual_path_by_file_name<'p, P: AsRef<Path>>(
-    virtual_path: &'p P,
-) -> StdResult<(&'p OsStr, Iter<'p>), VirtualPathError> {
-    if virtual_path.as_ref().is_absolute() {
-        return Err(VirtualPathError::AbsolutePath);
+fn split_path_by_file_name<'p, P: AsRef<Path>>(
+    relative_path: &'p P,
+) -> StdResult<(Option<&'p OsStr>, Iter<'p>), PathError> {
+    if relative_path.as_ref().is_absolute() {
+        return Err(PathError::Absolute(relative_path.as_ref().to_path_buf()));
     }
 
-    let mut dirs = virtual_path.as_ref().iter();
-    let file_name = dirs.next_back().ok_or(VirtualPathError::EmptyPath)?;
+    let mut dirs = relative_path.as_ref().iter();
+    let file_name = dirs
+        .next_back()
+        .map(|n| {
+            if n != "." {
+                Ok(n)
+            } else {
+                Err(PathError::InvalidFileName(n.to_os_string()))
+            }
+        })
+        .transpose()?;
+
     Ok((file_name, dirs))
 }
 
-fn ctime_to_system_time(metadata: Metadata) -> SystemTime {
-    let ctime = metadata.ctime() as u64;
-    let ctime_nsec = metadata.ctime_nsec() as u32;
-    SystemTime::UNIX_EPOCH + Duration::new(ctime, ctime_nsec)
-}
-
 #[derive(Debug, Error)]
-pub enum VirtualPathError {
-    #[error("`FileRef` cannot be created from an absolute path")]
-    AbsolutePath,
+pub enum PathError {
+    #[error("path cannot be absolute")]
+    Absolute(PathBuf),
 
-    #[error("`FileRef` cannot be created from an empty path")]
-    EmptyPath,
+    #[error("expected path to point at a directory")]
+    ExpectedDirectory(PathBuf),
+
+    #[error("invalid file name: {}", _0.to_string_lossy())]
+    InvalidFileName(OsString),
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -83,157 +86,252 @@ impl FileStateDiff {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DirectoryState {
-    dir_name: String,
-    dir_states: Vec<DirectoryState>,
-    file_states: Vec<FileState>,
+    root_path: PathBuf,
+    directories: Vec<DirectoryState>,
+    files: Vec<FileState>,
 }
 
 impl DirectoryState {
-    pub fn new<S: AsRef<OsStr>>(dir_name: S) -> Self {
+    pub fn new<P: Into<PathBuf>>(root_path: P) -> Result<Self> {
+        let root_path = root_path.into();
+
+        let metadata = fs::metadata(&root_path)?;
+        if metadata.is_dir() {
+            Ok(Self {
+                root_path,
+                directories: Vec::new(),
+                files: Vec::new(),
+            })
+        } else {
+            Err(PathError::ExpectedDirectory(root_path).into())
+        }
+    }
+
+    pub fn new_unchecked<P: Into<PathBuf>>(root_path: P) -> Self {
         Self {
-            dir_name: dir_name.as_ref().to_string_lossy().into_owned(),
-            dir_states: Vec::new(),
-            file_states: Vec::new(),
+            root_path: root_path.into(),
+            directories: Vec::new(),
+            files: Vec::new(),
         }
     }
 
-    pub fn clear(&mut self) {
-        self.dir_states.clear();
-        self.file_states.clear();
+    pub fn root_path(&self) -> &Path {
+        &self.root_path
     }
 
-    pub fn is_empty(&self) -> bool {
-        self.file_states.is_empty() && self.dir_states.iter().all(Self::is_empty)
+    pub fn name(&self) -> Option<&OsStr> {
+        self.root_path.file_name()
     }
 
-    pub fn get_snapshot<P>(path: &P) -> Result<Self>
-    where
-        P: AsRef<Path>,
-    {
-        let mut dir_states = Vec::new();
-        let mut file_states = Vec::new();
+    pub fn register_path<P: AsRef<Path>>(&mut self, relative_path: P) -> Result<()> {
+        let (file_name, dir_state) = self.traverse_mut(&relative_path)?;
 
-        for entry in fs::read_dir(&path)? {
-            let entry = entry?;
-            if entry.file_type()?.is_dir() {
-                dir_states.push(DirectoryState::get_snapshot(&entry.path())?);
-            } else {
-                file_states.push(FileState::get_snapshot(&entry.path())?);
-            }
+        let mut path = dir_state.root_path.clone();
+        if let Some(file_name) = file_name {
+            path.push(file_name);
         }
 
-        Ok(Self {
-            dir_name: path
-                .as_ref()
-                .file_name()
-                .unwrap()
-                .to_string_lossy()
-                .into_owned(),
-            dir_states,
-            file_states,
-        })
-    }
+        match fs::metadata(&path)? {
+            metadata if metadata.file_type().is_dir() => {
+                for entry in fs::read_dir(&path)? {
+                    let entry = entry?;
+                    let file_name = entry.file_name();
+                    let file_type = entry.file_type()?;
 
-    pub fn merge(&mut self, other: Self) {
-        if self.dir_name != other.dir_name {
-            return;
-        }
+                    if file_type.is_file() {
+                        if dir_state.files.iter().all(|fs| fs.name() != file_name) {
+                            let mut path = path.clone();
+                            path.push(file_name);
 
-        for other_fs in other.file_states {
-            if let Some(fs) = self
-                .file_states
-                .iter_mut()
-                .find(|fs| fs.file_name == other_fs.file_name)
-            {
-                if fs.modified < other_fs.modified {
-                    *fs = other_fs;
+                            let metadata = entry.metadata()?;
+
+                            dir_state.files.push(FileState::new_unchecked(
+                                path,
+                                metadata.ctime(),
+                                metadata.ctime_nsec(),
+                            ));
+                        };
+                    } else if file_type.is_dir() {
+                        if dir_state
+                            .directories
+                            .iter()
+                            .all(|ds| ds.name() != Some(&file_name))
+                        {
+                            let mut path = path.clone();
+                            path.push(file_name);
+
+                            let ds = DirectoryState::new_unchecked(path);
+                            dir_state.register_path("")?;
+                            dir_state.directories.push(ds);
+                        }
+                    }
                 }
-            } else {
-                self.file_states.push(other_fs);
             }
+            metadata if metadata.file_type().is_file() => {
+                let file_name = path.file_name().unwrap();
+
+                if dir_state.files.iter().all(|fs| fs.name() != file_name) {
+                    dir_state.files.push(FileState::new_unchecked(
+                        path,
+                        metadata.ctime(),
+                        metadata.ctime_nsec(),
+                    ))
+                }
+            }
+            _ => (),
         }
 
-        for other_ds in other.dir_states {
-            if let Some(ds) = self
-                .dir_states
-                .iter_mut()
-                .find(|ds| ds.dir_name == other_ds.dir_name)
-            {
-                ds.merge(other_ds);
-            } else {
-                self.dir_states.push(other_ds);
-            }
-        }
+        Ok(())
     }
 
-    pub fn remove_files(&mut self, other: &Self) -> Self {
-        let mut removed_files = Self::new(self.dir_name.clone());
-
-        if self.dir_name != other.dir_name {
-            return removed_files;
+    pub fn update_states(&mut self) -> Result<()> {
+        let mut i = 0;
+        while i < self.files.len() {
+            match fs::metadata(&self.files[i].path) {
+                Ok(metadata) => {
+                    self.files[i].modified = (metadata.ctime(), metadata.ctime_nsec());
+                    i += 1;
+                }
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                    self.files.remove(i);
+                }
+                Err(error) => return Err(error.into()),
+            }
         }
+
+        i = 0;
+        while i < self.directories.len() {
+            match fs::metadata(&self.directories[i].root_path) {
+                Ok(_) => {
+                    self.directories[i].update_states()?;
+                    i += 1;
+                }
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                    self.directories.remove(i);
+                }
+                Err(error) => return Err(error.into()),
+            }
+        }
+
+        Ok(())
+    }
+
+    pub fn unregister_path<P: AsRef<Path>>(&mut self, relative_path: P) -> Result<()> {
+        let (file_name, dir_state) = self.traverse_mut(&relative_path)?;
+
+        if let Some(file_name) = file_name {
+            if let Some(index) = dir_state.files.iter().position(|fs| fs.name() == file_name) {
+                dir_state.files.remove(index);
+            } else if let Some(index) = dir_state
+                .directories
+                .iter()
+                .position(|ds| ds.name() == Some(file_name))
+            {
+                dir_state.directories.remove(index);
+            }
+        } else {
+            dir_state.directories.clear();
+            dir_state.files.clear();
+        }
+
+        Ok(())
+    }
+
+    pub fn unregister_files(&mut self, other: &Self) -> Self {
+        let mut removed_files = Self::new_unchecked(&self.root_path);
 
         let mut i = 0;
-        while i < self.file_states.len() {
+        while i < self.files.len() {
             if other
-                .file_states
+                .files
                 .iter()
-                .find(|fs_other| self.file_states[i].file_name == fs_other.file_name)
+                .find(|fs_other| self.files[i].name() == fs_other.name())
                 .is_some()
             {
-                removed_files.file_states.push(self.file_states.remove(i));
+                removed_files.files.push(self.files.remove(i));
             } else {
                 i += 1;
             }
         }
 
         i = 0;
-        while i < self.dir_states.len() {
-            let ds = &mut self.dir_states[i];
+        while i < self.directories.len() {
             if let Some(ds_other) = other
-                .dir_states
+                .directories
                 .iter()
-                .find(|ds_other| ds.dir_name == ds_other.dir_name)
+                .find(|ds_other| self.directories[i].name() == ds_other.name())
             {
-                removed_files.dir_states.push(ds.remove_files(ds_other));
-            } else {
-                i += 1;
+                if ds_other.is_empty() {
+                    removed_files.directories.push(self.directories.remove(i));
+                } else {
+                    removed_files
+                        .directories
+                        .push(self.directories[i].unregister_files(ds_other))
+                }
             }
         }
 
         removed_files
     }
 
-    pub fn changed_files(&self, other: &Self) -> Self {
-        let mut modified = Self::new(&self.dir_name);
+    pub fn is_empty(&self) -> bool {
+        self.files.is_empty() && self.directories.is_empty()
+    }
 
-        if self.dir_name != other.dir_name {
-            return modified;
-        }
-
-        for fs in &self.file_states {
-            if let Some(other_fs) = other
-                .file_states
-                .iter()
-                .find(|other_fs| fs.file_name == other_fs.file_name)
+    pub fn merge(&mut self, other: Self) {
+        for other_fs in other.files {
+            if let Some(fs) = self
+                .files
+                .iter_mut()
+                .find(|fs| fs.name() == other_fs.name())
             {
-                if fs.modified != other_fs.modified {
-                    modified.file_states.push(fs.clone());
+                if fs.modified < other_fs.modified {
+                    *fs = other_fs;
                 }
             } else {
-                modified.file_states.push(fs.clone());
+                self.files.push(other_fs);
             }
         }
 
-        for ds in &self.dir_states {
-            if let Some(other_ds) = other
-                .dir_states
+        for other_ds in other.directories {
+            if let Some(ds) = self
+                .directories
+                .iter_mut()
+                .find(|ds| ds.name() == other_ds.name())
+            {
+                ds.merge(other_ds);
+            } else {
+                self.directories.push(other_ds);
+            }
+        }
+    }
+
+    pub fn changed_files(&self, other: &Self) -> Self {
+        let mut modified = Self::new_unchecked(&self.root_path);
+
+        for fs in &self.files {
+            if let Some(other_fs) = other
+                .files
                 .iter()
-                .find(|other_ds| ds.dir_name == other_ds.dir_name)
+                .find(|other_fs| fs.name() == other_fs.name())
+            {
+                if fs.modified != other_fs.modified {
+                    modified.files.push(fs.clone());
+                }
+            } else {
+                modified.files.push(fs.clone());
+            }
+        }
+
+        for ds in &self.directories {
+            if let Some(other_ds) = other
+                .directories
+                .iter()
+                .find(|other_ds| ds.name() == other_ds.name())
             {
                 let ds_modified = ds.changed_files(other_ds);
                 if !ds_modified.is_empty() {
-                    modified.dir_states.push(ds_modified);
+                    modified.directories.push(ds_modified);
                 }
             }
         }
@@ -241,34 +339,31 @@ impl DirectoryState {
         modified
     }
 
-    pub fn file_changes(&self, other: &Self) -> Vec<FileStateDiff> {
+    pub fn diff_files(&self, other: &Self) -> Vec<FileStateDiff> {
         let mut file_state_changes = Vec::new();
 
-        if self.dir_name != other.dir_name {
-            return file_state_changes;
-        }
+        let mut stack = vec![((self, other), PathBuf::new())];
 
-        let mut stack = vec![((self, other), PathBuf::from(&self.dir_name))];
-        while let Some(((dir_state, other_dir_state), mut path)) = stack.pop() {
-            for ds in dir_state.dir_states.iter().rev() {
-                if let Some(other_ds) = other_dir_state
-                    .dir_states
+        while let Some(((dir, other_dir), mut path)) = stack.pop() {
+            for ds in dir.directories.iter().rev() {
+                if let Some(other_d) = other_dir
+                    .directories
                     .iter()
-                    .find(|other_ds| ds.dir_name == other_ds.dir_name)
+                    .find(|other_ds| ds.name() == other_ds.name())
                 {
                     let mut path = path.clone();
-                    path.push(&ds.dir_name);
-                    stack.push(((ds, other_ds), path));
+                    path.push(&ds.name().unwrap());
+                    stack.push(((ds, other_d), path));
                 }
             }
 
-            for fs in &dir_state.file_states {
-                path.push(&fs.file_name);
+            for fs in dir.files.iter() {
+                path.push(&fs.name());
 
-                if let Some(other_fs) = other_dir_state
-                    .file_states
+                if let Some(other_fs) = other_dir
+                    .files
                     .iter()
-                    .find(|other_fs| fs.file_name == other_fs.file_name)
+                    .find(|other_fs| fs.name() == other_fs.name())
                 {
                     if fs.modified != other_fs.modified {
                         file_state_changes.push(FileStateDiff::modified(path.clone()));
@@ -284,150 +379,52 @@ impl DirectoryState {
         file_state_changes
     }
 
-    pub fn file_reader<P: AsRef<Path>>(&self, virtual_path: P) -> Result<File> {
-        Ok(File::open(virtual_path)?)
-    }
-
-    pub fn file_writer<P1, P2>(&mut self, virtual_path: P1, actual_path: P2) -> Result<FileWriter>
-    where
-        P1: AsRef<Path>,
-        P2: AsRef<Path>,
-    {
-        let file_state = self.get_or_create_file_state_mut(virtual_path)?;
-
-        FileWriter::new(&actual_path, file_state)
-    }
-
-    fn get_or_create_file_state_mut<P: AsRef<Path>>(
+    fn traverse_mut<'p, P: AsRef<Path>>(
         &mut self,
-        virtual_path: P,
-    ) -> Result<&mut FileState> {
-        let (file_name, dirs) = split_virtual_path_by_file_name(&virtual_path)?;
+        relative_path: &'p P,
+    ) -> StdResult<(Option<&'p OsStr>, &mut Self), PathError> {
+        let (file_name, dir_names) = split_path_by_file_name(relative_path)?;
 
         let mut dir_state = self;
-        for dir_name in dirs {
-            if let Some(index) = dir_state
-                .dir_states
+        for dir_name in dir_names {
+            dir_state = if let Some(index) = dir_state
+                .directories
                 .iter()
-                .position(|ds| OsStr::new(&ds.dir_name) == dir_name)
+                .position(|d| d.name() == Some(dir_name))
             {
-                dir_state = &mut dir_state.dir_states[index];
+                &mut dir_state.directories[index]
             } else {
-                dir_state.dir_states.push(Self::new(&dir_name));
-                dir_state = dir_state.dir_states.last_mut().unwrap();
-            }
+                let mut path = dir_state.root_path.clone();
+                path.push(dir_name);
+
+                dir_state
+                    .directories
+                    .push(DirectoryState::new_unchecked(path));
+                dir_state.directories.last_mut().unwrap()
+            };
         }
 
-        let file_state = if let Some(index) = dir_state
-            .file_states
-            .iter()
-            .position(|fs| OsStr::new(&fs.file_name) == file_name)
-        {
-            &mut dir_state.file_states[index]
-        } else {
-            dir_state.file_states.push(FileState::new(&file_name));
-            dir_state.file_states.last_mut().unwrap()
-        };
-
-        Ok(file_state)
+        Ok((file_name, dir_state))
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FileState {
-    file_name: String,
-    modified: SystemTime,
+    path: PathBuf,
+    modified: (i64, i64),
 }
 
 impl FileState {
-    fn new<S: AsRef<OsStr>>(file_name: &S) -> Self {
+    fn new_unchecked<P: Into<PathBuf>>(path: P, ctime: i64, ctime_nsec: i64) -> Self {
+        let path = path.into();
+
         Self {
-            file_name: file_name.as_ref().to_string_lossy().into_owned(),
-            modified: SystemTime::UNIX_EPOCH,
+            path,
+            modified: (ctime, ctime_nsec),
         }
     }
 
-    fn get_snapshot<P>(path: &P) -> Result<Self>
-    where
-        P: AsRef<Path>,
-    {
-        let mut path = Cow::Borrowed(path.as_ref());
-
-        while fs::symlink_metadata(&path)?.file_type().is_symlink() {
-            path = Cow::Owned(fs::read_link(path)?);
-        }
-
-        let modified = ctime_to_system_time(fs::metadata(&path)?);
-
-        Ok(Self {
-            file_name: path.file_name().unwrap().to_string_lossy().into_owned(),
-            modified,
-        })
-    }
-
-    fn update_modified_time(&mut self, modified: SystemTime) {
-        self.modified = modified;
-    }
-}
-
-pub struct FileWriter<'a> {
-    file: File,
-    file_state: &'a mut FileState,
-    is_finished: bool,
-}
-
-impl Write for FileWriter<'_> {
-    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        self.file.write(buf)
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        self.file.flush()
-    }
-}
-
-impl Drop for FileWriter<'_> {
-    fn drop(&mut self) {
-        assert!(self.is_finished, "cannot drop an unfinished `FileWriter`");
-    }
-}
-
-impl<'f> FileWriter<'f> {
-    pub fn new<P: AsRef<Path>>(path: P, file_state: &'f mut FileState) -> Result<Self> {
-        if let Some(parent) = path.as_ref().parent() {
-            match fs::metadata(parent) {
-                Ok(_) => (),
-                Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                    fs::create_dir_all(parent)?;
-                }
-                Err(error) => return Err(error.into()),
-            }
-        }
-
-        let file = OpenOptions::new()
-            .create(true)
-            .write(true)
-            .truncate(true)
-            .open(path)?;
-
-        file_state.modified = ctime_to_system_time(file.metadata()?);
-
-        Ok(Self {
-            file,
-            file_state,
-            is_finished: false,
-        })
-    }
-
-    pub fn write_and_finish(mut self, buf: &[u8]) -> Result<()> {
-        self.write(buf)?;
-        self.finish()
-    }
-
-    pub fn finish(mut self) -> Result<()> {
-        self.file_state
-            .update_modified_time(ctime_to_system_time(self.file.metadata()?));
-        self.is_finished = true;
-        Ok(())
+    pub fn name(&self) -> &OsStr {
+        self.path.file_name().unwrap()
     }
 }
