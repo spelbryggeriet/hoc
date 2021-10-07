@@ -34,10 +34,7 @@ impl Image {
 }
 
 impl Flash {
-    pub(super) fn download(
-        &self,
-        proc_step: &mut ProcedureStep,
-    ) -> hoclog::Result<Halt<FlashState>> {
+    pub(super) fn download(&self, step: &mut ProcedureStep) -> hoclog::Result<Halt<FlashState>> {
         let index = choose!(
             "Which image do you want to use?",
             items = Image::iter().map(|i| i.description()),
@@ -49,7 +46,7 @@ impl Flash {
 
         let archive_path = PathBuf::from("image");
         status!("Downloading image", {
-            let image_real_path = proc_step.register_path(&archive_path).log_err()?;
+            let image_real_path = step.register_path(&archive_path).log_err()?;
             let mut file = File::create(image_real_path).log_err()?;
 
             reqwest::blocking::get(image.url())

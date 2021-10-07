@@ -11,11 +11,11 @@ use super::*;
 impl Flash {
     pub(super) fn decompress(
         &self,
-        proc_step: &mut ProcedureStep,
+        step: &mut ProcedureStep,
         archive_path: PathBuf,
     ) -> hoclog::Result<Halt<FlashState>> {
         let archive_data = status!("Reading archive", {
-            let archive_real_path = proc_step.register_path(&archive_path).log_err()?;
+            let archive_real_path = step.register_path(&archive_path).log_err()?;
             let file = File::open(&archive_real_path).log_err()?;
 
             let mut archive = ZipArchive::new(file).log_err()?;
@@ -49,7 +49,7 @@ impl Flash {
         });
 
         status!("Save decompressed image to file", {
-            let archive_real_path = proc_step.register_path(&archive_path).log_err()?;
+            let archive_real_path = step.register_path(&archive_path).log_err()?;
             fs::write(archive_real_path, &archive_data).log_err()?;
         });
 

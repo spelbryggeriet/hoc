@@ -215,7 +215,7 @@ pub fn exec_hoc_line(
                 .pop_string_for_key_checked("text")
                 .map_err(|err| HocLineParseError::new(format!("{}: {}", prefix, err)))?;
 
-            (log.prompt(prompt) as u32).to_string()
+            (log.prompt(prompt).map_or(0, |_| 1)).to_string()
         }
 
         ("in", "unset") => {

@@ -46,6 +46,39 @@ macro_rules! choose {
 }
 
 #[macro_export]
+macro_rules! prompt {
+    ($fmt:expr) => {
+        $crate::LOG.prompt($fmt)
+    };
+
+    ($($fmt:tt)*) => {
+        $crate::LOG.prompt(format!($($fmt)*))
+    };
+}
+
+#[macro_export]
+macro_rules! input {
+    ($fmt:expr) => {
+        $crate::LOG.input($fmt)
+    };
+
+    ($($fmt:tt)*) => {
+        $crate::LOG.input(format!($($fmt)*))
+    };
+}
+
+#[macro_export]
+macro_rules! hidden_input {
+    ($fmt:expr) => {
+        $crate::LOG.hidden_input($fmt)
+    };
+
+    ($($fmt:tt)*) => {
+        $crate::LOG.hidden_input(format!($($fmt)*))
+    };
+}
+
+#[macro_export]
 macro_rules! status {
     (($($fmt:tt)*) $(, $code:expr)? $(,)?) => {{
         let __status = $crate::LOG.status(format!($($fmt)*));

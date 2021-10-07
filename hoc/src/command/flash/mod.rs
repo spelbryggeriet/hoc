@@ -5,15 +5,16 @@ use structopt::StructOpt;
 use strum::{EnumDiscriminants, EnumString, IntoStaticStr};
 
 use crate::{
-    context::ProcedureStep,
-    procedure::{Halt, Procedure, ProcedureState, ProcedureStateId},
+    procedure::{Halt, Procedure, ProcedureState, ProcedureStateId, ProcedureStep},
     Result,
 };
-use hoclog::{bail, choose, info, status, LogErr};
+use hoclog::{bail, choose, info, prompt, status, LogErr};
 
 mod decompress;
 mod download;
+mod flash;
 mod modify;
+mod util;
 
 #[derive(StructOpt)]
 pub struct Flash {
@@ -26,27 +27,31 @@ impl Procedure for Flash {
     const NAME: &'static str = "flash";
 
     fn rewind_state(&self) -> Option<FlashStateId> {
-        self.redownload.then(|| FlashStateId::Download)
+        self.redownload
+            .then(|| FlashStateId::Download)
+            .or(Some(FlashStateId::Flash))
     }
 
-    fn run(&mut self, proc_step: &mut ProcedureStep) -> Result<Halt<FlashState>> {
-        let halt = match proc_step.state()? {
-            FlashState::Download => self.download(proc_step)?,
-            FlashState::Decompress { archive_path } => self.decompress(proc_step, archive_path)?,
-            FlashState::Modify { image_path } => self.modify(proc_step, image_path)?,
+    fn run(&mut self, step: &mut ProcedureStep) -> Result<Halt<FlashState>> {
+        let halt = match step.state()? {
+            FlashState::Download => self.download(step)?,
+            FlashState::Decompress { archive_path } => self.decompress(step, archive_path)?,
+            FlashState::Modify { image_path } => self.modify(step, image_path)?,
+            FlashState::Flash { image_path } => self.flash(step, image_path)?,
         };
 
         Ok(halt)
     }
 }
 
-#[derive(Serialize, Deserialize, EnumDiscriminants)]
+#[derive(Debug, Serialize, Deserialize, EnumDiscriminants)]
 #[strum_discriminants(derive(Hash, PartialOrd, Ord, EnumString, IntoStaticStr))]
 #[strum_discriminants(name(FlashStateId))]
 pub enum FlashState {
     Download,
     Decompress { archive_path: PathBuf },
     Modify { image_path: PathBuf },
+    Flash { image_path: PathBuf },
 }
 
 impl ProcedureStateId for FlashStateId {
@@ -57,6 +62,7 @@ impl ProcedureStateId for FlashStateId {
             Self::Download => "Download operating system image",
             Self::Decompress => "Decompress image archive",
             Self::Modify => "Modify image",
+            Self::Flash => "Flash image",
         }
     }
 }

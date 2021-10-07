@@ -6,11 +6,12 @@ use structopt::StructOpt;
 
 use crate::{
     command::Command,
-    context::{dir_state::DirectoryState, Context, ProcedureCache, ProcedureStep},
+    context::{dir_state::DirectoryState, Cache, Context},
     error::Error,
-    procedure::{Halt, Procedure, ProcedureStateId},
+    procedure::{Halt, Procedure, ProcedureStateId, ProcedureStep},
 };
 
+#[macro_use]
 mod command;
 mod context;
 mod error;
@@ -19,8 +20,8 @@ mod procedure;
 type Result<T> = StdResult<T, Error>;
 
 fn run_procedure<P: Procedure>(context: &mut Context, mut proc: P) -> Result<()> {
-    if !context.is_procedure_cached(P::NAME) {
-        context.update_procedure_cache(P::NAME.to_string(), ProcedureCache::new::<P::State>()?);
+    if !context.contains_cache(P::NAME) {
+        context.update_cache(P::NAME.to_string(), Cache::new::<P::State>()?);
         context.persist()?;
     }
 
@@ -105,10 +106,10 @@ fn run_procedure<P: Procedure>(context: &mut Context, mut proc: P) -> Result<()>
 
     loop {
         let cache = &mut context[P::NAME];
-        if let Some(some_proc_step) = cache.current_step_mut() {
-            let state_id = some_proc_step.id::<P::State>()?;
+        if let Some(some_step) = cache.current_step_mut() {
+            let state_id = some_step.id::<P::State>()?;
             status!(("Step {}: {}", index, state_id.description()), {
-                let state = match proc.run(some_proc_step)? {
+                let state = match proc.run(some_step)? {
                     Halt::Yield(inner_state) => Some(inner_state),
                     Halt::Finish => None,
                 };
@@ -127,6 +128,8 @@ fn run_procedure<P: Procedure>(context: &mut Context, mut proc: P) -> Result<()>
 
 fn main() {
     let wrapper = || -> Result<()> {
+        command::reset_sudo_privileges()?;
+
         let mut context = Context::load()?;
 
         match Command::from_args() {

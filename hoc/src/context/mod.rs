@@ -4,17 +4,15 @@ use std::{
     fs::{self, File, OpenOptions},
     io::{self, Seek, SeekFrom},
     ops::{Index, IndexMut},
-    path::{Path, PathBuf},
+    path::PathBuf,
 };
 
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    procedure::{ProcedureState, ProcedureStateId},
+    procedure::{ProcedureState, ProcedureStep},
     Error, Result,
 };
-
-use self::dir_state::DirectoryState;
 
 pub mod dir_state;
 
@@ -23,23 +21,23 @@ const ENV_HOME: &str = "HOME";
 #[derive(Debug, Serialize)]
 pub struct Context {
     #[serde(flatten)]
-    proc_caches: HashMap<String, ProcedureCache>,
+    caches: HashMap<String, Cache>,
 
     #[serde(skip_serializing)]
     file: File,
 }
 
 impl Index<&str> for Context {
-    type Output = ProcedureCache;
+    type Output = Cache;
 
     fn index(&self, index: &str) -> &Self::Output {
-        &self.proc_caches[index]
+        &self.caches[index]
     }
 }
 
 impl IndexMut<&str> for Context {
     fn index_mut(&mut self, index: &str) -> &mut Self::Output {
-        self.proc_caches.get_mut(index).unwrap()
+        self.caches.get_mut(index).unwrap()
     }
 }
 
@@ -69,13 +67,13 @@ impl Context {
             .open(&context_dir_path)
         {
             Ok(file) => {
-                let proc_caches: HashMap<String, ProcedureCache> = serde_yaml::from_reader(&file)?;
-                Ok(Self { proc_caches, file })
+                let caches: HashMap<String, Cache> = serde_yaml::from_reader(&file)?;
+                Ok(Self { caches, file })
             }
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
                 let file = File::create(&context_dir_path)?;
                 let context = Self {
-                    proc_caches: Default::default(),
+                    caches: Default::default(),
                     file,
                 };
                 serde_yaml::to_writer(&context.file, &context)?;
@@ -100,12 +98,12 @@ impl Context {
         Ok(path)
     }
 
-    pub fn is_procedure_cached(&self, name: &str) -> bool {
-        self.proc_caches.contains_key(name)
+    pub fn contains_cache(&self, name: &str) -> bool {
+        self.caches.contains_key(name)
     }
 
-    pub fn update_procedure_cache(&mut self, name: String, cache: ProcedureCache) {
-        self.proc_caches.insert(name, cache);
+    pub fn update_cache(&mut self, name: String, cache: Cache) {
+        self.caches.insert(name, cache);
     }
 
     pub fn persist(&mut self) -> Result<()> {
@@ -118,16 +116,16 @@ impl Context {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct ProcedureCache {
+pub struct Cache {
     completed_steps: Vec<ProcedureStep>,
     current_step: Option<ProcedureStep>,
 }
 
-impl ProcedureCache {
+impl Cache {
     pub fn new<S: ProcedureState>() -> Result<Self> {
         Ok(Self {
             completed_steps: Vec::new(),
-            current_step: Some(ProcedureStep::new(&S::default())?),
+            current_step: Some(ProcedureStep::new(&S::default(), Context::get_work_dir()?)?),
         })
     }
 
@@ -144,10 +142,10 @@ impl ProcedureCache {
             if let Some(mut current_step) = self.current_step.take() {
                 current_step.save_work_dir_changes()?;
 
-                let proc_step = ProcedureStep::new(state)?;
+                let step = ProcedureStep::new(state, current_step.work_dir_state().root_path())?;
 
                 self.completed_steps.push(current_step);
-                self.current_step.replace(proc_step);
+                self.current_step.replace(step);
             }
         } else if let Some(mut current_step) = self.current_step.take() {
             current_step.save_work_dir_changes()?;
@@ -163,52 +161,12 @@ impl ProcedureCache {
                 self.completed_steps.truncate(index + 1);
 
                 let mut current_step = self.completed_steps.remove(index);
-                current_step.work_dir_state.unregister_path("")?;
+                current_step.unregister_path("")?;
                 self.current_step.replace(current_step);
                 break;
             }
         }
 
         Ok(())
-    }
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct ProcedureStep {
-    id: String,
-    state: String,
-    work_dir_state: DirectoryState,
-}
-
-impl ProcedureStep {
-    fn new<S: ProcedureState>(state: &S) -> Result<Self> {
-        Ok(Self {
-            id: state.id().as_str().to_string(),
-            state: serde_json::to_string(&state)?,
-            work_dir_state: DirectoryState::new(Context::get_work_dir()?)?,
-        })
-    }
-
-    pub fn id<S: ProcedureState>(&self) -> Result<S::Id> {
-        Ok(S::Id::parse(&self.id)?)
-    }
-
-    pub fn state<S: ProcedureState>(&self) -> Result<S> {
-        Ok(serde_json::from_str(&self.state)?)
-    }
-
-    pub fn work_dir_state(&self) -> &DirectoryState {
-        &self.work_dir_state
-    }
-
-    pub fn register_path<P: AsRef<Path>>(&mut self, relative_path: P) -> Result<PathBuf> {
-        self.work_dir_state.register_path(&relative_path)?;
-        let mut path = self.work_dir_state.root_path().to_path_buf();
-        path.extend(relative_path.as_ref().iter());
-        Ok(path)
-    }
-
-    pub fn save_work_dir_changes(&mut self) -> Result<()> {
-        self.work_dir_state.update_states()
     }
 }

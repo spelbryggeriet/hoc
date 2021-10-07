@@ -21,13 +21,13 @@ const ERROR_FLAG: &str = "⚠︎";
 
 #[derive(Debug, Error)]
 pub enum Error {
-    #[error("a log error was printed")]
+    #[error("A log error was printed.")]
     ErrorLogged,
 
-    #[error("the operation was aborted")]
+    #[error("The operation was aborted.")]
     UserAborted,
 
-    #[error("an empty list of items was sent to `choose`")]
+    #[error("An empty list of items was sent to `choose`.")]
     ChooseNoItems,
 }
 
@@ -83,6 +83,11 @@ impl Log {
 
     pub(crate) fn set_failure(&self) {
         self.print_context.lock().unwrap().failure = true;
+    }
+
+    pub fn create_line_prefix(&self, flag: impl AsRef<str>) -> String {
+        let print_context = self.print_context.lock().unwrap();
+        print_context.create_line_prefix(PrefixPrefs::in_status_overflow().flag(flag.as_ref()))
     }
 
     pub fn stream(&self) -> Stream {
@@ -155,12 +160,7 @@ impl Log {
             );
         }
 
-        if self.prompt_impl(&mut print_context, "Do you want to continue?") {
-            Ok(())
-        } else {
-            print_context.failure = true;
-            Err(Error::UserAborted)
-        }
+        self.prompt_impl(&mut print_context, "Do you want to continue?")
     }
 
     pub fn error(&self, message: impl AsRef<str>) -> Result<Never> {
@@ -181,11 +181,15 @@ impl Log {
         Err(Error::ErrorLogged)
     }
 
-    pub fn prompt(&self, message: impl AsRef<str>) -> bool {
+    pub fn prompt(&self, message: impl AsRef<str>) -> Result<()> {
         self.prompt_impl(&mut self.print_context.lock().unwrap(), message)
     }
 
-    fn prompt_impl(&self, print_context: &mut PrintContext, message: impl AsRef<str>) -> bool {
+    fn prompt_impl(
+        &self,
+        print_context: &mut PrintContext,
+        message: impl AsRef<str>,
+    ) -> Result<()> {
         print_context.print_spacing_if_needed(LogType::Prompt);
 
         let mut prompt = print_context.create_line_prefix(PrefixPrefs::in_status().flag("?"));
@@ -198,7 +202,12 @@ impl Log {
             .interact_on(&print_context.stdout)
             .unwrap_or_else(|e| panic!("failed printing to stdout: {}", e));
 
-        want_continue
+        if want_continue {
+            Ok(())
+        } else {
+            print_context.failure = true;
+            Err(Error::UserAborted)
+        }
     }
 
     pub fn input(&self, message: impl AsRef<str>) -> String {
@@ -206,7 +215,7 @@ impl Log {
 
         print_context.print_spacing_if_needed(LogType::Input);
 
-        let mut prompt = print_context.create_line_prefix(PrefixPrefs::in_status().flag("?"));
+        let mut prompt = print_context.create_line_prefix(PrefixPrefs::in_status().flag(">"));
         prompt += message.as_ref();
 
         let cyan = Style::new().cyan();
@@ -223,7 +232,7 @@ impl Log {
 
         print_context.print_spacing_if_needed(LogType::Input);
 
-        let mut prompt = print_context.create_line_prefix(PrefixPrefs::in_status().flag("?"));
+        let mut prompt = print_context.create_line_prefix(PrefixPrefs::in_status().flag(">"));
         prompt += message.as_ref();
 
         let cyan = Style::new().cyan();
