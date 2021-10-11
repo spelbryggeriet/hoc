@@ -1,15 +1,25 @@
-use std::result::Result as StdResult;
+use std::{
+    process,
+    result::Result as StdResult,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
+};
 
-use context::dir_state::FileStateDiff;
-use hoclog::{error, info, status, warning};
+use lazy_static::lazy_static;
 use structopt::StructOpt;
 
 use crate::{
     command::Command,
-    context::{dir_state::DirectoryState, Cache, Context},
+    context::{
+        dir_state::{DirectoryState, FileStateDiff},
+        Cache, Context,
+    },
     error::Error,
     procedure::{Halt, Procedure, ProcedureStateId, ProcedureStep},
 };
+use hoclog::{error, info, status, warning};
 
 #[macro_use]
 mod command;
@@ -18,6 +28,10 @@ mod error;
 mod procedure;
 
 type Result<T> = StdResult<T, Error>;
+
+lazy_static! {
+    static ref INTERRUPT: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
+}
 
 fn run_procedure<P: Procedure>(context: &mut Context, mut proc: P) -> Result<()> {
     if !context.contains_cache(P::NAME) {
@@ -105,6 +119,10 @@ fn run_procedure<P: Procedure>(context: &mut Context, mut proc: P) -> Result<()>
     }
 
     loop {
+        if INTERRUPT.load(Ordering::Relaxed) {
+            error!("The program was interrupted.")?;
+        }
+
         let cache = &mut context[P::NAME];
         if let Some(some_step) = cache.current_step_mut() {
             let state_id = some_step.id::<P::State>()?;
@@ -128,6 +146,14 @@ fn run_procedure<P: Procedure>(context: &mut Context, mut proc: P) -> Result<()>
 
 fn main() {
     let wrapper = || -> Result<()> {
+        ctrlc::set_handler(|| {
+            if INTERRUPT.load(Ordering::Relaxed) {
+                process::exit(1);
+            } else {
+                INTERRUPT.store(true, Ordering::Relaxed)
+            }
+        })?;
+
         command::reset_sudo_privileges()?;
 
         let mut context = Context::load()?;

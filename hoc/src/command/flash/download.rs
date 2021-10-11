@@ -38,7 +38,8 @@ impl Flash {
         let index = choose!(
             "Which image do you want to use?",
             items = Image::iter().map(|i| i.description()),
-        )?;
+        )
+        .log_err()?;
 
         let image = Image::iter().nth(index).unwrap();
         info!("Image: {}", image);

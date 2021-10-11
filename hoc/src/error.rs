@@ -21,6 +21,9 @@ pub enum Error {
         source: VarError,
     },
 
+    #[error("Failed to set up interrupt handler: {0}")]
+    CtrlC(#[from] ctrlc::Error),
+
     #[error(
         "{} could not be serialized/deserialized: {0}",
         get_context_display_text()
