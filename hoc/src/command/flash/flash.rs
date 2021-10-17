@@ -20,9 +20,11 @@ impl Flash {
             physical_disk_infos.remove(index).id
         });
 
+        let disk_path = PathBuf::from(format!("/dev/{}", disk_id));
+
         status!(
             "Unmounting SD card",
-            cmd!("diskutil", "unmountDisk", format!("/dev/{}", disk_id))?,
+            cmd!("diskutil", "unmountDisk", disk_path)?,
         );
 
         let image_real_path = step.get_real_path(&image_path);
@@ -43,6 +45,11 @@ impl Flash {
                 disk_id,
             );
         });
+
+        status!(
+            "Unmounting image disk",
+            cmd!("diskutil", "unmountDisk", disk_path)?,
+        );
 
         Ok(Halt::Finish)
     }

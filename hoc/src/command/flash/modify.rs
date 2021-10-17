@@ -76,7 +76,7 @@ impl Flash {
         );
 
         status!(
-            "Unmounting image disk",
+            "Detaching image disk",
             cmd!("hdiutil", "detach", dev_disk_id)?,
         );
 
