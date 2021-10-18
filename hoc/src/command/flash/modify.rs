@@ -80,6 +80,6 @@ impl Flash {
             cmd!("hdiutil", "detach", dev_disk_id)?,
         );
 
-        Ok(Halt::Yield(FlashState::Flash { image_path }))
+        Ok(Halt::persistent_yield(FlashState::Flash { image_path }))
     }
 }

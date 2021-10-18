@@ -17,7 +17,7 @@ use crate::{
         Cache, Context,
     },
     error::Error,
-    procedure::{Halt, Procedure, ProcedureStateId, ProcedureStep},
+    procedure::{Halt, HaltState, Procedure, ProcedureStateId, ProcedureStep},
 };
 use hoclog::{error, info, status, warning};
 
@@ -127,13 +127,16 @@ fn run_procedure<P: Procedure>(context: &mut Context, mut proc: P) -> Result<()>
         if let Some(some_step) = cache.current_step_mut() {
             let state_id = some_step.id::<P::State>()?;
             status!(("Step {}: {}", index, state_id.description()), {
-                let state = match proc.run(some_step)? {
-                    Halt::Yield(inner_state) => Some(inner_state),
-                    Halt::Finish => None,
+                let halt = proc.run(some_step)?;
+                let state = match halt.state {
+                    HaltState::Yield(inner_state) => Some(inner_state),
+                    HaltState::Finish => None,
                 };
 
                 cache.advance(&state)?;
-                context.persist()?;
+                if halt.persist {
+                    context.persist()?;
+                }
             });
             index += 1;
         } else {

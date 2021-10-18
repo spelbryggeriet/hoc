@@ -27,9 +27,7 @@ impl Procedure for Flash {
     const NAME: &'static str = "flash";
 
     fn rewind_state(&self) -> Option<FlashStateId> {
-        self.redownload
-            .then(|| FlashStateId::Download)
-            .or(Some(FlashStateId::Flash))
+        self.redownload.then(|| FlashStateId::Download)
     }
 
     fn run(&mut self, step: &mut ProcedureStep) -> Result<Halt<FlashState>> {

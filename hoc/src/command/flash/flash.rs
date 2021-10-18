@@ -51,6 +51,6 @@ impl Flash {
             cmd!("diskutil", "unmountDisk", disk_path)?,
         );
 
-        Ok(Halt::Finish)
+        Ok(Halt::transient_finish())
     }
 }

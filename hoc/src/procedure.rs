@@ -7,9 +7,44 @@ use serde::{de::DeserializeOwned, Deserialize, Serialize};
 
 use crate::{context::dir_state::DirectoryState, error::Error, Result};
 
-pub enum Halt<S> {
+pub enum HaltState<S> {
     Yield(S),
     Finish,
+}
+
+pub struct Halt<S> {
+    pub persist: bool,
+    pub state: HaltState<S>,
+}
+
+impl<S> Halt<S> {
+    pub fn persistent_yield(state: S) -> Self {
+        Self {
+            persist: true,
+            state: HaltState::Yield(state),
+        }
+    }
+
+    pub fn persistent_finish() -> Self {
+        Self {
+            persist: true,
+            state: HaltState::Finish,
+        }
+    }
+
+    pub fn transient_yield(state: S) -> Self {
+        Self {
+            persist: false,
+            state: HaltState::Yield(state),
+        }
+    }
+
+    pub fn transient_finish() -> Self {
+        Self {
+            persist: false,
+            state: HaltState::Finish,
+        }
+    }
 }
 
 pub trait Procedure {

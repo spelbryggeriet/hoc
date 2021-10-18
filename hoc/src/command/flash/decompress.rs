@@ -53,7 +53,7 @@ impl Flash {
             fs::write(archive_real_path, &archive_data).log_err()?;
         });
 
-        Ok(Halt::Yield(FlashState::Modify {
+        Ok(Halt::persistent_yield(FlashState::Modify {
             image_path: archive_path,
         }))
     }
