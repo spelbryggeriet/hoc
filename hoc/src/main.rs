@@ -17,7 +17,7 @@ use crate::{
         Cache, Context,
     },
     error::Error,
-    procedure::{Halt, HaltState, Procedure, ProcedureStateId, ProcedureStep},
+    procedure::{HaltState, Procedure, ProcedureStateId, ProcedureStep},
 };
 use hoclog::{error, info, status, warning};
 
@@ -34,12 +34,26 @@ lazy_static! {
 }
 
 fn run_procedure<P: Procedure>(context: &mut Context, mut proc: P) -> Result<()> {
-    if !context.contains_cache(P::NAME) {
-        context.update_cache(P::NAME.to_string(), Cache::new::<P::State>()?);
+    let proc_attributes = proc.get_attributes();
+
+    info!("Procedure: {}", P::NAME);
+    if !proc_attributes.is_empty() {
+        info!("Attributes:");
+        for (key, value) in proc_attributes.iter() {
+            info!("  {}: {}", key, value);
+        }
+    }
+
+    if !context.contains_cache(P::NAME, &proc_attributes) {
+        context.update_cache(
+            P::NAME.to_string(),
+            proc_attributes.clone(),
+            Cache::new::<P::State>()?,
+        );
         context.persist()?;
     }
 
-    let cache = &context[P::NAME];
+    let cache = &context[(P::NAME, &proc_attributes)];
 
     let mut invalidate_state = None;
     if let Some(state_id) = proc.rewind_state() {
@@ -102,12 +116,15 @@ fn run_procedure<P: Procedure>(context: &mut Context, mut proc: P) -> Result<()>
             state_id.description(),
         );
 
-        context[P::NAME].invalidate_state::<P::State>(state_id)?;
+        context[(P::NAME, &proc_attributes)].invalidate_state::<P::State>(state_id)?;
         context.persist()?;
     }
 
     let mut index = 1;
-    for (i, step) in context[P::NAME].completed_steps().enumerate() {
+    for (i, step) in context[(P::NAME, &proc_attributes)]
+        .completed_steps()
+        .enumerate()
+    {
         hoclog::LOG
             .status(format!(
                 "Skipping step {}: {}",
@@ -123,7 +140,7 @@ fn run_procedure<P: Procedure>(context: &mut Context, mut proc: P) -> Result<()>
             error!("The program was interrupted.")?;
         }
 
-        let cache = &mut context[P::NAME];
+        let cache = &mut context[(P::NAME, &proc_attributes)];
         if let Some(some_step) = cache.current_step_mut() {
             let state_id = some_step.id::<P::State>()?;
             status!(("Step {}: {}", index, state_id.description()), {

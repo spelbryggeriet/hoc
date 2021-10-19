@@ -10,7 +10,7 @@ use std::{
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    procedure::{ProcedureState, ProcedureStep},
+    procedure::{Attributes, ProcedureState, ProcedureStep},
     Error, Result,
 };
 
@@ -18,26 +18,48 @@ pub mod dir_state;
 
 const ENV_HOME: &str = "HOME";
 
+#[derive(Debug, Serialize, Deserialize)]
+struct CacheVariant {
+    attributes: Attributes,
+
+    #[serde(flatten)]
+    cache: Cache,
+}
+
 #[derive(Debug, Serialize)]
 pub struct Context {
     #[serde(flatten)]
-    caches: HashMap<String, Cache>,
+    caches: HashMap<String, Vec<CacheVariant>>,
 
     #[serde(skip_serializing)]
     file: File,
 }
 
-impl Index<&str> for Context {
+impl Index<(&str, &Attributes)> for Context {
     type Output = Cache;
 
-    fn index(&self, index: &str) -> &Self::Output {
-        &self.caches[index]
+    fn index(&self, (cache_id, cache_attributes): (&str, &Attributes)) -> &Self::Output {
+        &self.caches[cache_id]
+            .iter()
+            .find(|cv| cv.attributes == *cache_attributes)
+            .unwrap()
+            .cache
     }
 }
 
-impl IndexMut<&str> for Context {
-    fn index_mut(&mut self, index: &str) -> &mut Self::Output {
-        self.caches.get_mut(index).unwrap()
+impl IndexMut<(&str, &Attributes)> for Context {
+    fn index_mut(
+        &mut self,
+        (cache_id, cache_attributes): (&str, &Attributes),
+    ) -> &mut Self::Output {
+        &mut self
+            .caches
+            .get_mut(cache_id)
+            .unwrap()
+            .iter_mut()
+            .find(|cv| cv.attributes == *cache_attributes)
+            .unwrap()
+            .cache
     }
 }
 
@@ -67,7 +89,7 @@ impl Context {
             .open(&context_dir_path)
         {
             Ok(file) => {
-                let caches: HashMap<String, Cache> = serde_yaml::from_reader(&file)?;
+                let caches: HashMap<String, Vec<CacheVariant>> = serde_yaml::from_reader(&file)?;
                 Ok(Self { caches, file })
             }
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
@@ -98,12 +120,20 @@ impl Context {
         Ok(path)
     }
 
-    pub fn contains_cache(&self, name: &str) -> bool {
-        self.caches.contains_key(name)
+    pub fn contains_cache(&self, name: &str, attributes: &Attributes) -> bool {
+        self.caches.get(name).map_or(false, |variants| {
+            variants.iter().any(|cv| cv.attributes == *attributes)
+        })
     }
 
-    pub fn update_cache(&mut self, name: String, cache: Cache) {
-        self.caches.insert(name, cache);
+    pub fn update_cache(&mut self, name: String, attributes: Attributes, cache: Cache) {
+        let mut data = Vec::new();
+        data.push(CacheVariant { attributes, cache });
+
+        self.caches
+            .entry(name)
+            .and_modify(|variants| variants.extend(data.drain(..)))
+            .or_insert(data);
     }
 
     pub fn persist(&mut self) -> Result<()> {

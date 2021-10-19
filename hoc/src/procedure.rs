@@ -1,11 +1,15 @@
 use std::{
+    collections::HashMap,
     path::{Path, PathBuf},
     str::FromStr,
 };
 
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use serde_json::Value;
 
 use crate::{context::dir_state::DirectoryState, error::Error, Result};
+
+pub type Attributes = HashMap<String, Value>;
 
 pub enum HaltState<S> {
     Yield(S),
@@ -49,7 +53,12 @@ impl<S> Halt<S> {
 
 pub trait Procedure {
     type State: ProcedureState;
+
     const NAME: &'static str;
+
+    fn get_attributes(&self) -> Attributes {
+        HashMap::default()
+    }
 
     fn rewind_state(&self) -> Option<<Self::State as ProcedureState>::Id>;
     fn run(&mut self, step: &mut ProcedureStep) -> Result<Halt<Self::State>>;
