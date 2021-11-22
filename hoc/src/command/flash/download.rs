@@ -35,13 +35,10 @@ impl Image {
 
 impl Flash {
     pub(super) fn download(&self, step: &mut ProcedureStep) -> hoclog::Result<Halt<FlashState>> {
-        let index = choose!(
-            "Which image do you want to use?",
-            items = Image::iter().map(|i| i.description()),
-        )
-        .log_err()?;
+        let mut images: Vec<_> = Image::iter().collect();
+        let index = choose!("Which image do you want to use?", items = &images).log_err()?;
 
-        let image = Image::iter().nth(index).unwrap();
+        let image = images.remove(index);
         info!("Image: {}", image);
         info!("URL  : {}", image.url());
 

@@ -11,12 +11,8 @@ impl Flash {
                 util::get_attached_disks([util::DiskType::Physical])
                     .log_context("Failed to get attached disks")?;
 
-            let physical_disk_descs = physical_disk_infos
-                .iter()
-                .map(util::AttachedDiskInfo::description);
-
             let index =
-                choose!("Choose which disk to flash", items = physical_disk_descs).log_err()?;
+                choose!("Choose which disk to flash", items = &physical_disk_infos).log_err()?;
             physical_disk_infos.remove(index).id
         });
 

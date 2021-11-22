@@ -199,7 +199,7 @@ pub fn exec_hoc_line(
                 .collect::<Option<Vec<_>>>()
                 .ok_or_else(|| HocLineParseError::new("expected options type be of type string"))?;
 
-            log.choose(prompt, options, 0).unwrap().to_string()
+            log.choose(prompt, &options, 0).unwrap().to_string()
         }
 
         ("in", "hidden_input") => {

@@ -60,7 +60,10 @@ pub trait Procedure {
         HashMap::default()
     }
 
-    fn rewind_state(&self) -> Option<<Self::State as ProcedureState>::Id>;
+    fn rewind_state(&self) -> Option<<Self::State as ProcedureState>::Id> {
+        None
+    }
+
     fn run(&mut self, step: &mut ProcedureStep) -> Result<Halt<Self::State>>;
 }
 

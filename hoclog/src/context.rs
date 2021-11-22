@@ -98,8 +98,8 @@ impl PrintContext {
     pub fn print_spacing_if_needed(&mut self, current_log_type: LogType) {
         if self.last_log_type.is_some()
             && self.last_log_type != Some(current_log_type)
-            && !(self.last_log_type == Some(LogType::StatusStart)
-                && current_log_type == LogType::StatusEnd)
+            && self.last_log_type != Some(LogType::StatusStart)
+            && current_log_type != LogType::StatusEnd
         {
             self.println(self.create_line_prefix(PrefixPrefs::in_status_overflow()));
         }

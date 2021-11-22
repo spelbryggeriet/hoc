@@ -32,12 +32,11 @@ impl Flash {
                     .filter(|adi| adi.partitions.iter().any(|p| p.name == "boot"))
                     .collect();
 
-            let boot_disk_descs = attached_disks_info
-                .iter()
-                .map(util::AttachedDiskInfo::description);
-
-            let index =
-                choose!("Which disk do you want to use?", items = boot_disk_descs).log_err()?;
+            let index = choose!(
+                "Which disk do you want to use?",
+                items = &attached_disks_info,
+            )
+            .log_err()?;
 
             attached_disks_info
                 .remove(index)

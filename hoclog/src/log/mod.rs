@@ -244,13 +244,15 @@ impl Log {
         password
     }
 
-    pub fn choose(
+    pub fn choose<T>(
         &self,
         message: impl AsRef<str>,
-        items: impl IntoIterator<Item = impl ToString>,
+        items: &[T],
         default_index: usize,
-    ) -> Result<usize> {
-        let items: Vec<_> = items.into_iter().collect();
+    ) -> Result<usize>
+    where
+        T: ToString,
+    {
         if items.len() == 0 {
             return Err(Error::ChooseNoItems);
         }
@@ -285,7 +287,7 @@ impl Log {
             print_context: &print_context,
         })
         .with_prompt(cyan.apply_to(prompt).to_string())
-        .items(&items)
+        .items(items)
         .default(default_index)
         .interact_on_opt(&print_context.stdout)
         .unwrap_or_else(|e| panic!("failed printing to stdout: {}", e));

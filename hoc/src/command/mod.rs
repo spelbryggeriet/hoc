@@ -1,6 +1,7 @@
 use hoclog::{info, status, LogErr};
 use structopt::StructOpt;
 
+use configure::Configure;
 use flash::Flash;
 
 use crate::error;
@@ -9,6 +10,7 @@ macro_rules! _cmd {
     (
         program=$program:expr,
         args=[$($args:expr),*],
+        capture=$capture:literal,
         silent=$silent:literal,
         sudo=$sudo:literal,
     ) => {{
@@ -89,11 +91,14 @@ macro_rules! _cmd {
             )
             .into_owned();
 
-            if !$silent {
+            if !$capture {
                 info!(&output);
+            } else if !$silent {
+                info!("<output captured>");
             }
 
             Ok(output)
+
         };
 
         if !$silent {
@@ -109,18 +114,20 @@ macro_rules! cmd {
         _cmd!(
             program=$program,
             args=[$($args),*],
+            capture=false,
             silent=false,
             sudo=false,
-        )
+        ).map(|_| ())
     };
 }
 
-macro_rules! cmd_silent {
+macro_rules! cmd_capture {
     ($program:expr $(, $args:expr)* $(,)?) => {
         _cmd!(
             program=$program,
             args=[$($args),*],
-            silent=true,
+            capture=true,
+            silent=false,
             sudo=false,
         )
     };
@@ -131,20 +138,29 @@ macro_rules! sudo_cmd {
         _cmd!(
             program=$program,
             args=[$($args),*],
+            capture=false,
             silent=false,
             sudo=true,
-        )
+        ).map(|_| ())
     };
 }
 
+mod configure;
 mod flash;
 
 pub fn reset_sudo_privileges() -> hoclog::Result<()> {
-    cmd_silent!("sudo", "-k")?;
-    Ok(())
+    _cmd!(
+        program = "sudo",
+        args = ["-k"],
+        capture = true,
+        silent = true,
+        sudo = false,
+    )
+    .map(|_| ())
 }
 
 #[derive(StructOpt)]
 pub enum Command {
     Flash(Flash),
+    Configure(Configure),
 }
