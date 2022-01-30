@@ -7,6 +7,7 @@ use std::{
     },
 };
 
+use colored::Colorize;
 use lazy_static::lazy_static;
 use structopt::StructOpt;
 
@@ -102,17 +103,17 @@ fn run_procedure<P: Procedure>(context: &mut Context, mut proc: P) -> Result<()>
                 .join("\n");
 
             warning!(
-                "Previously completed step {} ({}) has become invalid because the working directory \
+                "Previously completed {} ({}) has become invalid because the working directory \
                      state has changed:\n\n{}",
-                rewind_index + 1,
+                format!("Step {}", rewind_index + 1),
                 state_id.description(),
                 diff_line,
             )?;
         }
 
         info!(
-            "Rewinding back to step {} ({}).",
-            rewind_index + 1,
+            "Rewinding back to {} ({}).",
+            format!("Step {}", rewind_index + 1).yellow(),
             state_id.description(),
         );
 
@@ -127,11 +128,11 @@ fn run_procedure<P: Procedure>(context: &mut Context, mut proc: P) -> Result<()>
     {
         hoclog::LOG
             .status(format!(
-                "Skipping step {}: {}",
-                i + 1,
+                "Skipping {}: {}",
+                format!("Step {}", i + 1).yellow(),
                 step.id::<P::State>()?.description()
             ))
-            .with_label("CACHED");
+            .with_label("CACHED".blue());
         index += 1;
     }
 
@@ -143,7 +144,7 @@ fn run_procedure<P: Procedure>(context: &mut Context, mut proc: P) -> Result<()>
         let cache = &mut context[(P::NAME, &proc_attributes)];
         if let Some(some_step) = cache.current_step_mut() {
             let state_id = some_step.id::<P::State>()?;
-            status!("Step {}: {}", index, state_id.description() => {
+            status!("{}: {}", format!("Step {}", index).yellow(), state_id.description() => {
                 let halt = proc.run(some_step)?;
                 let state = match halt.state {
                     HaltState::Yield(inner_state) => Some(inner_state),

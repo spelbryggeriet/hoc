@@ -9,6 +9,7 @@ name = "hoc"
 path = "./src/main.rs"
 
 [dependencies]
+colored = "2.0.0"
 ctrlc = "3.2.1"
 lazy-regex = "2.2.1"
 lazy_static = "1.4.0"

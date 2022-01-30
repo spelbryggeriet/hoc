@@ -7,6 +7,7 @@ use std::{
     process::{self, Stdio},
 };
 
+use colored::Colorize;
 use hoclog::{error, info, status};
 use thiserror::Error;
 
@@ -108,8 +109,8 @@ impl<'ssh> Process<'ssh> {
             let sudo_str = if self.sudo.is_some() { "sudo " } else { "" };
             let command_string = format!(
                 "{}{} {}",
-                sudo_str,
-                self.program.to_string_lossy(),
+                sudo_str.green(),
+                self.program.to_string_lossy().green(),
                 args_iter
                     .map(|a| a.to_string_lossy())
                     .collect::<Vec<_>>()
@@ -117,9 +118,9 @@ impl<'ssh> Process<'ssh> {
             );
 
             let client = if let Some(ref client) = self.ssh_client {
-                client.host()
+                client.host().blue()
             } else {
-                "this computer"
+                "this computer".blue()
             };
 
             if !self.hide_output {

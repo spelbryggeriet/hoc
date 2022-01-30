@@ -1,3 +1,5 @@
+use colored::Colorize;
+
 use super::*;
 use crate::command::util::ssh::{Authentication, Client};
 
@@ -9,7 +11,7 @@ impl Configure {
     ) -> Result<Halt<ConfigureState>> {
         let new_password = hidden_input!("Choose a new password");
 
-        status!("Connecting to node '{}' at host '{}'", self.node_name, host => {
+        status!("Connecting to node {} at host {}", self.node_name.blue(), host.blue() => {
             let client = Client::new(host, "pi", Authentication::Password("raspberry"))?;
 
             cmd!("ls", "-la").ssh(&client).run()?;
