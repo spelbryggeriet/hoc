@@ -20,20 +20,22 @@ impl Flash {
 
         status!(
             "Unmounting SD card",
-            cmd!("diskutil", "unmountDisk", disk_path)?,
+            cmd!("diskutil", "unmountDisk", disk_path).run()?,
         );
 
-        let image_real_path = step.get_real_path(&image_path);
+        let image_real_path = step.register_file(&image_path)?;
 
         status!("Flashing SD card", {
             prompt!("Do you want to flash target disk '{}'?", disk_id,).log_err()?;
 
-            sudo_cmd!(
+            cmd!(
                 "dd",
                 "bs=1m",
                 format!("if={}", image_real_path.to_string_lossy()),
                 format!("of=/dev/r{}", disk_id),
-            )?;
+            )
+            .sudo()
+            .run()?;
 
             info!(
                 "Image '{}' flashed to target disk '{}'",
@@ -44,7 +46,7 @@ impl Flash {
 
         status!(
             "Unmounting image disk",
-            cmd!("diskutil", "unmountDisk", disk_path)?,
+            cmd!("diskutil", "unmountDisk", disk_path).run()?,
         );
 
         Ok(Halt::transient_finish())

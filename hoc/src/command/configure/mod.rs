@@ -1,4 +1,4 @@
-use std::{borrow::Cow, collections::HashMap};
+use std::net::Ipv4Addr;
 
 use serde::{Deserialize, Serialize};
 use structopt::StructOpt;
@@ -8,33 +8,32 @@ use crate::{
     procedure::{Attributes, Halt, Procedure, ProcedureState, ProcedureStateId, ProcedureStep},
     Result,
 };
-use hoclog::{bail, choose, info, prompt, status, LogErr};
+use hoclog::{choose, hidden_input, status};
 
-use self::local_endpoints::LocalEndpoint;
+use super::util::ssh::Client;
 
-mod local_endpoints;
-mod node_settings;
+mod change_default_user;
+mod get_host;
 
 #[derive(StructOpt)]
 pub struct Configure {
     node_name: String,
+
+    #[structopt(skip)]
+    ssh_client: Option<Client>,
 }
 
 #[derive(Debug, Serialize, Deserialize, EnumDiscriminants)]
 #[strum_discriminants(derive(Hash, PartialOrd, Ord, EnumString, IntoStaticStr))]
 #[strum_discriminants(name(ConfigureStateId))]
 pub enum ConfigureState {
-    LocalEndpoints,
-    NodeSettings { local_endpoint: LocalEndpoint },
+    GetHost,
+    ChangeDefaultUser { host: String },
 }
 
 impl Procedure for Configure {
     type State = ConfigureState;
     const NAME: &'static str = "configure";
-
-    fn rewind_state(&self) -> Option<ConfigureStateId> {
-        Some(ConfigureStateId::LocalEndpoints)
-    }
 
     fn get_attributes(&self) -> Attributes {
         let mut variant = Attributes::new();
@@ -44,10 +43,8 @@ impl Procedure for Configure {
 
     fn run(&mut self, step: &mut ProcedureStep) -> Result<Halt<ConfigureState>> {
         let halt = match step.state()? {
-            ConfigureState::LocalEndpoints => self.get_local_endpoints(step)?,
-            ConfigureState::NodeSettings { local_endpoint } => {
-                self.configure_node_settings(step, local_endpoint)?
-            }
+            ConfigureState::GetHost => self.get_host(step)?,
+            ConfigureState::ChangeDefaultUser { host } => self.change_default_user(step, host)?,
         };
 
         Ok(halt)
@@ -59,15 +56,15 @@ impl ProcedureStateId for ConfigureStateId {
 
     fn description(&self) -> &'static str {
         match self {
-            Self::LocalEndpoints => "Get local endpoints",
-            Self::NodeSettings => "Configure node settings",
+            Self::GetHost => "Get host",
+            Self::ChangeDefaultUser => "Change default user",
         }
     }
 }
 
 impl Default for ConfigureState {
     fn default() -> Self {
-        ConfigureState::LocalEndpoints
+        ConfigureState::GetHost
     }
 }
 

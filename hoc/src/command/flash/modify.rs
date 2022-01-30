@@ -10,7 +10,7 @@ impl Flash {
         step: &mut ProcedureStep,
         image_path: PathBuf,
     ) -> hoclog::Result<Halt<FlashState>> {
-        let image_real_path = step.register_path(&image_path).log_err()?;
+        let image_real_path = step.register_file(&image_path).log_err()?;
 
         status!(
             "Attaching image as disk",
@@ -21,7 +21,9 @@ impl Flash {
                 "diskimage-class=CRawDiskImage",
                 "-nomount",
                 image_real_path,
-            )?,
+            )
+            .run()
+            .log_err()?,
         );
 
         let disk_id = status!("Find attached disk", {
@@ -57,7 +59,9 @@ impl Flash {
                 "-mountPoint",
                 mount_dir.as_ref(),
                 &dev_disk_id,
-            )?;
+            )
+            .run()
+            .log_err()?;
             mount_dir
         });
 
@@ -67,16 +71,18 @@ impl Flash {
             });
         });
 
-        status!("Syncing image disk writes", cmd!("sync")?);
+        status!("Syncing image disk writes", cmd!("sync").run().log_err()?);
 
         status!(
             "Unmounting image disk",
-            cmd!("diskutil", "unmountDisk", &dev_disk_id)?,
+            cmd!("diskutil", "unmountDisk", &dev_disk_id)
+                .run()
+                .log_err()?,
         );
 
         status!(
             "Detaching image disk",
-            cmd!("hdiutil", "detach", dev_disk_id)?,
+            cmd!("hdiutil", "detach", dev_disk_id).run().log_err()?,
         );
 
         Ok(Halt::persistent_yield(FlashState::Flash { image_path }))

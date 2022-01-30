@@ -122,15 +122,19 @@ impl ProcedureStep {
         &self.work_dir_state
     }
 
-    pub fn get_real_path<P: AsRef<Path>>(&self, relative_path: P) -> PathBuf {
-        let mut real_path = self.work_dir_state.root_path().to_path_buf();
-        real_path.extend(relative_path.as_ref().iter());
-
-        real_path
+    pub fn is_path_registered<P: AsRef<Path>>(&self, relative_path: P) -> Result<bool> {
+        self.work_dir_state.contains(relative_path)
     }
 
-    pub fn register_path<P: AsRef<Path>>(&mut self, relative_path: P) -> Result<PathBuf> {
-        self.work_dir_state.register_path(&relative_path)?;
+    pub fn register_file<P: AsRef<Path>>(&mut self, relative_path: P) -> Result<PathBuf> {
+        self.work_dir_state.register_file(&relative_path)?;
+        let mut path = self.work_dir_state.root_path().to_path_buf();
+        path.extend(relative_path.as_ref().iter());
+        Ok(path)
+    }
+
+    pub fn register_dir<P: AsRef<Path>>(&mut self, relative_path: P) -> Result<PathBuf> {
+        self.work_dir_state.register_dir(&relative_path)?;
         let mut path = self.work_dir_state.root_path().to_path_buf();
         path.extend(relative_path.as_ref().iter());
         Ok(path)

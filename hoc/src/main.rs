@@ -72,7 +72,7 @@ fn run_procedure<P: Procedure>(context: &mut Context, mut proc: P) -> Result<()>
     let work_dir = Context::get_work_dir()?;
     let mut valid_files = DirectoryState::new_unchecked(&work_dir);
     let mut cur_dir_state = DirectoryState::new_unchecked(work_dir);
-    cur_dir_state.register_path("")?;
+    cur_dir_state.register_dir("")?;
 
     let completed_steps = cache.completed_steps().count();
 
@@ -174,7 +174,7 @@ fn main() {
             }
         })?;
 
-        command::reset_sudo_privileges()?;
+        command::util::reset_sudo_privileges()?;
 
         let mut context = Context::load()?;
 

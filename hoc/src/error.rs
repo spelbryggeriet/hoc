@@ -2,6 +2,8 @@ use std::{env::VarError, io};
 
 use thiserror::Error;
 
+use crate::command;
+use crate::command::util::ssh;
 use crate::context::{dir_state, Context};
 
 fn get_context_display_text() -> String {
@@ -47,6 +49,15 @@ pub enum Error {
 
     #[error(transparent)]
     Io(#[from] io::Error),
+
+    #[error(transparent)]
+    DirectoryStateError(#[from] dir_state::DirectoryStateError),
+
+    #[error("process failed: {0}")]
+    Process(#[from] command::util::ProcessError),
+
+    #[error("ssh: {0}")]
+    Ssh(#[from] ssh::Error),
 }
 
 impl Error {

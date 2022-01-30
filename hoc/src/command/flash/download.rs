@@ -44,8 +44,12 @@ impl Flash {
 
         let archive_path = PathBuf::from("image");
         status!("Downloading image", {
-            let image_real_path = step.register_path(&archive_path).log_err()?;
-            let mut file = File::create(image_real_path).log_err()?;
+            let image_real_path = step.register_file(&archive_path).log_err()?;
+            let mut file = File::options()
+                .read(false)
+                .write(true)
+                .open(image_real_path)
+                .log_err()?;
 
             reqwest::blocking::get(image.url())
                 .log_err()?

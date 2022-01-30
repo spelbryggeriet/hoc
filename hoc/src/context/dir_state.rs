@@ -1,7 +1,8 @@
 use std::{
     ffi::{OsStr, OsString},
     fmt::{self, Display, Formatter},
-    fs, io,
+    fs::{self, File},
+    io,
     os::unix::prelude::MetadataExt,
     path::{Iter, Path, PathBuf},
     result::Result as StdResult,
@@ -41,8 +42,7 @@ pub enum PathError {
 
     #[error("expected path to point at a directory")]
     ExpectedDirectory(PathBuf),
-
-    #[error("invalid file name: {}", _0.to_string_lossy())]
+    #[error("invalid file name: '{}'", _0.to_string_lossy())]
     InvalidFileName(OsString),
 }
 
@@ -84,6 +84,15 @@ impl FileStateDiff {
     }
 }
 
+#[derive(Debug, Error)]
+pub enum DirectoryStateError {
+    #[error("unexpected file: {}", _0.to_string_lossy())]
+    UnexpectedFile(OsString),
+
+    #[error("unexpected dir: {}", _0.to_string_lossy())]
+    UnexpectedDir(OsString),
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DirectoryState {
     root_path: PathBuf,
@@ -123,7 +132,74 @@ impl DirectoryState {
         self.root_path.file_name()
     }
 
-    pub fn register_path<P: AsRef<Path>>(&mut self, relative_path: P) -> Result<()> {
+    pub fn contains<P: AsRef<Path>>(&self, relative_path: P) -> Result<bool> {
+        let (file_name, dir_names) = split_path_by_file_name(&relative_path)?;
+
+        let mut dir_state = self;
+        for dir_name in dir_names {
+            dir_state = if let Some(index) = dir_state
+                .directories
+                .iter()
+                .position(|d| d.name() == Some(dir_name))
+            {
+                &dir_state.directories[index]
+            } else {
+                return Ok(false);
+            };
+        }
+
+        if let Some(file_name) = file_name {
+            if dir_state
+                .directories
+                .iter()
+                .any(|d| d.name() == Some(file_name))
+            {
+                Ok(true)
+            } else if dir_state.files.iter().any(|f| f.name() == file_name) {
+                Ok(true)
+            } else {
+                Ok(false)
+            }
+        } else {
+            Ok(true)
+        }
+    }
+
+    pub fn register_file<P: AsRef<Path>>(&mut self, relative_path: P) -> Result<()> {
+        let (file_name, dir_state) = self.traverse_mut(&relative_path)?;
+
+        let mut path = dir_state.root_path.clone();
+        fs::create_dir_all(&path)?;
+        path.push(file_name.ok_or(PathError::InvalidFileName(OsString::new()))?);
+
+        let metadata = match fs::metadata(&path) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                File::create(&path)?.metadata()?
+            }
+            Err(error) => return Err(error.into()),
+        };
+
+        if metadata.file_type().is_dir() {
+            Err(DirectoryStateError::UnexpectedDir(path.into_os_string()).into())
+        } else if !metadata.file_type().is_file() {
+            let file_name = path.file_name().unwrap();
+
+            if dir_state.files.iter().all(|fs| fs.name() != file_name) {
+                dir_state.files.push(FileState::new_unchecked(
+                    path,
+                    metadata.ctime(),
+                    metadata.ctime_nsec(),
+                ))
+            }
+
+            Ok(())
+        } else {
+            Ok(())
+        }
+    }
+
+    pub fn register_dir<P: AsRef<Path>>(&mut self, relative_path: P) -> Result<()> {
         let (file_name, dir_state) = self.traverse_mut(&relative_path)?;
 
         let mut path = dir_state.root_path.clone();
@@ -131,57 +207,52 @@ impl DirectoryState {
             path.push(file_name);
         }
 
-        match fs::metadata(&path)? {
-            metadata if metadata.file_type().is_dir() => {
-                for entry in fs::read_dir(&path)? {
-                    let entry = entry?;
-                    let file_name = entry.file_name();
-                    let file_type = entry.file_type()?;
+        fs::create_dir_all(&path)?;
+        let metadata = fs::metadata(&path)?;
 
-                    if file_type.is_file() {
-                        if dir_state.files.iter().all(|fs| fs.name() != file_name) {
-                            let mut path = path.clone();
-                            path.push(file_name);
+        if metadata.file_type().is_file() {
+            Err(DirectoryStateError::UnexpectedFile(path.into_os_string()).into())
+        } else if metadata.file_type().is_dir() {
+            for entry in fs::read_dir(&path)? {
+                let entry = entry?;
+                let file_name = entry.file_name();
+                let file_type = entry.file_type()?;
 
-                            let metadata = entry.metadata()?;
+                if file_type.is_file() {
+                    if dir_state.files.iter().all(|fs| fs.name() != file_name) {
+                        let mut path = path.clone();
+                        path.push(file_name);
 
-                            dir_state.files.push(FileState::new_unchecked(
-                                path,
-                                metadata.ctime(),
-                                metadata.ctime_nsec(),
-                            ));
-                        };
-                    } else if file_type.is_dir() {
-                        if dir_state
-                            .directories
-                            .iter()
-                            .all(|ds| ds.name() != Some(&file_name))
-                        {
-                            let mut path = path.clone();
-                            path.push(file_name);
+                        let metadata = entry.metadata()?;
 
-                            let ds = DirectoryState::new_unchecked(path);
-                            dir_state.register_path("")?;
-                            dir_state.directories.push(ds);
-                        }
+                        dir_state.files.push(FileState::new_unchecked(
+                            path,
+                            metadata.ctime(),
+                            metadata.ctime_nsec(),
+                        ));
+                    };
+                } else if file_type.is_dir() {
+                    if dir_state
+                        .directories
+                        .iter()
+                        .all(|ds| ds.name() != Some(&file_name))
+                    {
+                        let mut path = path.clone();
+                        path.push(&file_name);
+
+                        let ds = DirectoryState::new_unchecked(&path);
+                        let mut subpath = relative_path.as_ref().to_path_buf();
+                        subpath.push(&file_name);
+                        dir_state.register_dir(&subpath)?;
+                        dir_state.directories.push(ds);
                     }
                 }
             }
-            metadata if metadata.file_type().is_file() => {
-                let file_name = path.file_name().unwrap();
 
-                if dir_state.files.iter().all(|fs| fs.name() != file_name) {
-                    dir_state.files.push(FileState::new_unchecked(
-                        path,
-                        metadata.ctime(),
-                        metadata.ctime_nsec(),
-                    ))
-                }
-            }
-            _ => (),
+            Ok(())
+        } else {
+            Ok(())
         }
-
-        Ok(())
     }
 
     pub fn update_states(&mut self) -> Result<()> {
@@ -217,6 +288,10 @@ impl DirectoryState {
     }
 
     pub fn unregister_path<P: AsRef<Path>>(&mut self, relative_path: P) -> Result<()> {
+        if !self.contains(&relative_path)? {
+            return Ok(());
+        }
+
         let (file_name, dir_state) = self.traverse_mut(&relative_path)?;
 
         if let Some(file_name) = file_name {

@@ -97,7 +97,9 @@ pub fn get_attached_disks<I: IntoIterator<Item = DiskType>>(
     let mut attached_disks_info = Vec::new();
 
     for disk_type in disk_types {
-        let stdout = cmd_capture!("diskutil", "list", "-plist", "external", disk_type.as_ref())?;
+        let stdout = cmd!("diskutil", "list", "-plist", "external", disk_type.as_ref())
+            .hide_output()
+            .run()?;
 
         let output: DiskutilOutput = plist::from_bytes(stdout.as_bytes())
             .log_context("Failed to parse output of 'diskutil'")?;

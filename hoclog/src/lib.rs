@@ -127,4 +127,10 @@ macro_rules! bail {
 #[derive(Debug)]
 pub enum Never {}
 
+impl Never {
+    pub fn into<T>(self) -> T {
+        unreachable!()
+    }
+}
+
 pub type Result<T> = StdResult<T, Error>;
