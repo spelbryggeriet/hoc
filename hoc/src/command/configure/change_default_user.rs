@@ -9,16 +9,13 @@ impl Configure {
     ) -> Result<Halt<ConfigureState>> {
         let new_password = hidden_input!("Choose a new password");
 
-        status!(
-            ("Connecting to node '{}' at host '{}'", self.node_name, host),
-            {
-                let client = Client::new(host, "pi", Authentication::Password("raspberry"))?;
+        status!("Connecting to node '{}' at host '{}'", self.node_name, host => {
+            let client = Client::new(host, "pi", Authentication::Password("raspberry"))?;
 
-                cmd!("ls", "-la").ssh(&client).run()?;
+            cmd!("ls", "-la").ssh(&client).run()?;
 
-                self.ssh_client = Some(client);
-            }
-        );
+            self.ssh_client = Some(client);
+        });
 
         Ok(Halt::persistent_finish())
     }

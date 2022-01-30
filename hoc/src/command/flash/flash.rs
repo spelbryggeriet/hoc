@@ -6,7 +6,7 @@ impl Flash {
         step: &mut ProcedureStep,
         image_path: PathBuf,
     ) -> Result<Halt<FlashState>> {
-        let disk_id = status!("Find mounted SD card", {
+        let disk_id = status!("Find mounted SD card" => {
             let mut physical_disk_infos: Vec<_> =
                 util::get_attached_disks([util::DiskType::Physical])
                     .log_context("Failed to get attached disks")?;
@@ -18,15 +18,12 @@ impl Flash {
 
         let disk_path = PathBuf::from(format!("/dev/{}", disk_id));
 
-        status!(
-            "Unmounting SD card",
-            cmd!("diskutil", "unmountDisk", disk_path).run()?,
-        );
+        status!("Unmounting SD card" => cmd!("diskutil", "unmountDisk", disk_path).run()?);
 
         let image_real_path = step.register_file(&image_path)?;
 
-        status!("Flashing SD card", {
-            prompt!("Do you want to flash target disk '{}'?", disk_id,).log_err()?;
+        status!("Flashing SD card" => {
+            prompt!("Do you want to flash target disk '{}'?", disk_id).log_err()?;
 
             cmd!(
                 "dd",
@@ -44,10 +41,7 @@ impl Flash {
             );
         });
 
-        status!(
-            "Unmounting image disk",
-            cmd!("diskutil", "unmountDisk", disk_path).run()?,
-        );
+        status!("Unmounting image disk" => cmd!("diskutil", "unmountDisk", disk_path).run()?);
 
         Ok(Halt::transient_finish())
     }

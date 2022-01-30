@@ -123,14 +123,11 @@ impl<'ssh> Process<'ssh> {
             };
 
             if !self.hide_output {
-                status! {
-                    ("Running command on {}: {}", client, command_string),
-                    self.exec(show_output)?,
-                }
+                status!("Running command on {}: {}", client, command_string => {
+                    self.exec(show_output)?
+                })
             } else {
-                info! {
-                    "Running command on {}: {}", client, command_string
-                }
+                info!("Running command on {}: {}", client, command_string);
                 self.exec(show_output)?
             }
         } else {

@@ -143,7 +143,7 @@ fn run_procedure<P: Procedure>(context: &mut Context, mut proc: P) -> Result<()>
         let cache = &mut context[(P::NAME, &proc_attributes)];
         if let Some(some_step) = cache.current_step_mut() {
             let state_id = some_step.id::<P::State>()?;
-            status!(("Step {}: {}", index, state_id.description()), {
+            status!("Step {}: {}", index, state_id.description() => {
                 let halt = proc.run(some_step)?;
                 let state = match halt.state {
                     HaltState::Yield(inner_state) => Some(inner_state),

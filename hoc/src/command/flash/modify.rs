@@ -12,8 +12,7 @@ impl Flash {
     ) -> hoclog::Result<Halt<FlashState>> {
         let image_real_path = step.register_file(&image_path).log_err()?;
 
-        status!(
-            "Attaching image as disk",
+        status!("Attaching image as disk" => {
             cmd!(
                 "hdiutil",
                 "attach",
@@ -23,10 +22,10 @@ impl Flash {
                 image_real_path,
             )
             .run()
-            .log_err()?,
-        );
+            .log_err()?
+        });
 
-        let disk_id = status!("Find attached disk", {
+        let disk_id = status!("Find attached disk" => {
             let mut attached_disks_info: Vec<_> =
                 util::get_attached_disks([util::DiskType::Virtual])
                     .log_context("Failed to get attached disks")?
@@ -51,7 +50,7 @@ impl Flash {
 
         let dev_disk_id = format!("/dev/{}", disk_id);
 
-        let mount_dir = status!("Mounting image disk", {
+        let mount_dir = status!("Mounting image disk" => {
             let mount_dir = TempDir::new().log_err()?;
             cmd!(
                 "diskutil",
@@ -65,25 +64,21 @@ impl Flash {
             mount_dir
         });
 
-        status!("Configure image", {
-            status!("Creating SSH file", {
+        status!("Configure image" => {
+            status!("Creating SSH file"=> {
                 File::create(mount_dir.as_ref().join("ssh")).log_err()?;
             });
         });
 
-        status!("Syncing image disk writes", cmd!("sync").run().log_err()?);
+        status!("Syncing image disk writes" => cmd!("sync").run().log_err()?);
 
-        status!(
-            "Unmounting image disk",
+        status!("Unmounting image disk" => {
             cmd!("diskutil", "unmountDisk", &dev_disk_id)
                 .run()
-                .log_err()?,
-        );
+                .log_err()?
+        });
 
-        status!(
-            "Detaching image disk",
-            cmd!("hdiutil", "detach", dev_disk_id).run().log_err()?,
-        );
+        status!("Detaching image disk" => cmd!("hdiutil", "detach", dev_disk_id).run().log_err()?);
 
         Ok(Halt::persistent_yield(FlashState::Flash { image_path }))
     }

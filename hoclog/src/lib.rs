@@ -80,12 +80,12 @@ macro_rules! hidden_input {
 
 #[macro_export]
 macro_rules! status {
-    (($($fmt:tt)*) $(, $code:expr)? $(,)?) => {{
-        let __status = $crate::LOG.status(format!($($fmt)*));
+    ($fmt:expr $(, $arg:expr)+ $(=> $code:expr)?) => {{
+        let __status = $crate::LOG.status(format!($fmt $(, $arg)+));
         $($code)?
     }};
 
-    ($fmt:expr $(, $code:expr)? $(,)?) => {{
+    ($fmt:expr $(=> $code:expr)?) => {{
         let __status = $crate::LOG.status($fmt);
         $($code)?
     }};

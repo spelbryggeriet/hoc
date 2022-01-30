@@ -43,7 +43,7 @@ impl Flash {
         info!("URL  : {}", image.url());
 
         let archive_path = PathBuf::from("image");
-        status!("Downloading image", {
+        status!("Downloading image" => {
             let image_real_path = step.register_file(&archive_path).log_err()?;
             let mut file = File::options()
                 .read(false)

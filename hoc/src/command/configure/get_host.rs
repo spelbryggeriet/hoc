@@ -6,7 +6,7 @@ use super::*;
 
 impl Configure {
     pub(super) fn get_host(&self, step: &mut ProcedureStep) -> Result<Halt<ConfigureState>> {
-        let local_endpoint = status!("Finding local endpoints", {
+        let local_endpoint = status!("Finding local endpoints" => {
             let output = cmd!("arp", "-a").hide_output().run()?;
             let mut default_index = None;
 
