@@ -1,6 +1,6 @@
 mod parse;
 
-use std::{collections::VecDeque, path::Path};
+use std::{borrow::Cow, collections::VecDeque, path::Path};
 
 use crate::{HocState, HocValue};
 use heck::SnakeCase;
@@ -207,7 +207,7 @@ pub fn exec_hoc_line(
                 .pop_string_for_key_checked("text")
                 .map_err(|err| HocLineParseError::new(format!("{}: {}", prefix, err)))?;
 
-            log.hidden_input(prompt)
+            log.hidden_input(Cow::Owned(prompt)).get().unwrap()
         }
 
         ("in", "prompt") => {

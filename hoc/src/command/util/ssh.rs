@@ -64,14 +64,23 @@ impl Client {
         Ok(session)
     }
 
-    pub fn spawn(&self, cmd: &str, pipe_input: Option<&[u8]>) -> Result<ssh2::Channel> {
+    pub fn spawn<S, B>(&self, cmd: &S, pipe_input: Option<&[B]>) -> Result<ssh2::Channel>
+    where
+        S: AsRef<str>,
+        B: AsRef<[u8]>,
+    {
         let mut channel = self.session.channel_session()?;
 
+        channel.exec(cmd.as_ref())?;
+
         if let Some(pipe_input) = pipe_input {
-            channel.write_all(pipe_input)?;
+            for input in pipe_input {
+                channel.write_all(input.as_ref())?;
+                channel.write_all(b"\n")?;
+            }
         };
 
-        channel.exec(&cmd)?;
+        channel.send_eof()?;
 
         Ok(channel)
     }

@@ -1,4 +1,5 @@
 use std::{
+    borrow::Cow,
     error::Error as StdError,
     fmt,
     result::Result as StdResult,
@@ -13,6 +14,9 @@ use crate::{context::PrintContext, prefix::PrefixPrefs, Never, Result, LOG};
 pub use status::Status;
 pub use stream::Stream;
 
+use self::hidden_input::HiddenInput;
+
+mod hidden_input;
 mod status;
 mod stream;
 
@@ -29,6 +33,9 @@ pub enum Error {
 
     #[error("An empty list of items was sent to `choose`.")]
     ChooseNoItems,
+
+    #[error("hidden input: {0}")]
+    HiddenInput(#[from] hidden_input::Error),
 }
 
 pub trait LogErr<T> {
@@ -227,21 +234,8 @@ impl Log {
         input
     }
 
-    pub fn hidden_input(&self, message: impl AsRef<str>) -> String {
-        let mut print_context = self.print_context.lock().unwrap();
-
-        print_context.print_spacing_if_needed(LogType::Input);
-
-        let mut prompt = print_context.create_line_prefix(PrefixPrefs::in_status().flag(">"));
-        prompt += message.as_ref();
-
-        let cyan = Style::new().cyan();
-        let password = Password::new()
-            .with_prompt(cyan.apply_to(prompt).to_string())
-            .interact_on(&print_context.stdout)
-            .unwrap_or_else(|e| panic!("failed printing to stdout: {}", e));
-
-        password
+    pub fn hidden_input<'a>(&self, message: Cow<'a, str>) -> HiddenInput<'a> {
+        HiddenInput::new(Arc::clone(&self.print_context), message)
     }
 
     pub fn choose<T>(

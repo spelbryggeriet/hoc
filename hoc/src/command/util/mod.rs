@@ -51,7 +51,9 @@ pub struct Process<'ssh> {
     sudo: Option<Option<Vec<u8>>>,
     ssh_client: Option<&'ssh ssh::Client>,
     silent: bool,
-    hide_output: bool,
+    hide_stdout: bool,
+    hide_stderr: bool,
+    pipe_input: Option<Vec<Vec<u8>>>,
 }
 
 impl<'ssh> Process<'ssh> {
@@ -62,7 +64,9 @@ impl<'ssh> Process<'ssh> {
             sudo: None,
             ssh_client: None,
             silent: false,
-            hide_output: false,
+            hide_stdout: false,
+            hide_stderr: false,
+            pipe_input: None,
         }
     }
 
@@ -91,13 +95,37 @@ impl<'ssh> Process<'ssh> {
         self
     }
 
-    pub fn hide_output(mut self) -> Self {
-        self.hide_output = true;
+    pub fn hide_stdout(mut self) -> Self {
+        self.hide_stdout = true;
+        self
+    }
+
+    pub fn hide_stderr(mut self) -> Self {
+        self.hide_stderr = true;
+        self
+    }
+
+    pub fn hide_output(self) -> Self {
+        self.hide_stdout().hide_stderr()
+    }
+
+    pub fn pipe_input<I, B>(mut self, input: I) -> Self
+    where
+        I: IntoIterator<Item = B>,
+        B: Into<Vec<u8>>,
+    {
+        let iter = input.into_iter().map(Into::into);
+        if let Some(pipe_input) = self.pipe_input.as_mut() {
+            pipe_input.extend(iter)
+        } else {
+            self.pipe_input = Some(iter.collect())
+        }
         self
     }
 
     pub fn run(self) -> Result<String> {
-        let show_output = !self.silent && !self.hide_output;
+        let show_stdout = !self.silent && !self.hide_stdout;
+        let show_stderr = !self.silent && !self.hide_stderr;
 
         let output = if !self.silent {
             let args_iter = if self.sudo.is_some() {
@@ -123,36 +151,32 @@ impl<'ssh> Process<'ssh> {
                 "this computer".blue()
             };
 
-            if !self.hide_output {
+            if !self.hide_stdout || !self.hide_stderr {
                 status!("Running command on {}: {}", client, command_string => {
-                    self.exec(show_output)?
+                    self.exec(show_stdout, show_stderr)?
                 })
             } else {
                 info!("Running command on {}: {}", client, command_string);
-                self.exec(show_output)?
+                self.exec(show_stdout, show_stderr)?
             }
         } else {
-            self.exec(show_output)?
+            self.exec(show_stdout, show_stderr)?
         };
 
         Ok(output)
     }
 
-    fn exec(mut self, show_output: bool) -> Result<String> {
-        let program_str = if self.sudo.is_some() {
-            self.args[2].to_string_lossy().into_owned()
-        } else {
-            self.program.to_string_lossy().into_owned()
-        };
+    fn exec(mut self, show_stdout: bool, show_stderr: bool) -> Result<String> {
+        let program_str = self.program.to_string_lossy().into_owned();
 
-        let pipe_input = if let Some(ref sudo) = self.sudo {
+        let mut pipe_input = if let Some(sudo) = self.sudo {
             self.args
                 .insert(0, mem::replace(&mut self.program, OsString::from("sudo")));
 
-            if let Some(ref password) = sudo {
+            if let Some(password) = sudo {
                 self.args.insert(0, OsString::from("-kSp"));
                 self.args.insert(1, OsString::new());
-                Some(password.as_ref())
+                Some(vec![password])
             } else {
                 self.args.insert(0, OsString::from("-p"));
                 self.args.insert(
@@ -164,6 +188,14 @@ impl<'ssh> Process<'ssh> {
         } else {
             None
         };
+
+        if let Some(input) = self.pipe_input {
+            if let Some(pipe_input) = pipe_input.as_mut() {
+                pipe_input.extend(input);
+            } else {
+                pipe_input = Some(input);
+            }
+        }
 
         let (stdout, stderr, status) = if let Some(client) = self.ssh_client {
             let cmd = self
@@ -180,11 +212,11 @@ impl<'ssh> Process<'ssh> {
                 .fold(self.program.to_string_lossy().into_owned(), |out, arg| {
                     out + " " + &arg
                 });
-            let mut channel = client.spawn(&cmd, pipe_input)?;
+            let mut channel = client.spawn(&cmd, pipe_input.as_deref())?;
 
             (
-                channel.read_stdout_to_string(show_output)?,
-                channel.read_stderr_to_string()?,
+                channel.read_stdout_to_string(show_stdout)?,
+                channel.read_stderr_to_string(show_stderr)?,
                 channel.finish()?,
             )
         } else {
@@ -196,12 +228,16 @@ impl<'ssh> Process<'ssh> {
                 .spawn()?;
 
             if let Some(pipe_input) = pipe_input {
-                child.stdin.take().unwrap().write_all(pipe_input)?;
+                let mut stdin = child.stdin.take().unwrap();
+                for input in pipe_input {
+                    stdin.write_all(&input)?;
+                    stdin.write_all(b"\n")?;
+                }
             }
 
             (
-                child.read_stdout_to_string(show_output)?,
-                child.read_stderr_to_string()?,
+                child.read_stdout_to_string(show_stdout)?,
+                child.read_stderr_to_string(show_stderr)?,
                 child.finish()?,
             )
         };
@@ -230,23 +266,21 @@ trait ProcessOutput {
     fn finish(self) -> Result<Option<i32>>;
 
     fn read_stdout_to_string(&mut self, show_output: bool) -> Result<String> {
-        if show_output {
-            Self::read_lines(self.stdout(), |line| info!(line))
-        } else {
-            Self::read_lines(self.stdout(), |_| ())
-        }
+        Self::read_lines(self.stdout(), show_output)
     }
 
-    fn read_stderr_to_string(&mut self) -> Result<String> {
-        Self::read_lines(self.stderr(), |_| ())
+    fn read_stderr_to_string(&mut self, show_output: bool) -> Result<String> {
+        Self::read_lines(self.stderr(), show_output)
     }
 
-    fn read_lines(reader: impl Read, for_each_line: impl Fn(&str)) -> Result<String> {
+    fn read_lines(reader: impl Read, show_output: bool) -> Result<String> {
         let mut output = String::new();
         let buf_reader = BufReader::new(reader);
         for line in buf_reader.lines() {
             let line = line?;
-            for_each_line(&line);
+            if show_output {
+                info!(&line);
+            }
 
             let is_empty = output.is_empty();
             if !is_empty {

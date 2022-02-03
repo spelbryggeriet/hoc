@@ -1,16 +1,15 @@
 use std::net::Ipv4Addr;
 
+use hoclog::{choose, hidden_input, status};
 use serde::{Deserialize, Serialize};
 use structopt::StructOpt;
 use strum::{EnumDiscriminants, EnumString, IntoStaticStr};
 
 use crate::{
+    command::util::ssh::Client,
     procedure::{Attributes, Halt, Procedure, ProcedureState, ProcedureStateId, ProcedureStep},
     Result,
 };
-use hoclog::{choose, hidden_input, status};
-
-use super::util::ssh::Client;
 
 mod change_default_user;
 mod get_host;

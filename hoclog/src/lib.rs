@@ -70,11 +70,11 @@ macro_rules! input {
 #[macro_export]
 macro_rules! hidden_input {
     ($fmt:expr) => {
-        $crate::LOG.hidden_input($fmt)
+        $crate::LOG.hidden_input(::std::borrow::Cow::from($fmt))
     };
 
     ($($fmt:tt)*) => {
-        $crate::LOG.hidden_input(format!($($fmt)*))
+        $crate::LOG.hidden_input(::std::borrow::Cow::Owned(format!($($fmt)*)))
     };
 }
 
