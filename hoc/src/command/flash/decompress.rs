@@ -56,8 +56,8 @@ impl Flash {
             archive_file.write(&archive_data).log_err()?;
         });
 
-        Ok(Halt::persistent_yield(FlashState::Modify {
+        halt!(FlashState::Modify {
             image_path: archive_path,
-        }))
+        })
     }
 }

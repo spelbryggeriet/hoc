@@ -80,6 +80,6 @@ impl Flash {
 
         status!("Detaching image disk" => cmd!("hdiutil", "detach", dev_disk_id).run().log_err()?);
 
-        Ok(Halt::persistent_yield(FlashState::Flash { image_path }))
+        halt!(FlashState::Flash { image_path })
     }
 }

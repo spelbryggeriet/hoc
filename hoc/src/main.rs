@@ -23,10 +23,10 @@ use crate::{
 use hoclog::{error, info, status, warning};
 
 #[macro_use]
+mod procedure;
 mod command;
 mod context;
 mod error;
-mod procedure;
 
 type Result<T> = StdResult<T, Error>;
 
@@ -147,7 +147,7 @@ fn run_procedure<P: Procedure>(context: &mut Context, mut proc: P) -> Result<()>
             status!("{}: {}", format!("Step {}", index).yellow(), state_id.description() => {
                 let halt = proc.run(some_step)?;
                 let state = match halt.state {
-                    HaltState::Yield(inner_state) => Some(inner_state),
+                    HaltState::Halt(inner_state) => Some(inner_state),
                     HaltState::Finish => None,
                 };
 

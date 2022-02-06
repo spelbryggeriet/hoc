@@ -9,46 +9,43 @@ use serde_json::Value;
 
 use crate::{context::dir_state::DirectoryState, error::Error, Result};
 
+macro_rules! halt {
+    ($state:expr) => {
+        Ok(crate::procedure::Halt {
+            persist: true,
+            state: crate::procedure::HaltState::Halt($state),
+        })
+    };
+}
+
+macro_rules! finish {
+    () => {
+        Ok(crate::procedure::Halt {
+            persist: true,
+            state: crate::procedure::HaltState::Finish,
+        })
+    };
+}
+
+macro_rules! transient_finish {
+    () => {
+        Ok(crate::procedure::Halt {
+            persist: false,
+            state: crate::procedure::HaltState::Finish,
+        })
+    };
+}
+
 pub type Attributes = HashMap<String, Value>;
 
 pub enum HaltState<S> {
-    Yield(S),
+    Halt(S),
     Finish,
 }
 
 pub struct Halt<S> {
     pub persist: bool,
     pub state: HaltState<S>,
-}
-
-impl<S> Halt<S> {
-    pub fn persistent_yield(state: S) -> Self {
-        Self {
-            persist: true,
-            state: HaltState::Yield(state),
-        }
-    }
-
-    pub fn persistent_finish() -> Self {
-        Self {
-            persist: true,
-            state: HaltState::Finish,
-        }
-    }
-
-    pub fn transient_yield(state: S) -> Self {
-        Self {
-            persist: false,
-            state: HaltState::Yield(state),
-        }
-    }
-
-    pub fn transient_finish() -> Self {
-        Self {
-            persist: false,
-            state: HaltState::Finish,
-        }
-    }
 }
 
 pub trait Procedure {

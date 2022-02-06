@@ -27,7 +27,7 @@ struct CommandField<'a> {
 
 struct StateVariant<'a> {
     ident: &'a Ident,
-    fields: Vec<&'a Field>,
+    fields: Vec<(&'a Ident, &'a Type)>,
     unit: bool,
 }
 
@@ -89,7 +89,11 @@ fn parse_state_variant(variant: &Variant) -> StateVariant {
             ..
         } => StateVariant {
             ident: &variant.ident,
-            fields: fields.named.iter().collect(),
+            fields: fields
+                .named
+                .iter()
+                .map(|f| (f.ident.as_ref().unwrap(), &f.ty))
+                .collect(),
             unit: false,
         },
         Variant {
@@ -117,20 +121,22 @@ fn impl_procedure(types: &ProcedureTypes) -> TokenStream {
     let command = &types.command;
     let state = &types.state;
 
-    let struct_name = &command.ident;
+    let command_name = &command.ident;
     let state_name = &state.ident;
     let state_id_name = Ident::new(&format!("{}Id", state_name), Span::call_site());
-    let procedure_desc = struct_name.to_string().to_kebab_case();
+    let procedure_desc = command_name.to_string().to_kebab_case();
 
     for field in stripped_command.fields.iter_mut() {
         field.attrs.retain(|a| !a.path.is_ident("procedure"));
     }
 
     set_dummy(quote! {
+        use #state_name::*;
+
         #[derive(::structopt::StructOpt)]
         #stripped_command
 
-        impl crate::procedure::Procedure for #struct_name {
+        impl crate::procedure::Procedure for #command_name {
             type State = #state_name;
             const NAME: &'static str = #procedure_desc;
 
@@ -175,7 +181,7 @@ fn impl_procedure(types: &ProcedureTypes) -> TokenStream {
         .collect();
 
     let impl_procedure = gen_impl_procedure(
-        struct_name,
+        command_name,
         state_name,
         &procedure_desc,
         &types.command,
@@ -186,7 +192,11 @@ fn impl_procedure(types: &ProcedureTypes) -> TokenStream {
     let impl_procedure_state_id = gen_impl_procedure_state_id(&state_id_name, &state_variants);
     let impl_default = gen_impl_default(state_name, &state_variants);
 
+    let steps_trait = gen_steps_trait(command_name, state_name, &state_variants);
+
     quote! {
+        use #state_name::*;
+
         #[derive(::structopt::StructOpt)]
         #stripped_command
 
@@ -200,6 +210,8 @@ fn impl_procedure(types: &ProcedureTypes) -> TokenStream {
         #impl_procedure_state
         #impl_procedure_state_id
         #impl_default
+
+        #steps_trait
     }
 }
 
@@ -261,14 +273,17 @@ fn gen_impl_procedure_state_id(
         quote!(Self::#name => #desc,)
     });
 
+    let match_switch = state_variants
+        .is_empty()
+        .then(|| quote!(unreachable!()))
+        .or_else(|| Some(quote!(match self { #(#cases)* })));
+
     quote! {
         impl crate::procedure::ProcedureStateId for #state_id_name {
             type DeserializeError = ::strum::ParseError;
 
             fn description(&self) -> &'static str {
-                match self {
-                    #(#cases)*
-                }
+                #match_switch
             }
 
         }
@@ -284,7 +299,7 @@ fn gen_impl_default(state_name: &Ident, state_variants: &[StateVariant]) -> Toke
                 quote!(Self::#name)
             } else {
                 let fields = v.fields.iter().map(|f| {
-                    let field_name = &f.ident;
+                    let field_name = &f.0;
                     quote!(#field_name: Default::default())
                 });
                 quote!({ #(#fields),* })
@@ -324,10 +339,10 @@ fn gen_get_attributes(fields: &[CommandField]) -> TokenStream {
     }
 }
 
-fn gen_run(state_name: &Ident, variants: &[StateVariant]) -> TokenStream {
-    let variant_patterns = variants.iter().map(|v| {
+fn gen_run(state_name: &Ident, state_variants: &[StateVariant]) -> TokenStream {
+    let variant_patterns = state_variants.iter().map(|v| {
         let variant_name = v.ident;
-        let field_names = v.fields.iter().map(|f| &f.ident);
+        let field_names = v.fields.iter().map(|f| &f.0);
 
         if v.unit {
             quote!(#state_name::#variant_name)
@@ -336,19 +351,55 @@ fn gen_run(state_name: &Ident, variants: &[StateVariant]) -> TokenStream {
         }
     });
 
-    let calls = variants.iter().map(|v| {
+    let calls = state_variants.iter().map(|v| {
         let name = Ident::new(&v.ident.to_string().to_snake_case(), Span::call_site());
-        let args = v.fields.iter().map(|f| &f.ident);
+        let args = v.fields.iter().map(|f| &f.0);
         quote!(self.#name(step, #(#args),*)?)
     });
 
+    let match_switch = state_variants
+        .is_empty()
+        .then(|| quote!(unreachable!()))
+        .or_else(|| Some(quote!(match step.state()? { #(#variant_patterns => #calls,)* })));
+
     quote! {
+        #[allow(unreachable_code)]
         fn run(&mut self, step: &mut crate::procedure::ProcedureStep) -> crate::Result<crate::procedure::Halt<Self::State>> {
-            let halt = match step.state()? {
-                #(#variant_patterns => #calls,)*
-            };
+            let halt = #match_switch;
 
             Ok(halt)
+        }
+    }
+}
+
+fn gen_steps_trait(
+    command_name: &Ident,
+    state_name: &Ident,
+    state_variants: &[StateVariant],
+) -> TokenStream {
+    let step_fns = state_variants.iter().map(|v| {
+        let name = Ident::new(&v.ident.to_string().to_snake_case(), Span::call_site());
+        let args = v.fields.iter().map(|f| {
+            let field_name = f.0;
+            let field_type = f.1;
+            quote!(#field_name: #field_type)
+        });
+
+        quote!(fn #name(&mut self, step: &mut crate::procedure::ProcedureStep #(, #args)*) -> crate::Result<crate::procedure::Halt<#state_name>>;)
+    });
+
+    let maybe_impl_steps = state_variants
+        .is_empty()
+        .then(|| quote!(impl Steps for #command_name {}));
+
+    quote! {
+        trait StepsImplRequired: Steps {}
+
+        impl StepsImplRequired for #command_name {}
+        #maybe_impl_steps
+
+        trait Steps {
+            #(#step_fns)*
         }
     }
 }

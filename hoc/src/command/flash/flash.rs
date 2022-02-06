@@ -43,6 +43,6 @@ impl Flash {
 
         status!("Unmounting image disk" => cmd!("diskutil", "unmountDisk", disk_path).run()?);
 
-        Ok(Halt::transient_finish())
+        transient_finish!()
     }
 }

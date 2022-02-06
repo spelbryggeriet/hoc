@@ -4,35 +4,15 @@ use std::{
     net::Ipv4Addr,
 };
 
-use colored::Colorize;
-use hoclog::status;
 use lazy_regex::regex_captures;
 use serde::{Deserialize, Serialize};
 
-use crate::{command::util::ssh, Result};
-
-pub fn with_ssh_client<T>(
-    client: &mut Option<ssh::Client>,
-    creds: Creds,
-    f: impl FnOnce(&ssh::Client) -> Result<T>,
-) -> Result<T> {
-    if let Some(client) = client {
-        f(client)
-    } else {
-        let new_client = status!("Connecting to host {}", creds.host.blue() => {
-             ssh::Client::new(creds.host.to_string(), creds.username, creds.auth)?
-        });
-
-        let output = f(&new_client)?;
-        client.replace(new_client);
-        Ok(output)
-    }
-}
+use crate::command::util::ssh;
 
 pub struct Creds<'a> {
-    host: &'a str,
-    username: &'a str,
-    auth: ssh::Authentication<'a>,
+    pub host: &'a str,
+    pub username: &'a str,
+    pub auth: ssh::Authentication<'a>,
 }
 
 impl<'a> Creds<'a> {

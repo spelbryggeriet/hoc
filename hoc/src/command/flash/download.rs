@@ -57,8 +57,6 @@ impl Flash {
                 .log_err()?;
         });
 
-        Ok(Halt::persistent_yield(FlashState::Decompress {
-            archive_path,
-        }))
+        halt!(FlashState::Decompress { archive_path })
     }
 }
