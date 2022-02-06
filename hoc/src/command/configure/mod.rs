@@ -9,6 +9,12 @@ use crate::{
 
 mod util;
 
+cmd_template! {
+    adduser => "adduser", username;
+    arp => "arp", "-a";
+    usermod => "usermod", "-a", "-G", "adm,dialout,cdrom,sudo,audio,video,plugdev,games,users,input,netdev,gpio,i2c,spi", username;
+}
+
 procedure! {
     pub struct Configure {
         #[procedure(attribute)]
@@ -28,7 +34,7 @@ procedure! {
 impl Configure {
     fn get_host(&self, _step: &mut ProcedureStep) -> Result<Halt<ConfigureState>> {
         let local_endpoint = status!("Finding local endpoints" => {
-            let output = cmd!("arp", "-a").hide_output().run()?;
+            let output = arp!().hide_output().run()?;
             let (default_index, mut endpoints) = util::LocalEndpoint::parse_arp_output(&output, &self.node_name);
 
             let index = choose!(
@@ -57,7 +63,7 @@ impl Configure {
             &mut self.ssh_client,
             util::Creds::default(&host),
             |client| {
-                cmd!("adduser", new_username)
+                adduser!(new_username)
                     .ssh(&client)
                     .sudo()
                     .pipe_input([new_password.clone(), new_password])
@@ -82,16 +88,7 @@ impl Configure {
             &mut self.ssh_client,
             util::Creds::default(&host),
             |client| {
-                cmd!(
-                    "usermod",
-                    "-a",
-                    "-G",
-                    "adm,dialout,cdrom,sudo,audio,video,plugdev,games,users,input,netdev,gpio,i2c,spi",
-                    new_username,
-                )
-                .ssh(&client)
-                .sudo()
-                .run()?;
+                usermod!(new_username).ssh(&client).sudo().run()?;
                 Ok(())
             },
         )?;
