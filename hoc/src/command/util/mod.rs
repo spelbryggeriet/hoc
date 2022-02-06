@@ -42,6 +42,10 @@ macro_rules! cmd_template {
         cmd_template!(@impl $d, $name => [$($args,)*] => [$($cmd)* $d $arg,] => [$($idents)* $arg]);
     };
 
+    (@impl $d:tt, $name:ident => [($tmpl:literal $(, $arg:ident)* $(,)?), $($args:tt,)*] => [$($cmd:tt)*] => [$($idents:tt)*]) => {
+        cmd_template!(@impl $d, $name => [$($args,)*] => [$($cmd)* format!($tmpl, $( $d $arg,)*),] => [$($idents)* $($arg)*]);
+    };
+
     (@impl $d:tt, $name:ident => [] => [$($cmd:tt)*] => [$($idents:tt)*]) => {
         macro_rules! $name {
             ($($d $idents:expr),* $d (,)?) => {

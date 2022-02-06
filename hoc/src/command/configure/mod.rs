@@ -8,13 +8,13 @@ use crate::{
     Result,
 };
 
-mod util;
-
 cmd_template! {
     adduser => "adduser", username;
     arp => "arp", "-a";
     usermod => "usermod", "-a", "-G", "adm,dialout,cdrom,sudo,audio,video,plugdev,games,users,input,netdev,gpio,i2c,spi", username;
 }
+
+mod util;
 
 procedure! {
     pub struct Configure {

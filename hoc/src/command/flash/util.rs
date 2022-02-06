@@ -1,8 +1,34 @@
 use std::fmt::{self, Display, Formatter};
 
 use serde::Deserialize;
+use strum::EnumIter;
 
-use super::*;
+use crate::Result;
+
+#[derive(Clone, Copy, EnumIter, Eq, PartialEq)]
+pub enum Image {
+    Raspbian2021_05_07,
+}
+
+impl Display for Image {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        self.description().fmt(f)
+    }
+}
+
+impl Image {
+    pub const fn description(&self) -> &'static str {
+        match self {
+            Self::Raspbian2021_05_07 => "Raspbian (2021-05-07)",
+        }
+    }
+
+    pub const fn url(&self) -> &'static str {
+        match self {
+            Self::Raspbian2021_05_07 => "https://downloads.raspberrypi.org/raspios_lite_armhf/images/raspios_lite_armhf-2021-05-28/2021-05-07-raspios-buster-armhf-lite.zip",
+        }
+    }
+}
 
 #[derive(Deserialize)]
 #[serde(rename_all = "PascalCase")]
@@ -40,7 +66,7 @@ impl Display for AttachedDiskInfo {
 impl AttachedDiskInfo {
     pub fn description(&self) -> String {
         let mut desc = format!("{}: ", self.id);
-        desc += &util::unamed_if_empty(&self.name);
+        desc += &unnamed_if_empty(&self.name);
         if !self.partitions.is_empty() {
             desc += &format!(
                 " ({} partition{}: {})",
@@ -48,7 +74,7 @@ impl AttachedDiskInfo {
                 if self.partitions.len() == 1 { "" } else { "s" },
                 self.partitions
                     .iter()
-                    .map(|p| util::unamed_if_empty(&p.name))
+                    .map(|p| unnamed_if_empty(&p.name))
                     .collect::<Vec<_>>()
                     .join(", ")
             );
@@ -97,12 +123,9 @@ pub fn get_attached_disks<I: IntoIterator<Item = DiskType>>(
     let mut attached_disks_info = Vec::new();
 
     for disk_type in disk_types {
-        let stdout = cmd!("diskutil", "list", "-plist", "external", disk_type.as_ref())
-            .hide_output()
-            .run()?;
+        let stdout = diskutil_list!(disk_type.as_ref()).hide_output().run()?;
 
-        let output: DiskutilOutput = plist::from_bytes(stdout.as_bytes())
-            .log_context("Failed to parse output of 'diskutil'")?;
+        let output: DiskutilOutput = plist::from_bytes(stdout.as_bytes()).unwrap();
 
         attached_disks_info.extend(output.all_disks_and_partitions.into_iter().map(|mut d| {
             d.disk_type = disk_type;
@@ -113,7 +136,7 @@ pub fn get_attached_disks<I: IntoIterator<Item = DiskType>>(
     Ok(attached_disks_info)
 }
 
-pub fn unamed_if_empty<S: AsRef<str>>(name: S) -> String {
+pub fn unnamed_if_empty<S: AsRef<str>>(name: S) -> String {
     if name.as_ref().trim().is_empty() {
         "<unnamed>".to_owned()
     } else {

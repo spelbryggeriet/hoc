@@ -31,9 +31,9 @@ struct StateVariant<'a> {
     unit: bool,
 }
 
-#[derive(PartialEq, Eq)]
 enum CommandAttr {
     Attribute,
+    Rewind(Ident),
 }
 
 impl Parse for CommandAttr {
@@ -41,9 +41,21 @@ impl Parse for CommandAttr {
         let name: Ident = input.parse()?;
         let name_str = name.to_string();
 
-        match &*name_str {
-            "attribute" => Ok(Self::Attribute),
-            _ => abort!(name, "unexpected attribute: {}", name_str),
+        if input.peek(Token![=]) {
+            let assign_token = input.parse::<Token![=]>()?;
+
+            match input.parse::<Ident>() {
+                Ok(ident) => match &*name_str {
+                    "rewind" => Ok(Self::Rewind(ident)),
+                    _ => abort!(name, "unexpected attribute: {}", name_str),
+                },
+                Err(_) => abort!(assign_token, "expected `identifier` after `=`"),
+            }
+        } else {
+            match &*name_str {
+                "attribute" => Ok(Self::Attribute),
+                _ => abort!(name, "unexpected attribute: {}", name_str),
+            }
         }
     }
 }
@@ -183,11 +195,11 @@ fn impl_procedure(types: &ProcedureTypes) -> TokenStream {
     let impl_procedure = gen_impl_procedure(
         command_name,
         state_name,
+        &state_id_name,
         &procedure_desc,
         &types.command,
         &state_variants,
     );
-
     let impl_procedure_state = gen_impl_procedure_state(state_name, &state_id_name);
     let impl_procedure_state_id = gen_impl_procedure_state_id(&state_id_name, &state_variants);
     let impl_default = gen_impl_default(state_name, &state_variants);
@@ -218,6 +230,7 @@ fn impl_procedure(types: &ProcedureTypes) -> TokenStream {
 fn gen_impl_procedure(
     struct_name: &Ident,
     state_name: &Ident,
+    state_id_name: &Ident,
     procedure_desc: &str,
     command: &ItemStruct,
     state_variants: &[StateVariant],
@@ -238,6 +251,7 @@ fn gen_impl_procedure(
     };
 
     let get_attributes = gen_get_attributes(&command_fields);
+    let rewind_state = gen_rewind_state(&state_id_name, &command_fields, state_variants);
     let run = gen_run(state_name, &state_variants);
 
     quote! {
@@ -246,6 +260,7 @@ fn gen_impl_procedure(
             const NAME: &'static str = #procedure_desc;
 
             #get_attributes
+            #rewind_state
             #run
         }
     }
@@ -316,25 +331,73 @@ fn gen_impl_default(state_name: &Ident, state_variants: &[StateVariant]) -> Toke
     }
 }
 
-fn gen_get_attributes(fields: &[CommandField]) -> TokenStream {
-    let iter = fields
+fn gen_get_attributes(command_fields: &[CommandField]) -> TokenStream {
+    let mut insertions = command_fields
         .iter()
-        .filter(|f| f.attrs.contains(&CommandAttr::Attribute));
+        .filter(|f| f.attrs.iter().any(|a| matches!(a, CommandAttr::Attribute)))
+        .map(|f| {
+            let title = to_title_lower_case(f.ident.to_string());
+            let ident = f.ident;
+            quote!(variant.insert(#title.to_string(), self.#ident.clone().into());)
+        });
 
-    if iter.clone().next().is_none() {
+    let insertions = if let Some(insertion) = insertions.next() {
+        Some(insertion).into_iter().chain(insertions)
+    } else {
         return TokenStream::default();
-    }
-
-    let field_titles = iter
-        .clone()
-        .map(|f| to_title_lower_case(f.ident.to_string()));
-    let field_idents = iter.map(|f| f.ident);
+    };
 
     quote! {
         fn get_attributes(&self) -> crate::procedure::Attributes {
             let mut variant = crate::procedure::Attributes::new();
-            #(variant.insert(#field_titles.to_string(), self.#field_idents.clone().into());)*
+            #(#insertions)*
             variant
+        }
+    }
+}
+
+fn gen_rewind_state(
+    state_id_name: &Ident,
+    command_fields: &[CommandField],
+    state_variants: &[StateVariant],
+) -> TokenStream {
+    let mut rewinds: Vec<_> = command_fields
+        .iter()
+        .filter_map(|f| {
+            let rewind = f.attrs.iter().find_map(|a| {
+                if let CommandAttr::Rewind(rewind) = a {
+                    Some(rewind)
+                } else {
+                    None
+                }
+            })?;
+            let name = f.ident;
+            Some((rewind, name))
+        })
+        .collect();
+
+    if rewinds.is_empty() {
+        return TokenStream::default();
+    }
+
+    let state_id_order: Vec<_> = state_variants.iter().map(|v| v.ident).collect();
+
+    for (rewind, _) in &rewinds {
+        if !state_id_order.contains(rewind) {
+            abort!(rewind, "`{}` is not a valid state ID", rewind);
+        }
+    }
+
+    rewinds.sort_by_key(|(r, _)| state_id_order.iter().position(|i| i == r).unwrap());
+
+    let mut rewinds = rewinds
+        .into_iter()
+        .map(|(rewind, name)| quote!(self.#name.then(|| #state_id_name::#rewind)));
+    let first = rewinds.next().unwrap();
+
+    quote! {
+        fn rewind_state(&self) -> Option<<Self::State as crate::procedure::ProcedureState>::Id> {
+            #first #(.or_else(|| #rewinds))*
         }
     }
 }
