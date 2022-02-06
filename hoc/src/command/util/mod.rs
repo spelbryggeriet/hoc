@@ -163,18 +163,13 @@ impl<'ssh> Process<'ssh> {
         let show_stderr = !self.silent && !self.hide_stderr;
 
         let output = if !self.silent {
-            let args_iter = if self.sudo.is_some() {
-                self.args.iter().skip(2)
-            } else {
-                self.args.iter().skip(0)
-            };
-
             let sudo_str = if self.sudo.is_some() { "sudo " } else { "" };
             let command_string = format!(
                 "{}{} {}",
                 sudo_str.green(),
                 self.program.to_string_lossy().green(),
-                args_iter
+                self.args
+                    .iter()
                     .map(|a| a.to_string_lossy())
                     .collect::<Vec<_>>()
                     .join(" "),
@@ -186,14 +181,9 @@ impl<'ssh> Process<'ssh> {
                 "this computer".blue()
             };
 
-            if !self.hide_stdout || !self.hide_stderr {
-                status!("Running command on {}: {}", client, command_string => {
-                    self.exec(show_stdout, show_stderr)?
-                })
-            } else {
-                info!("Running command on {}: {}", client, command_string);
+            status!("Running command on {}: {}", client, command_string => {
                 self.exec(show_stdout, show_stderr)?
-            }
+            })
         } else {
             self.exec(show_stdout, show_stderr)?
         };

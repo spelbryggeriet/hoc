@@ -11,6 +11,7 @@ use crate::{
 cmd_template! {
     adduser => "adduser", username;
     arp => "arp", "-a";
+    tee => "tee", file;
     usermod => "usermod", "-a", "-G", "adm,dialout,cdrom,sudo,audio,video,plugdev,games,users,input,netdev,gpio,i2c,spi", username;
 }
 
@@ -29,6 +30,7 @@ procedure! {
         GetHost,
         AddNewUser { host: String },
         AddGroupsToNewUser { host: String, new_username: String },
+        AddSudoPasswordRequirement { host: String, new_username: String },
     }
 }
 
@@ -82,6 +84,25 @@ impl Steps for Configure {
             usermod!(new_username)
                 .ssh(&client)
                 .sudo()
+                .run()
+                .map_err(Into::into)
+        })?;
+
+        halt!(AddSudoPasswordRequirement { host, new_username })
+    }
+
+    fn add_sudo_password_requirement(
+        &mut self,
+        _step: &mut ProcedureStep,
+        host: String,
+        new_username: String,
+    ) -> Result<Halt<ConfigureState>> {
+        self.with_ssh_client(util::Creds::default(&host), |client| {
+            tee!("/etc/sudoers.d/010_pi-nopasswd")
+                .ssh(&client)
+                .sudo()
+                .pipe_input([format!("{new_username} ALL=(ALL) PASSWD: ALL")])
+                .hide_output()
                 .run()
                 .map_err(Into::into)
         })?;
