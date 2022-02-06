@@ -31,16 +31,6 @@ impl Client {
         Ok(Self { host, session })
     }
 
-    pub fn reconnect(&mut self, username: &str, auth: Authentication) -> Result<()> {
-        self.session = Self::create_session(&self.host, username, auth)?;
-
-        Ok(())
-    }
-
-    pub fn host(&self) -> &str {
-        &self.host
-    }
-
     fn create_session(host: &str, username: &str, auth: Authentication) -> Result<ssh2::Session> {
         let port = 22;
         let stream = TcpStream::connect(format!("{}:{}", host, port))?;
@@ -62,6 +52,10 @@ impl Client {
         }
 
         Ok(session)
+    }
+
+    pub fn host(&self) -> &str {
+        &self.host
     }
 
     pub fn spawn<S, B>(&self, cmd: &S, pipe_input: Option<&[B]>) -> Result<ssh2::Channel>
@@ -106,10 +100,10 @@ impl ProcessOutput for ssh2::Channel {
     }
 }
 
-pub enum Authentication<'a, 'b> {
+pub enum Authentication<'a> {
     Password(&'a str),
     KeyBased {
         pub_key: &'a Path,
-        priv_key: &'b Path,
+        priv_key: &'a Path,
     },
 }

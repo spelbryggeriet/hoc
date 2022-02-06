@@ -1,0 +1,354 @@
+use heck::{ToKebabCase, ToSnakeCase, ToTitleCase};
+use proc_macro2::{Span, TokenStream};
+use proc_macro_error::{abort, proc_macro_error, set_dummy, ResultExt};
+use quote::quote;
+use syn::{
+    parse::{Parse, ParseStream},
+    punctuated::Punctuated,
+    *,
+};
+
+fn to_title_lower_case<S: AsRef<str>>(s: S) -> String {
+    let uppercase_title = s.as_ref().to_title_case();
+    let mut title = String::with_capacity(uppercase_title.capacity());
+    let mut iter = uppercase_title.split(' ');
+    title += iter.next().unwrap_or_default();
+    for word in iter {
+        title += " ";
+        title += &word.to_lowercase();
+    }
+    title
+}
+
+struct CommandField<'a> {
+    ident: &'a Ident,
+    attrs: Vec<CommandAttr>,
+}
+
+struct StateVariant<'a> {
+    ident: &'a Ident,
+    fields: Vec<&'a Field>,
+    unit: bool,
+}
+
+#[derive(PartialEq, Eq)]
+enum CommandAttr {
+    Attribute,
+}
+
+impl Parse for CommandAttr {
+    fn parse(input: ParseStream) -> syn::Result<Self> {
+        let name: Ident = input.parse()?;
+        let name_str = name.to_string();
+
+        match &*name_str {
+            "attribute" => Ok(Self::Attribute),
+            _ => abort!(name, "unexpected attribute: {}", name_str),
+        }
+    }
+}
+
+struct ProcedureTypes {
+    command: ItemStruct,
+    state: ItemEnum,
+}
+
+impl Parse for ProcedureTypes {
+    fn parse(input: ParseStream) -> Result<Self> {
+        Ok(Self {
+            command: input.parse()?,
+            state: input.parse()?,
+        })
+    }
+}
+
+#[proc_macro_error]
+#[proc_macro]
+pub fn procedure(item: proc_macro::TokenStream) -> proc_macro::TokenStream {
+    let types = parse_macro_input!(item as ProcedureTypes);
+    let gen = impl_procedure(&types);
+    gen.into()
+}
+
+fn parse_command_attributes(attrs: &[Attribute]) -> Vec<CommandAttr> {
+    attrs
+        .iter()
+        .filter(|a| a.path.is_ident("procedure"))
+        .flat_map(|a| {
+            a.parse_args_with(Punctuated::<CommandAttr, Token![,]>::parse_terminated)
+                .unwrap_or_abort()
+        })
+        .collect()
+}
+
+fn parse_state_variant(variant: &Variant) -> StateVariant {
+    match variant {
+        Variant {
+            discriminant: None,
+            fields: Fields::Named(ref fields),
+            ..
+        } => StateVariant {
+            ident: &variant.ident,
+            fields: fields.named.iter().collect(),
+            unit: false,
+        },
+        Variant {
+            discriminant: None,
+            fields: Fields::Unit,
+            ..
+        } => StateVariant {
+            ident: &variant.ident,
+            fields: Vec::new(),
+            unit: true,
+        },
+        Variant {
+            discriminant: Some((_eq, ref dis)),
+            ..
+        } => abort!(dis, "discriminants not supported"),
+        _ => abort!(
+            variant,
+            "procedure only supports non-tuple variants as state"
+        ),
+    }
+}
+
+fn impl_procedure(types: &ProcedureTypes) -> TokenStream {
+    let mut stripped_command = types.command.clone();
+    let command = &types.command;
+    let state = &types.state;
+
+    let struct_name = &command.ident;
+    let state_name = &state.ident;
+    let state_id_name = Ident::new(&format!("{}Id", state_name), Span::call_site());
+    let procedure_desc = struct_name.to_string().to_kebab_case();
+
+    for field in stripped_command.fields.iter_mut() {
+        field.attrs.retain(|a| !a.path.is_ident("procedure"));
+    }
+
+    set_dummy(quote! {
+        #[derive(::structopt::StructOpt)]
+        #stripped_command
+
+        impl crate::procedure::Procedure for #struct_name {
+            type State = #state_name;
+            const NAME: &'static str = #procedure_desc;
+
+            fn run(&mut self, _step: &mut crate::procedure::ProcedureStep) -> crate::Result<crate::procedure::Halt<Self::State>> {
+                unreachable!()
+            }
+        }
+
+        #[derive(Debug, ::serde::Serialize, ::serde::Deserialize, ::strum::EnumDiscriminants)]
+        #[strum_discriminants(derive(Hash, PartialOrd, Ord, ::strum::EnumString, ::strum::IntoStaticStr))]
+        #[strum_discriminants(name(#state_id_name))]
+        #state
+
+        impl crate::procedure::ProcedureState for #state_name {
+            type Id = #state_id_name;
+
+            fn id(&self) -> Self::Id {
+                unreachable!()
+            }
+        }
+
+        impl crate::procedure::ProcedureStateId for #state_id_name {
+            type DeserializeError = ::strum::ParseError;
+
+            fn description(&self) -> &'static str {
+                unreachable!()
+            }
+        }
+
+        impl Default for #state_name {
+            fn default() -> Self {
+                unreachable!()
+            }
+        }
+    });
+
+    let state_variants: Vec<_> = types
+        .state
+        .variants
+        .iter()
+        .map(parse_state_variant)
+        .collect();
+
+    let impl_procedure = gen_impl_procedure(
+        struct_name,
+        state_name,
+        &procedure_desc,
+        &types.command,
+        &state_variants,
+    );
+
+    let impl_procedure_state = gen_impl_procedure_state(state_name, &state_id_name);
+    let impl_procedure_state_id = gen_impl_procedure_state_id(&state_id_name, &state_variants);
+    let impl_default = gen_impl_default(state_name, &state_variants);
+
+    quote! {
+        #[derive(::structopt::StructOpt)]
+        #stripped_command
+
+        #impl_procedure
+
+        #[derive(Debug, ::serde::Serialize, ::serde::Deserialize, ::strum::EnumDiscriminants)]
+        #[strum_discriminants(derive(Hash, PartialOrd, Ord, ::strum::EnumString, ::strum::IntoStaticStr))]
+        #[strum_discriminants(name(#state_id_name))]
+        #state
+
+        #impl_procedure_state
+        #impl_procedure_state_id
+        #impl_default
+    }
+}
+
+fn gen_impl_procedure(
+    struct_name: &Ident,
+    state_name: &Ident,
+    procedure_desc: &str,
+    command: &ItemStruct,
+    state_variants: &[StateVariant],
+) -> TokenStream {
+    let command_fields: Vec<_> = match &command.fields {
+        Fields::Named(ref fields) => fields
+            .named
+            .iter()
+            .map(|f| CommandField {
+                ident: f.ident.as_ref().unwrap(),
+                attrs: parse_command_attributes(&f.attrs),
+            })
+            .collect(),
+        _ => abort!(
+            command,
+            "procedure only supports non-tuple structs as commands"
+        ),
+    };
+
+    let get_attributes = gen_get_attributes(&command_fields);
+    let run = gen_run(state_name, &state_variants);
+
+    quote! {
+        impl crate::procedure::Procedure for #struct_name {
+            type State = #state_name;
+            const NAME: &'static str = #procedure_desc;
+
+            #get_attributes
+            #run
+        }
+    }
+}
+
+fn gen_impl_procedure_state(state_name: &Ident, state_id_name: &Ident) -> TokenStream {
+    quote! {
+        impl crate::procedure::ProcedureState for #state_name {
+            type Id = #state_id_name;
+
+            fn id(&self) -> Self::Id {
+                self.into()
+            }
+        }
+    }
+}
+
+fn gen_impl_procedure_state_id(
+    state_id_name: &Ident,
+    state_variants: &[StateVariant],
+) -> TokenStream {
+    let cases = state_variants.iter().map(|v| {
+        let name = v.ident;
+        let desc = to_title_lower_case(v.ident.to_string());
+        quote!(Self::#name => #desc,)
+    });
+
+    quote! {
+        impl crate::procedure::ProcedureStateId for #state_id_name {
+            type DeserializeError = ::strum::ParseError;
+
+            fn description(&self) -> &'static str {
+                match self {
+                    #(#cases)*
+                }
+            }
+
+        }
+    }
+}
+
+fn gen_impl_default(state_name: &Ident, state_variants: &[StateVariant]) -> TokenStream {
+    let default_state_variant = state_variants.get(0).map_or_else(
+        || quote!(unreachable!()),
+        |v| {
+            let name = v.ident;
+            if v.unit {
+                quote!(Self::#name)
+            } else {
+                let fields = v.fields.iter().map(|f| {
+                    let field_name = &f.ident;
+                    quote!(#field_name: Default::default())
+                });
+                quote!({ #(#fields),* })
+            }
+        },
+    );
+
+    quote! {
+        impl Default for #state_name {
+            fn default() -> Self {
+                #default_state_variant
+            }
+        }
+    }
+}
+
+fn gen_get_attributes(fields: &[CommandField]) -> TokenStream {
+    let iter = fields
+        .iter()
+        .filter(|f| f.attrs.contains(&CommandAttr::Attribute));
+
+    if iter.clone().next().is_none() {
+        return TokenStream::default();
+    }
+
+    let field_titles = iter
+        .clone()
+        .map(|f| to_title_lower_case(f.ident.to_string()));
+    let field_idents = iter.map(|f| f.ident);
+
+    quote! {
+        fn get_attributes(&self) -> crate::procedure::Attributes {
+            let mut variant = crate::procedure::Attributes::new();
+            #(variant.insert(#field_titles.to_string(), self.#field_idents.clone().into());)*
+            variant
+        }
+    }
+}
+
+fn gen_run(state_name: &Ident, variants: &[StateVariant]) -> TokenStream {
+    let variant_patterns = variants.iter().map(|v| {
+        let variant_name = v.ident;
+        let field_names = v.fields.iter().map(|f| &f.ident);
+
+        if v.unit {
+            quote!(#state_name::#variant_name)
+        } else {
+            quote!(#state_name::#variant_name { #(#field_names),* })
+        }
+    });
+
+    let calls = variants.iter().map(|v| {
+        let name = Ident::new(&v.ident.to_string().to_snake_case(), Span::call_site());
+        let args = v.fields.iter().map(|f| &f.ident);
+        quote!(self.#name(step, #(#args),*)?)
+    });
+
+    quote! {
+        fn run(&mut self, step: &mut crate::procedure::ProcedureStep) -> crate::Result<crate::procedure::Halt<Self::State>> {
+            let halt = match step.state()? {
+                #(#variant_patterns => #calls,)*
+            };
+
+            Ok(halt)
+        }
+    }
+}

@@ -1,76 +1,101 @@
-use std::net::Ipv4Addr;
-
-use hoclog::{choose, hidden_input, status};
-use serde::{Deserialize, Serialize};
-use structopt::StructOpt;
-use strum::{EnumDiscriminants, EnumString, IntoStaticStr};
+use hoclog::{choose, hidden_input, input, status};
+use hocproc::procedure;
 
 use crate::{
-    command::util::ssh::Client,
-    procedure::{Attributes, Halt, Procedure, ProcedureState, ProcedureStateId, ProcedureStep},
+    command::util::ssh,
+    procedure::{Halt, ProcedureStep},
     Result,
 };
 
-mod change_default_user;
-mod get_host;
+mod util;
 
-#[derive(StructOpt)]
-pub struct Configure {
-    node_name: String,
+procedure! {
+    pub struct Configure {
+        #[procedure(attribute)]
+        node_name: String,
 
-    #[structopt(skip)]
-    ssh_client: Option<Client>,
-}
-
-#[derive(Debug, Serialize, Deserialize, EnumDiscriminants)]
-#[strum_discriminants(derive(Hash, PartialOrd, Ord, EnumString, IntoStaticStr))]
-#[strum_discriminants(name(ConfigureStateId))]
-pub enum ConfigureState {
-    GetHost,
-    ChangeDefaultUser { host: String },
-}
-
-impl Procedure for Configure {
-    type State = ConfigureState;
-    const NAME: &'static str = "configure";
-
-    fn get_attributes(&self) -> Attributes {
-        let mut variant = Attributes::new();
-        variant.insert("Node name".to_string(), self.node_name.clone().into());
-        variant
+        #[structopt(skip)]
+        ssh_client: Option<ssh::Client>,
     }
 
-    fn run(&mut self, step: &mut ProcedureStep) -> Result<Halt<ConfigureState>> {
-        let halt = match step.state()? {
-            ConfigureState::GetHost => self.get_host(step)?,
-            ConfigureState::ChangeDefaultUser { host } => self.change_default_user(step, host)?,
-        };
-
-        Ok(halt)
+    pub enum ConfigureState {
+        GetHost,
+        AddNewUser { host: String },
+        AddGroupsToNewUser { host: String, new_username: String },
     }
 }
 
-impl ProcedureStateId for ConfigureStateId {
-    type DeserializeError = strum::ParseError;
+impl Configure {
+    fn get_host(&self, _step: &mut ProcedureStep) -> Result<Halt<ConfigureState>> {
+        let local_endpoint = status!("Finding local endpoints" => {
+            let output = cmd!("arp", "-a").hide_output().run()?;
+            let (default_index, mut endpoints) = util::LocalEndpoint::parse_arp_output(&output, &self.node_name);
 
-    fn description(&self) -> &'static str {
-        match self {
-            Self::GetHost => "Get host",
-            Self::ChangeDefaultUser => "Change default user",
-        }
+            let index = choose!(
+                "Which endpoint do you want to configure?",
+                items = &endpoints,
+                default_index = default_index,
+            )?;
+
+            endpoints.remove(index)
+        });
+
+        Ok(Halt::persistent_yield(ConfigureState::AddNewUser {
+            host: local_endpoint.host().into_owned(),
+        }))
     }
-}
 
-impl Default for ConfigureState {
-    fn default() -> Self {
-        ConfigureState::GetHost
+    fn add_new_user(
+        &mut self,
+        _step: &mut ProcedureStep,
+        host: String,
+    ) -> Result<Halt<ConfigureState>> {
+        let new_username = input!("Choose a new username");
+        let new_password = hidden_input!("Choose a new password").verify().get()?;
+
+        util::with_ssh_client(
+            &mut self.ssh_client,
+            util::Creds::default(&host),
+            |client| {
+                cmd!("adduser", new_username)
+                    .ssh(&client)
+                    .sudo()
+                    .pipe_input([new_password.clone(), new_password])
+                    .run()?;
+                Ok(())
+            },
+        )?;
+
+        Ok(Halt::persistent_yield(ConfigureState::AddGroupsToNewUser {
+            host,
+            new_username,
+        }))
     }
-}
 
-impl ProcedureState for ConfigureState {
-    type Id = ConfigureStateId;
+    fn add_groups_to_new_user(
+        &mut self,
+        _step: &mut ProcedureStep,
+        host: String,
+        new_username: String,
+    ) -> Result<Halt<ConfigureState>> {
+        util::with_ssh_client(
+            &mut self.ssh_client,
+            util::Creds::default(&host),
+            |client| {
+                cmd!(
+                    "usermod",
+                    "-a",
+                    "-G",
+                    "adm,dialout,cdrom,sudo,audio,video,plugdev,games,users,input,netdev,gpio,i2c,spi",
+                    new_username,
+                )
+                .ssh(&client)
+                .sudo()
+                .run()?;
+                Ok(())
+            },
+        )?;
 
-    fn id(&self) -> Self::Id {
-        self.into()
+        Ok(Halt::persistent_finish())
     }
 }
