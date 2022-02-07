@@ -148,11 +148,11 @@ fn impl_procedure(types: &ProcedureTypes) -> TokenStream {
         #[derive(::structopt::StructOpt)]
         #stripped_command
 
-        impl crate::procedure::Procedure for #command_name {
+        impl ::hoclib::Procedure for #command_name {
             type State = #state_name;
             const NAME: &'static str = #procedure_desc;
 
-            fn run(&mut self, _step: &mut crate::procedure::ProcedureStep) -> crate::Result<crate::procedure::Halt<Self::State>> {
+            fn run(&mut self, _step: &mut ::hoclib::ProcedureStep) -> ::hoclog::Result<::hoclib::Halt<Self::State>> {
                 unreachable!()
             }
         }
@@ -162,7 +162,7 @@ fn impl_procedure(types: &ProcedureTypes) -> TokenStream {
         #[strum_discriminants(name(#state_id_name))]
         #state
 
-        impl crate::procedure::ProcedureState for #state_name {
+        impl ::hoclib::ProcedureState for #state_name {
             type Id = #state_id_name;
 
             fn id(&self) -> Self::Id {
@@ -170,7 +170,7 @@ fn impl_procedure(types: &ProcedureTypes) -> TokenStream {
             }
         }
 
-        impl crate::procedure::ProcedureStateId for #state_id_name {
+        impl ::hoclib::ProcedureStateId for #state_id_name {
             type DeserializeError = ::strum::ParseError;
 
             fn description(&self) -> &'static str {
@@ -255,7 +255,7 @@ fn gen_impl_procedure(
     let run = gen_run(state_name, &state_variants);
 
     quote! {
-        impl crate::procedure::Procedure for #struct_name {
+        impl ::hoclib::Procedure for #struct_name {
             type State = #state_name;
             const NAME: &'static str = #procedure_desc;
 
@@ -268,7 +268,7 @@ fn gen_impl_procedure(
 
 fn gen_impl_procedure_state(state_name: &Ident, state_id_name: &Ident) -> TokenStream {
     quote! {
-        impl crate::procedure::ProcedureState for #state_name {
+        impl ::hoclib::ProcedureState for #state_name {
             type Id = #state_id_name;
 
             fn id(&self) -> Self::Id {
@@ -294,7 +294,7 @@ fn gen_impl_procedure_state_id(
         .or_else(|| Some(quote!(match self { #(#cases)* })));
 
     quote! {
-        impl crate::procedure::ProcedureStateId for #state_id_name {
+        impl ::hoclib::ProcedureStateId for #state_id_name {
             type DeserializeError = ::strum::ParseError;
 
             fn description(&self) -> &'static str {
@@ -348,8 +348,8 @@ fn gen_get_attributes(command_fields: &[CommandField]) -> TokenStream {
     };
 
     quote! {
-        fn get_attributes(&self) -> crate::procedure::Attributes {
-            let mut variant = crate::procedure::Attributes::new();
+        fn get_attributes(&self) -> ::hoclib::Attributes {
+            let mut variant = ::hoclib::Attributes::new();
             #(#insertions)*
             variant
         }
@@ -396,7 +396,7 @@ fn gen_rewind_state(
     let first = rewinds.next().unwrap();
 
     quote! {
-        fn rewind_state(&self) -> Option<<Self::State as crate::procedure::ProcedureState>::Id> {
+        fn rewind_state(&self) -> Option<<Self::State as ::hoclib::ProcedureState>::Id> {
             #first #(.or_else(|| #rewinds))*
         }
     }
@@ -417,20 +417,21 @@ fn gen_run(state_name: &Ident, state_variants: &[StateVariant]) -> TokenStream {
     let calls = state_variants.iter().map(|v| {
         let name = Ident::new(&v.ident.to_string().to_snake_case(), Span::call_site());
         let args = v.fields.iter().map(|f| &f.0);
-        quote!(self.#name(step, #(#args),*)?)
+        quote!(self.#name(step, #(#args),*))
     });
 
     let match_switch = state_variants
         .is_empty()
         .then(|| quote!(unreachable!()))
-        .or_else(|| Some(quote!(match step.state()? { #(#variant_patterns => #calls,)* })));
+        .or_else(|| {
+            Some(quote!(match step.state().log_err()? { #(#variant_patterns => #calls,)* }))
+        });
 
     quote! {
         #[allow(unreachable_code)]
-        fn run(&mut self, step: &mut crate::procedure::ProcedureStep) -> crate::Result<crate::procedure::Halt<Self::State>> {
-            let halt = #match_switch;
-
-            Ok(halt)
+        fn run(&mut self, step: &mut ::hoclib::ProcedureStep) -> ::hoclog::Result<::hoclib::Halt<Self::State>> {
+            use ::hoclog::LogErr;
+            #match_switch.log_err()
         }
     }
 }
@@ -448,7 +449,7 @@ fn gen_steps_trait(
             quote!(#field_name: #field_type)
         });
 
-        quote!(fn #name(&mut self, step: &mut crate::procedure::ProcedureStep #(, #args)*) -> crate::Result<crate::procedure::Halt<#state_name>>;)
+        quote!(fn #name(&mut self, step: &mut ::hoclib::ProcedureStep #(, #args)*) -> ::hoclog::Result<::hoclib::Halt<#state_name>>;)
     });
 
     let maybe_impl_steps = state_variants

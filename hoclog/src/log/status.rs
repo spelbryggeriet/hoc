@@ -22,7 +22,6 @@ impl Status {
         self
     }
 }
-
 impl Drop for Status {
     fn drop(&mut self) {
         let mut print_context = self.print_context.lock().unwrap();

@@ -360,6 +360,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "hoclib"
+version = "0.1.0"
+dependencies = [
+ "colored",
+ "ctrlc",
+ "hoclog",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "ssh2",
+ "strum",
+ "thiserror",
+]
+
+[[package]]
 name = "hoclog"
 version = "0.1.0"
 dependencies = [
@@ -387,6 +403,7 @@ version = "0.1.0"
 dependencies = [
  "colored",
  "ctrlc",
+ "hoclib",
  "hoclog",
  "hocproc",
  "lazy-regex",
@@ -396,7 +413,6 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml",
- "ssh2",
  "structopt",
  "strum",
  "tempfile",

@@ -10,8 +10,9 @@ use std::{
 use serde::{Deserialize, Serialize};
 
 use crate::{
+    error::Error,
     procedure::{Attributes, ProcedureState, ProcedureStep},
-    Error, Result,
+    Result,
 };
 
 pub mod dir_state;

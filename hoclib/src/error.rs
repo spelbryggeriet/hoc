@@ -2,9 +2,8 @@ use std::{env::VarError, io};
 
 use thiserror::Error;
 
-use crate::command;
-use crate::command::util::ssh;
 use crate::context::{dir_state, Context};
+use crate::process::{self, ssh};
 
 fn get_context_display_text() -> String {
     Context::get_context_dir()
@@ -45,16 +44,13 @@ pub enum Error {
     DirState(#[from] dir_state::PathError),
 
     #[error(transparent)]
-    LogError(#[from] hoclog::Error),
-
-    #[error(transparent)]
     Io(#[from] io::Error),
 
     #[error(transparent)]
     DirectoryStateError(#[from] dir_state::DirectoryStateError),
 
     #[error("process failed: {0}")]
-    Process(#[from] command::util::ProcessError),
+    Process(#[from] process::ProcessError),
 
     #[error("ssh: {0}")]
     Ssh(#[from] ssh::Error),

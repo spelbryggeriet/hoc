@@ -9,29 +9,32 @@ use serde_json::Value;
 
 use crate::{context::dir_state::DirectoryState, error::Error, Result};
 
+#[macro_export]
 macro_rules! halt {
     ($state:expr) => {
-        Ok(crate::procedure::Halt {
+        Ok(::hoclib::Halt {
             persist: true,
-            state: crate::procedure::HaltState::Halt($state),
+            state: ::hoclib::HaltState::Halt($state),
         })
     };
 }
 
+#[macro_export]
 macro_rules! finish {
     () => {
-        Ok(crate::procedure::Halt {
+        Ok(::hoclib::Halt {
             persist: true,
-            state: crate::procedure::HaltState::Finish,
+            state: ::hoclib::HaltState::Finish,
         })
     };
 }
 
+#[macro_export]
 macro_rules! transient_finish {
     () => {
-        Ok(crate::procedure::Halt {
+        Ok(::hoclib::Halt {
             persist: false,
-            state: crate::procedure::HaltState::Finish,
+            state: ::hoclib::HaltState::Finish,
         })
     };
 }
@@ -61,7 +64,7 @@ pub trait Procedure {
         None
     }
 
-    fn run(&mut self, step: &mut ProcedureStep) -> Result<Halt<Self::State>>;
+    fn run(&mut self, step: &mut ProcedureStep) -> hoclog::Result<Halt<Self::State>>;
 }
 
 pub trait ProcedureStateId:

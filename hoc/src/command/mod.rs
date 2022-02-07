@@ -3,9 +3,6 @@ use structopt::StructOpt;
 use configure::Configure;
 use flash::Flash;
 
-#[macro_use]
-pub mod util;
-
 mod configure;
 mod flash;
 

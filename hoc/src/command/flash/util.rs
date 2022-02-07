@@ -1,9 +1,8 @@
 use std::fmt::{self, Display, Formatter};
 
+use hoclog::LogErr;
 use serde::Deserialize;
 use strum::EnumIter;
-
-use crate::Result;
 
 #[derive(Clone, Copy, EnumIter, Eq, PartialEq)]
 pub enum Image {
@@ -119,11 +118,14 @@ fn physical_disk_type() -> DiskType {
 
 pub fn get_attached_disks<I: IntoIterator<Item = DiskType>>(
     disk_types: I,
-) -> Result<Vec<AttachedDiskInfo>> {
+) -> hoclog::Result<Vec<AttachedDiskInfo>> {
     let mut attached_disks_info = Vec::new();
 
     for disk_type in disk_types {
-        let stdout = diskutil_list!(disk_type.as_ref()).hide_output().run()?;
+        let stdout = diskutil_list!(disk_type.as_ref())
+            .hide_output()
+            .run()
+            .log_err()?;
 
         let output: DiskutilOutput = plist::from_bytes(stdout.as_bytes()).unwrap();
 

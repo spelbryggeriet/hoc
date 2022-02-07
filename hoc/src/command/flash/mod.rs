@@ -9,10 +9,7 @@ use strum::IntoEnumIterator;
 use tempfile::TempDir;
 use zip::ZipArchive;
 
-use crate::{
-    procedure::{Halt, ProcedureStep},
-    Result,
-};
+use hoclib::{cmd_template, halt, transient_finish, Halt, ProcedureStep};
 use hoclog::{bail, choose, info, prompt, status, LogErr};
 
 cmd_template! {
@@ -46,7 +43,7 @@ impl Steps for Flash {
     fn download_operating_system_image(
         &mut self,
         step: &mut ProcedureStep,
-    ) -> Result<Halt<FlashState>> {
+    ) -> hoclog::Result<Halt<FlashState>> {
         let mut images: Vec<_> = util::Image::iter().collect();
         let index = choose!("Which image do you want to use?", items = &images)?;
 
@@ -56,13 +53,13 @@ impl Steps for Flash {
 
         let archive_path = PathBuf::from("image");
         status!("Downloading image" => {
-            let image_real_path = step.register_file(&archive_path)?;
+            let image_real_path = step.register_file(&archive_path).log_err()?;
             let mut file = File::options()
                 .read(false)
                 .write(true)
-                .open(image_real_path)?;
+                .open(image_real_path).log_err()?;
 
-            reqwest::blocking::get(image.url())?.copy_to(&mut file)?;
+            reqwest::blocking::get(image.url()).log_err()?.copy_to(&mut file).log_err()?;
         });
 
         halt!(DecompressImageArchive { archive_path })
@@ -72,13 +69,13 @@ impl Steps for Flash {
         &mut self,
         step: &mut ProcedureStep,
         archive_path: PathBuf,
-    ) -> Result<Halt<FlashState>> {
+    ) -> hoclog::Result<Halt<FlashState>> {
         let (archive_data, mut archive_file) = status!("Reading archive" => {
-            let archive_real_path = step.register_file(&archive_path)?;
+            let archive_real_path = step.register_file(&archive_path).log_err()?;
             let file = File::options()
                 .read(true)
                 .write(true)
-                .open(&archive_real_path)?;
+                .open(&archive_real_path).log_err()?;
 
             let mut archive = ZipArchive::new(&file).log_err()?;
 
@@ -111,7 +108,7 @@ impl Steps for Flash {
         });
 
         status!("Save decompressed image to file" => {
-            archive_file.write(&archive_data)?;
+            archive_file.write(&archive_data).log_err()?;
         });
 
         halt!(ModifyImage {
@@ -123,10 +120,10 @@ impl Steps for Flash {
         &mut self,
         step: &mut ProcedureStep,
         image_path: PathBuf,
-    ) -> Result<Halt<FlashState>> {
-        let image_real_path = step.register_file(&image_path)?;
+    ) -> hoclog::Result<Halt<FlashState>> {
+        let image_real_path = step.register_file(&image_path).log_err()?;
 
-        status!("Attaching image as disk" => hdiutil_attach!(image_real_path).run()?);
+        status!("Attaching image as disk" => hdiutil_attach!(image_real_path).run().log_err()?);
 
         let disk_id = status!("Find attached disk" => {
             let mut attached_disks_info: Vec<_> =
@@ -154,19 +151,19 @@ impl Steps for Flash {
 
         let mount_dir = status!("Mounting image disk" => {
             let mount_dir = TempDir::new().log_err()?;
-            diskutil_mount!(mount_dir.as_ref(), &dev_disk_id).run()?;
+            diskutil_mount!(mount_dir.as_ref(), &dev_disk_id).run().log_err()?;
             mount_dir
         });
 
         status!("Configure image" => {
             status!("Creating SSH file"=> {
-                File::create(mount_dir.as_ref().join("ssh"))?;
+                File::create(mount_dir.as_ref().join("ssh")).log_err()?;
             });
         });
 
-        status!("Syncing image disk writes" => sync!().run()?);
-        status!("Unmounting image disk" => diskutil_unmount_disk!(dev_disk_id).run()?);
-        status!("Detaching image disk" => hdiutil_detach!(dev_disk_id).run()?);
+        status!("Syncing image disk writes" => sync!().run().log_err()?);
+        status!("Unmounting image disk" => diskutil_unmount_disk!(dev_disk_id).run().log_err()?);
+        status!("Detaching image disk" => hdiutil_detach!(dev_disk_id).run().log_err()?);
 
         halt!(FlashImage { image_path })
     }
@@ -175,7 +172,7 @@ impl Steps for Flash {
         &mut self,
         step: &mut ProcedureStep,
         image_path: PathBuf,
-    ) -> Result<Halt<FlashState>> {
+    ) -> hoclog::Result<Halt<FlashState>> {
         let disk_id = status!("Find mounted SD card" => {
             let mut physical_disk_infos: Vec<_> =
                 util::get_attached_disks([util::DiskType::Physical])
@@ -187,9 +184,9 @@ impl Steps for Flash {
 
         let disk_path = PathBuf::from(format!("/dev/{}", disk_id));
 
-        status!("Unmounting SD card" => diskutil_unmount_disk!(disk_path).run()?);
+        status!("Unmounting SD card" => diskutil_unmount_disk!(disk_path).run().log_err()?);
 
-        let image_real_path = step.register_file(&image_path)?;
+        let image_real_path = step.register_file(&image_path).log_err()?;
 
         status!("Flashing SD card" => {
             prompt!("Do you want to flash target disk '{}'?", disk_id)?;
@@ -199,7 +196,7 @@ impl Steps for Flash {
                 format!("/dev/r{}", disk_id),
             )
             .sudo()
-            .run()?;
+            .run().log_err()?;
 
             info!(
                 "Image '{}' flashed to target disk '{}'",
@@ -208,7 +205,7 @@ impl Steps for Flash {
             );
         });
 
-        status!("Unmounting image disk" => diskutil_unmount_disk!(disk_path).run()?);
+        status!("Unmounting image disk" => diskutil_unmount_disk!(disk_path).run().log_err()?);
 
         transient_finish!()
     }

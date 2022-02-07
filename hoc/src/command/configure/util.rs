@@ -4,10 +4,9 @@ use std::{
     net::Ipv4Addr,
 };
 
+use hoclib::ssh;
 use lazy_regex::regex_captures;
 use serde::{Deserialize, Serialize};
-
-use crate::command::util::ssh;
 
 pub struct Creds<'a> {
     pub host: &'a str,

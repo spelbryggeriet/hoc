@@ -8,11 +8,13 @@ use std::{
 };
 
 use colored::Colorize;
-use hoclog::{error, info, status};
+use hoclog::{info, status};
 use thiserror::Error;
 
 use crate::StdResult;
 
+#[doc(hidden)]
+#[macro_export]
 macro_rules! _with_dollar_sign {
     ($($body:tt)*) => {
         macro_rules! __with_dollar_sign { $($body)* }
@@ -20,36 +22,38 @@ macro_rules! _with_dollar_sign {
     }
 }
 
+#[macro_export]
 macro_rules! cmd {
     ($program:expr $(, $args:expr)* $(,)?) => {
-        $crate::command::util::Process::cmd($program)
+        $crate::Process::cmd($program)
             $(.arg(&($args)))*
     };
 }
 
+#[macro_export]
 macro_rules! cmd_template {
     ($($name:ident => $program:literal $(, $args:tt)* $(,)?);* $(;)?) => {
-        _with_dollar_sign!(($d:tt) => {
+        $crate::_with_dollar_sign!(($d:tt) => {
             $(cmd_template!(@impl $d, $name => [$($args,)*] => [$program,] => []);)*
         });
     };
 
     (@impl $d:tt, $name:ident => [$arg:literal, $($args:tt,)*] => [$($cmd:tt)*] => [$($idents:tt)*]) => {
-        cmd_template!(@impl $d, $name => [$($args,)*] => [$($cmd)* $arg,] => [$($idents)*]);
+        $crate::cmd_template!(@impl $d, $name => [$($args,)*] => [$($cmd)* $arg,] => [$($idents)*]);
     };
 
     (@impl $d:tt, $name:ident => [$arg:ident, $($args:tt,)*] => [$($cmd:tt)*] => [$($idents:tt)*]) => {
-        cmd_template!(@impl $d, $name => [$($args,)*] => [$($cmd)* $d $arg,] => [$($idents)* $arg]);
+        $crate::cmd_template!(@impl $d, $name => [$($args,)*] => [$($cmd)* $d $arg,] => [$($idents)* $arg]);
     };
 
     (@impl $d:tt, $name:ident => [($tmpl:literal $(, $arg:ident)* $(,)?), $($args:tt,)*] => [$($cmd:tt)*] => [$($idents:tt)*]) => {
-        cmd_template!(@impl $d, $name => [$($args,)*] => [$($cmd)* format!($tmpl, $( $d $arg,)*),] => [$($idents)* $($arg)*]);
+        $crate::cmd_template!(@impl $d, $name => [$($args,)*] => [$($cmd)* format!($tmpl, $( $d $arg,)*),] => [$($idents)* $($arg)*]);
     };
 
     (@impl $d:tt, $name:ident => [] => [$($cmd:tt)*] => [$($idents:tt)*]) => {
         macro_rules! $name {
             ($($d $idents:expr),* $d (,)?) => {
-                cmd!($($cmd)*)
+                $crate::cmd!($($cmd)*)
             };
         }
     };

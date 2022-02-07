@@ -6,7 +6,7 @@ use std::{
 
 use thiserror::Error;
 
-use crate::{command::util::ProcessOutput, StdResult};
+use crate::{process::ProcessOutput, StdResult};
 
 type Result<T> = StdResult<T, Error>;
 
