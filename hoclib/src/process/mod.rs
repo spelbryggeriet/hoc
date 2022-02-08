@@ -8,10 +8,8 @@ use std::{
 };
 
 use colored::Colorize;
-use hoclog::{info, status};
+use hoclog::{error, info, status};
 use thiserror::Error;
-
-use crate::StdResult;
 
 #[doc(hidden)]
 #[macro_export]
@@ -61,19 +59,13 @@ macro_rules! cmd_template {
 
 pub mod ssh;
 
-pub fn reset_sudo_privileges() -> Result<()> {
-    cmd!("sudo", "-k").silent().run().map(|_| ())
-}
-
-type Result<T> = StdResult<T, ProcessError>;
-
 #[derive(Debug, Error)]
 pub enum ProcessError {
     #[error(transparent)]
     Io(#[from] io::Error),
 
     #[error("ssh: {0}")]
-    Ssh(#[from] ssh::Error),
+    Ssh(#[from] ssh::SshError),
 
     #[error("{program} failed: status code {status}\n\n[stdout]\n{stdout}\n[stderr]\n{stderr}")]
     Exit {
@@ -84,11 +76,21 @@ pub enum ProcessError {
     },
 }
 
+impl From<ProcessError> for hoclog::Error {
+    fn from(err: ProcessError) -> Self {
+        error!(err.to_string()).unwrap_err()
+    }
+}
+
+pub fn reset_sudo_privileges() -> Result<(), ProcessError> {
+    cmd!("sudo", "-k").silent().run().map(|_| ())
+}
+
 pub struct Process<'ssh> {
     program: OsString,
     args: Vec<OsString>,
     sudo: Option<Option<Vec<u8>>>,
-    ssh_client: Option<&'ssh ssh::Client>,
+    ssh_client: Option<&'ssh ssh::SshClient>,
     silent: bool,
     hide_stdout: bool,
     hide_stderr: bool,
@@ -124,7 +126,7 @@ impl<'ssh> Process<'ssh> {
         self
     }
 
-    pub fn ssh(mut self, client: &'ssh ssh::Client) -> Self {
+    pub fn ssh(mut self, client: &'ssh ssh::SshClient) -> Self {
         self.ssh_client = Some(client);
         self
     }
@@ -162,7 +164,7 @@ impl<'ssh> Process<'ssh> {
         self
     }
 
-    pub fn run(self) -> Result<String> {
+    pub fn run(self) -> Result<String, ProcessError> {
         let show_stdout = !self.silent && !self.hide_stdout;
         let show_stderr = !self.silent && !self.hide_stderr;
 
@@ -195,7 +197,7 @@ impl<'ssh> Process<'ssh> {
         Ok(output)
     }
 
-    fn exec(mut self, show_stdout: bool, show_stderr: bool) -> Result<String> {
+    fn exec(mut self, show_stdout: bool, show_stderr: bool) -> Result<String, ProcessError> {
         let program_str = self.program.to_string_lossy().into_owned();
 
         let mut pipe_input = if let Some(sudo) = self.sudo {
@@ -292,17 +294,17 @@ trait ProcessOutput {
 
     fn stdout(&mut self) -> Self::Stdout;
     fn stderr(&mut self) -> Self::Stderr;
-    fn finish(self) -> Result<Option<i32>>;
+    fn finish(self) -> Result<Option<i32>, ProcessError>;
 
-    fn read_stdout_to_string(&mut self, show_output: bool) -> Result<String> {
+    fn read_stdout_to_string(&mut self, show_output: bool) -> Result<String, ProcessError> {
         Self::read_lines(self.stdout(), show_output)
     }
 
-    fn read_stderr_to_string(&mut self, show_output: bool) -> Result<String> {
+    fn read_stderr_to_string(&mut self, show_output: bool) -> Result<String, ProcessError> {
         Self::read_lines(self.stderr(), show_output)
     }
 
-    fn read_lines(reader: impl Read, show_output: bool) -> Result<String> {
+    fn read_lines(reader: impl Read, show_output: bool) -> Result<String, ProcessError> {
         let mut output = String::new();
         let buf_reader = BufReader::new(reader);
         for line in buf_reader.lines() {
@@ -338,7 +340,7 @@ impl ProcessOutput for process::Child {
         self.stderr.take().unwrap()
     }
 
-    fn finish(mut self) -> Result<Option<i32>> {
+    fn finish(mut self) -> Result<Option<i32>, ProcessError> {
         let status = self.wait()?;
         Ok(status.code())
     }

@@ -1,6 +1,5 @@
 use std::fmt::{self, Display, Formatter};
 
-use hoclog::LogErr;
 use serde::Deserialize;
 use strum::EnumIter;
 
@@ -122,10 +121,7 @@ pub fn get_attached_disks<I: IntoIterator<Item = DiskType>>(
     let mut attached_disks_info = Vec::new();
 
     for disk_type in disk_types {
-        let stdout = diskutil_list!(disk_type.as_ref())
-            .hide_output()
-            .run()
-            .log_err()?;
+        let stdout = diskutil_list!(disk_type.as_ref()).hide_output().run()?;
 
         let output: DiskutilOutput = plist::from_bytes(stdout.as_bytes()).unwrap();
 

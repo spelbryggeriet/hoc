@@ -4,34 +4,43 @@ use std::{
     path::Path,
 };
 
+use hoclog::error;
 use thiserror::Error;
 
-use crate::{process::ProcessOutput, StdResult};
-
-type Result<T> = StdResult<T, Error>;
+use crate::process::{ProcessError, ProcessOutput};
 
 #[derive(Debug, Error)]
-pub enum Error {
-    #[error("tcp error: {0}")]
+pub enum SshError {
+    #[error("tcp: {0}")]
     Tcp(#[from] io::Error),
 
-    #[error("ssh error: {0}")]
+    #[error("ssh: {0}")]
     Ssh(#[from] ssh2::Error),
 }
 
-pub struct Client {
+impl From<SshError> for hoclog::Error {
+    fn from(err: SshError) -> Self {
+        error!(err.to_string()).unwrap_err()
+    }
+}
+
+pub struct SshClient {
     host: String,
     session: ssh2::Session,
 }
 
-impl Client {
-    pub fn new(host: String, username: &str, auth: Authentication) -> Result<Self> {
+impl SshClient {
+    pub fn new(host: String, username: &str, auth: Authentication) -> Result<Self, SshError> {
         let session = Self::create_session(&host, username, auth)?;
 
         Ok(Self { host, session })
     }
 
-    fn create_session(host: &str, username: &str, auth: Authentication) -> Result<ssh2::Session> {
+    fn create_session(
+        host: &str,
+        username: &str,
+        auth: Authentication,
+    ) -> Result<ssh2::Session, SshError> {
         let port = 22;
         let stream = TcpStream::connect(format!("{}:{}", host, port))?;
 
@@ -58,7 +67,7 @@ impl Client {
         &self.host
     }
 
-    pub fn spawn<S, B>(&self, cmd: &S, pipe_input: Option<&[B]>) -> Result<ssh2::Channel>
+    pub fn spawn<S, B>(&self, cmd: &S, pipe_input: Option<&[B]>) -> Result<ssh2::Channel, SshError>
     where
         S: AsRef<str>,
         B: AsRef<[u8]>,
@@ -92,8 +101,8 @@ impl ProcessOutput for ssh2::Channel {
         ssh2::Channel::stderr(self)
     }
 
-    fn finish(mut self) -> super::Result<Option<i32>> {
-        let err_into = Into::<Error>::into;
+    fn finish(mut self) -> Result<Option<i32>, ProcessError> {
+        let err_into = Into::<SshError>::into;
         self.close().map_err(err_into)?;
         self.wait_close().map_err(err_into)?;
         Ok(Some(self.exit_status().map_err(err_into)?))

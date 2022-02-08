@@ -39,9 +39,9 @@ fn run_procedure<P: Procedure>(context: &mut Context, mut proc: P) -> hoclog::Re
         context.update_cache(
             P::NAME.to_string(),
             proc_attributes.clone(),
-            Cache::new::<P::State>().log_err()?,
+            Cache::new::<P::State>()?,
         );
-        context.persist().log_err()?;
+        context.persist()?;
     }
 
     let cache = &context[(P::NAME, &proc_attributes)];
@@ -53,17 +53,17 @@ fn run_procedure<P: Procedure>(context: &mut Context, mut proc: P) -> hoclog::Re
             .map(ProcedureStep::id::<P::State>)
             .enumerate()
         {
-            if rewind_id.log_err()? == state_id {
+            if rewind_id? == state_id {
                 invalidate_state.replace((rewind_index, state_id, None));
                 break;
             }
         }
     }
 
-    let work_dir = Context::get_work_dir().log_err()?;
+    let work_dir = Context::get_work_dir()?;
     let mut valid_files = DirectoryState::new_unchecked(&work_dir);
     let mut cur_dir_state = DirectoryState::new_unchecked(work_dir);
-    cur_dir_state.register_dir("").log_err()?;
+    cur_dir_state.register_dir("")?;
 
     let completed_steps = cache.completed_steps().count();
 
@@ -77,7 +77,7 @@ fn run_procedure<P: Procedure>(context: &mut Context, mut proc: P) -> hoclog::Re
         let diff = step_dir_state.diff_files(&cur_dir_state);
 
         if !diff.is_empty() && invalidate_state.as_ref().map_or(true, |(j, ..)| index < *j) {
-            invalidate_state.replace((index, step.id::<P::State>().log_err()?, Some(diff)));
+            invalidate_state.replace((index, step.id::<P::State>()?, Some(diff)));
             step_dir_state.unregister_files(&step_dir_state.changed_files(&cur_dir_state));
         }
 
@@ -107,10 +107,8 @@ fn run_procedure<P: Procedure>(context: &mut Context, mut proc: P) -> hoclog::Re
             state_id.description(),
         );
 
-        context[(P::NAME, &proc_attributes)]
-            .invalidate_state::<P::State>(state_id)
-            .log_err()?;
-        context.persist().log_err()?;
+        context[(P::NAME, &proc_attributes)].invalidate_state::<P::State>(state_id)?;
+        context.persist()?;
     }
 
     let mut index = 1;
@@ -122,7 +120,7 @@ fn run_procedure<P: Procedure>(context: &mut Context, mut proc: P) -> hoclog::Re
             .status(format!(
                 "Skipping {}: {}",
                 format!("Step {}", i + 1).yellow(),
-                step.id::<P::State>().log_err()?.description()
+                step.id::<P::State>()?.description()
             ))
             .with_label("CACHED".blue());
         index += 1;
@@ -135,7 +133,7 @@ fn run_procedure<P: Procedure>(context: &mut Context, mut proc: P) -> hoclog::Re
 
         let cache = &mut context[(P::NAME, &proc_attributes)];
         if let Some(some_step) = cache.current_step_mut() {
-            let state_id = some_step.id::<P::State>().log_err()?;
+            let state_id = some_step.id::<P::State>()?;
             status!("{}: {}", format!("Step {}", index).yellow(), state_id.description() => {
                 let halt = proc.run(some_step)?;
                 let state = match halt.state {
@@ -143,9 +141,9 @@ fn run_procedure<P: Procedure>(context: &mut Context, mut proc: P) -> hoclog::Re
                     HaltState::Finish => None,
                 };
 
-                cache.advance(&state).log_err()?;
+                cache.advance(&state)?;
                 if halt.persist {
-                    context.persist().log_err()?;
+                    context.persist()?;
                 }
             });
             index += 1;
@@ -168,9 +166,9 @@ fn main() {
         })
         .log_err()?;
 
-        hoclib::reset_sudo_privileges().log_err()?;
+        hoclib::reset_sudo_privileges()?;
 
-        let mut context = Context::load().log_err()?;
+        let mut context = Context::load()?;
 
         match Command::from_args() {
             Command::Flash(proc) => run_procedure(&mut context, proc)?,

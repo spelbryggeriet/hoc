@@ -423,15 +423,12 @@ fn gen_run(state_name: &Ident, state_variants: &[StateVariant]) -> TokenStream {
     let match_switch = state_variants
         .is_empty()
         .then(|| quote!(unreachable!()))
-        .or_else(|| {
-            Some(quote!(match step.state().log_err()? { #(#variant_patterns => #calls,)* }))
-        });
+        .or_else(|| Some(quote!(match step.state()? { #(#variant_patterns => #calls,)* })));
 
     quote! {
         #[allow(unreachable_code)]
         fn run(&mut self, step: &mut ::hoclib::ProcedureStep) -> ::hoclog::Result<::hoclib::Halt<Self::State>> {
-            use ::hoclog::LogErr;
-            #match_switch.log_err()
+            #match_switch
         }
     }
 }

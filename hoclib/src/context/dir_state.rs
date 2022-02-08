@@ -8,10 +8,9 @@ use std::{
     result::Result as StdResult,
 };
 
+use hoclog::error;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
-
-use crate::Result;
 
 fn split_path_by_file_name<'p, P: AsRef<Path>>(
     relative_path: &'p P,
@@ -91,6 +90,18 @@ pub enum DirectoryStateError {
 
     #[error("unexpected dir: {}", _0.to_string_lossy())]
     UnexpectedDir(OsString),
+
+    #[error("path: {0}")]
+    Path(#[from] PathError),
+
+    #[error("io: {0}")]
+    Io(#[from] io::Error),
+}
+
+impl From<DirectoryStateError> for hoclog::Error {
+    fn from(err: DirectoryStateError) -> Self {
+        error!(err.to_string()).unwrap_err()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -101,7 +112,7 @@ pub struct DirectoryState {
 }
 
 impl DirectoryState {
-    pub fn new<P: Into<PathBuf>>(root_path: P) -> Result<Self> {
+    pub fn new<P: Into<PathBuf>>(root_path: P) -> Result<Self, DirectoryStateError> {
         let root_path = root_path.into();
 
         let metadata = fs::metadata(&root_path)?;
@@ -132,7 +143,7 @@ impl DirectoryState {
         self.root_path.file_name()
     }
 
-    pub fn contains<P: AsRef<Path>>(&self, relative_path: P) -> Result<bool> {
+    pub fn contains<P: AsRef<Path>>(&self, relative_path: P) -> Result<bool, DirectoryStateError> {
         let (file_name, dir_names) = split_path_by_file_name(&relative_path)?;
 
         let mut dir_state = self;
@@ -165,7 +176,10 @@ impl DirectoryState {
         }
     }
 
-    pub fn register_file<P: AsRef<Path>>(&mut self, relative_path: P) -> Result<()> {
+    pub fn register_file<P: AsRef<Path>>(
+        &mut self,
+        relative_path: P,
+    ) -> Result<(), DirectoryStateError> {
         let (file_name, dir_state) = self.traverse_mut(&relative_path)?;
 
         let mut path = dir_state.root_path.clone();
@@ -199,7 +213,10 @@ impl DirectoryState {
         }
     }
 
-    pub fn register_dir<P: AsRef<Path>>(&mut self, relative_path: P) -> Result<()> {
+    pub fn register_dir<P: AsRef<Path>>(
+        &mut self,
+        relative_path: P,
+    ) -> Result<(), DirectoryStateError> {
         let (file_name, dir_state) = self.traverse_mut(&relative_path)?;
 
         let mut path = dir_state.root_path.clone();
@@ -255,7 +272,7 @@ impl DirectoryState {
         }
     }
 
-    pub fn update_states(&mut self) -> Result<()> {
+    pub fn update_states(&mut self) -> Result<(), DirectoryStateError> {
         let mut i = 0;
         while i < self.files.len() {
             match fs::metadata(&self.files[i].path) {
@@ -287,7 +304,10 @@ impl DirectoryState {
         Ok(())
     }
 
-    pub fn unregister_path<P: AsRef<Path>>(&mut self, relative_path: P) -> Result<()> {
+    pub fn unregister_path<P: AsRef<Path>>(
+        &mut self,
+        relative_path: P,
+    ) -> Result<(), DirectoryStateError> {
         if !self.contains(&relative_path)? {
             return Ok(());
         }

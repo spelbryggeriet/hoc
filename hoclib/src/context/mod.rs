@@ -7,13 +7,11 @@ use std::{
     path::PathBuf,
 };
 
+use hoclog::error;
 use serde::{Deserialize, Serialize};
+use thiserror::Error;
 
-use crate::{
-    error::Error,
-    procedure::{Attributes, ProcedureState, ProcedureStep},
-    Result,
-};
+use crate::procedure::{self, Attributes, ProcedureState, ProcedureStep};
 
 pub mod dir_state;
 
@@ -25,6 +23,24 @@ struct CacheVariant {
 
     #[serde(flatten)]
     cache: Cache,
+}
+
+#[derive(Debug, Error)]
+pub enum ContextError {
+    #[error("environment variable {0}: {1}")]
+    EnvVar(String, env::VarError),
+
+    #[error("io: {0}")]
+    Io(#[from] io::Error),
+
+    #[error("serde yaml: {0}")]
+    SerdeYaml(#[from] serde_yaml::Error),
+}
+
+impl From<ContextError> for hoclog::Error {
+    fn from(err: ContextError) -> Self {
+        error!(err.to_string()).unwrap_err()
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -69,7 +85,7 @@ impl Context {
     pub const CONTEXT_DIR: &'static str = ".hoc";
     pub const WORK_DIR: &'static str = "workdir";
 
-    pub fn load() -> Result<Self> {
+    pub fn load() -> Result<Self, ContextError> {
         let mut work_dir_path = Self::get_work_dir()?;
 
         match fs::metadata(&work_dir_path) {
@@ -106,8 +122,8 @@ impl Context {
         }
     }
 
-    pub fn get_context_dir() -> Result<PathBuf> {
-        let home = env::var(ENV_HOME).map_err(|err| Error::environment(ENV_HOME, err))?;
+    pub fn get_context_dir() -> Result<PathBuf, ContextError> {
+        let home = env::var(ENV_HOME).map_err(|e| ContextError::EnvVar(ENV_HOME.into(), e))?;
         let mut context_path = PathBuf::new();
         context_path.push(home);
         context_path.push(Self::CONTEXT_DIR);
@@ -115,7 +131,7 @@ impl Context {
         Ok(context_path)
     }
 
-    pub fn get_work_dir() -> Result<PathBuf> {
+    pub fn get_work_dir() -> Result<PathBuf, ContextError> {
         let mut path = Self::get_context_dir()?;
         path.push(Self::WORK_DIR);
         Ok(path)
@@ -137,12 +153,25 @@ impl Context {
             .or_insert(data);
     }
 
-    pub fn persist(&mut self) -> Result<()> {
+    pub fn persist(&mut self) -> Result<(), ContextError> {
         self.file.set_len(0)?;
         self.file.seek(SeekFrom::Start(0))?;
-        serde_yaml::to_writer(&self.file, self)?;
+        Ok(serde_yaml::to_writer(&self.file, self)?)
+    }
+}
 
-        Ok(())
+#[derive(Debug, Error)]
+pub enum CacheError {
+    #[error("context: {0}")]
+    Context(#[from] ContextError),
+
+    #[error("procedure step: {0}")]
+    ProcedureStep(#[from] procedure::ProcedureStepError),
+}
+
+impl From<CacheError> for hoclog::Error {
+    fn from(err: CacheError) -> Self {
+        error!(err.to_string()).unwrap_err()
     }
 }
 
@@ -153,7 +182,7 @@ pub struct Cache {
 }
 
 impl Cache {
-    pub fn new<S: ProcedureState>() -> Result<Self> {
+    pub fn new<S: ProcedureState>() -> Result<Self, CacheError> {
         Ok(Self {
             completed_steps: Vec::new(),
             current_step: Some(ProcedureStep::new(&S::default(), Context::get_work_dir()?)?),
@@ -168,7 +197,7 @@ impl Cache {
         self.current_step.as_mut()
     }
 
-    pub fn advance<S: ProcedureState>(&mut self, state: &Option<S>) -> Result<()> {
+    pub fn advance<S: ProcedureState>(&mut self, state: &Option<S>) -> Result<(), CacheError> {
         if let Some(state) = state {
             if let Some(mut current_step) = self.current_step.take() {
                 current_step.save_work_dir_changes()?;
@@ -186,7 +215,7 @@ impl Cache {
         Ok(())
     }
 
-    pub fn invalidate_state<S: ProcedureState>(&mut self, id: S::Id) -> Result<()> {
+    pub fn invalidate_state<S: ProcedureState>(&mut self, id: S::Id) -> Result<(), CacheError> {
         for (index, step) in self.completed_steps.iter().enumerate() {
             if step.id::<S>()? == id {
                 self.completed_steps.truncate(index + 1);

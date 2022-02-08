@@ -1,13 +1,16 @@
 use std::{
     collections::HashMap,
+    error::Error as StdError,
     path::{Path, PathBuf},
     str::FromStr,
 };
 
+use hoclog::error;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::Value;
+use thiserror::Error;
 
-use crate::{context::dir_state::DirectoryState, error::Error, Result};
+use crate::context::dir_state::{self, DirectoryState};
 
 #[macro_export]
 macro_rules! halt {
@@ -72,7 +75,7 @@ pub trait ProcedureStateId:
 where
     Self: Sized,
 {
-    type DeserializeError: Into<Error>;
+    type DeserializeError: 'static + StdError;
 
     fn description(&self) -> &'static str;
 
@@ -80,10 +83,10 @@ where
         self.into()
     }
 
-    fn parse<S: AsRef<str>>(input: S) -> Result<Self> {
+    fn parse<S: AsRef<str>>(input: S) -> Result<Self, Self::DeserializeError> {
         match Self::from_str(input.as_ref()) {
             Ok(id) => Ok(id),
-            Err(err) => Err(err.into()),
+            Err(err) => Err(err),
         }
     }
 }
@@ -94,6 +97,24 @@ pub trait ProcedureState: Serialize + DeserializeOwned + Default {
     fn id(&self) -> Self::Id;
 }
 
+#[derive(Debug, Error)]
+pub enum ProcedureStepError {
+    #[error("serde json: {0}")]
+    SerdeJson(#[from] serde_json::Error),
+
+    #[error("id: {0}")]
+    Id(Box<dyn StdError>),
+
+    #[error("dir state: {0}")]
+    DirState(#[from] dir_state::DirectoryStateError),
+}
+
+impl From<ProcedureStepError> for hoclog::Error {
+    fn from(err: ProcedureStepError) -> Self {
+        error!(err.to_string()).unwrap_err()
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ProcedureStep {
     id: String,
@@ -102,7 +123,10 @@ pub struct ProcedureStep {
 }
 
 impl ProcedureStep {
-    pub fn new<S: ProcedureState, P: Into<PathBuf>>(state: &S, work_dir: P) -> Result<Self> {
+    pub fn new<S: ProcedureState, P: Into<PathBuf>>(
+        state: &S,
+        work_dir: P,
+    ) -> Result<Self, ProcedureStepError> {
         Ok(Self {
             id: state.id().as_str().to_string(),
             state: serde_json::to_string(&state)?,
@@ -110,42 +134,53 @@ impl ProcedureStep {
         })
     }
 
-    pub fn id<S: ProcedureState>(&self) -> Result<S::Id> {
-        Ok(S::Id::parse(&self.id)?)
+    pub fn id<S: ProcedureState>(&self) -> Result<S::Id, ProcedureStepError> {
+        S::Id::parse(&self.id).map_err(|e| ProcedureStepError::Id(Box::new(e)))
     }
 
-    pub fn state<S: ProcedureState>(&self) -> Result<S> {
-        Ok(serde_json::from_str(&self.state)?)
+    pub fn state<S: ProcedureState>(&self) -> Result<S, ProcedureStepError> {
+        serde_json::from_str(&self.state).map_err(|e| ProcedureStepError::Id(Box::new(e)))
     }
 
     pub fn work_dir_state(&self) -> &DirectoryState {
         &self.work_dir_state
     }
 
-    pub fn is_path_registered<P: AsRef<Path>>(&self, relative_path: P) -> Result<bool> {
-        self.work_dir_state.contains(relative_path)
+    pub fn is_path_registered<P: AsRef<Path>>(
+        &self,
+        relative_path: P,
+    ) -> Result<bool, ProcedureStepError> {
+        Ok(self.work_dir_state.contains(relative_path)?)
     }
 
-    pub fn register_file<P: AsRef<Path>>(&mut self, relative_path: P) -> Result<PathBuf> {
+    pub fn register_file<P: AsRef<Path>>(
+        &mut self,
+        relative_path: P,
+    ) -> Result<PathBuf, ProcedureStepError> {
         self.work_dir_state.register_file(&relative_path)?;
         let mut path = self.work_dir_state.root_path().to_path_buf();
         path.extend(relative_path.as_ref().iter());
         Ok(path)
     }
 
-    pub fn register_dir<P: AsRef<Path>>(&mut self, relative_path: P) -> Result<PathBuf> {
+    pub fn register_dir<P: AsRef<Path>>(
+        &mut self,
+        relative_path: P,
+    ) -> Result<PathBuf, ProcedureStepError> {
         self.work_dir_state.register_dir(&relative_path)?;
         let mut path = self.work_dir_state.root_path().to_path_buf();
         path.extend(relative_path.as_ref().iter());
         Ok(path)
     }
 
-    pub fn unregister_path<P: AsRef<Path>>(&mut self, relative_path: P) -> Result<()> {
-        self.work_dir_state.unregister_path(&relative_path)?;
-        Ok(())
+    pub fn unregister_path<P: AsRef<Path>>(
+        &mut self,
+        relative_path: P,
+    ) -> Result<(), ProcedureStepError> {
+        Ok(self.work_dir_state.unregister_path(&relative_path)?)
     }
 
-    pub fn save_work_dir_changes(&mut self) -> Result<()> {
-        self.work_dir_state.update_states()
+    pub fn save_work_dir_changes(&mut self) -> Result<(), ProcedureStepError> {
+        Ok(self.work_dir_state.update_states()?)
     }
 }

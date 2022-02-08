@@ -1,8 +1,8 @@
 use colored::Colorize;
-use hoclog::{choose, hidden_input, input, status, LogErr, Result};
+use hoclog::{choose, hidden_input, input, status, Result};
 use hocproc::procedure;
 
-use hoclib::{cmd_template, finish, halt, ssh, Halt, ProcedureStep};
+use hoclib::{cmd_template, finish, halt, ssh::SshClient, Halt, ProcedureStep};
 
 cmd_template! {
     adduser => "adduser", username;
@@ -19,7 +19,7 @@ procedure! {
         node_name: String,
 
         #[structopt(skip)]
-        ssh_client: Option<ssh::Client>,
+        ssh_client: Option<SshClient>,
     }
 
     pub enum ConfigureState {
@@ -33,7 +33,7 @@ procedure! {
 impl Steps for Configure {
     fn get_host(&mut self, _step: &mut ProcedureStep) -> Result<Halt<ConfigureState>> {
         let local_endpoint = status!("Finding local endpoints" => {
-            let output = arp!().hide_output().run().log_err()?;
+            let output = arp!().hide_output().run()?;
             let (default_index, mut endpoints) = util::LocalEndpoint::parse_arp_output(&output, &self.node_name);
 
             let index = choose!(
@@ -64,9 +64,7 @@ impl Steps for Configure {
                 .sudo()
                 .pipe_input([new_password.clone(), new_password])
                 .run()
-                .log_err()
-        })
-        .log_err()?;
+        })?;
 
         halt!(AddGroupsToNewUser { host, new_username })
     }
@@ -78,9 +76,8 @@ impl Steps for Configure {
         new_username: String,
     ) -> Result<Halt<ConfigureState>> {
         self.with_ssh_client(util::Creds::default(&host), |client| {
-            usermod!(new_username).ssh(&client).sudo().run().log_err()
-        })
-        .log_err()?;
+            usermod!(new_username).ssh(&client).sudo().run()
+        })?;
 
         halt!(AddSudoPasswordRequirement { host, new_username })
     }
@@ -98,28 +95,29 @@ impl Steps for Configure {
                 .pipe_input([format!("{new_username} ALL=(ALL) PASSWD: ALL")])
                 .hide_output()
                 .run()
-                .log_err()
-        })
-        .log_err()?;
+        })?;
 
         finish!()
     }
 }
 
 impl Configure {
-    pub fn with_ssh_client<T>(
+    pub fn with_ssh_client<T, E>(
         &mut self,
         creds: util::Creds,
-        f: impl FnOnce(&ssh::Client) -> Result<T>,
-    ) -> Result<T> {
+        f: impl FnOnce(&SshClient) -> std::result::Result<T, E>,
+    ) -> Result<T>
+    where
+        E: Into<hoclog::Error>,
+    {
         if let Some(ref client) = self.ssh_client {
-            f(client)
+            f(client).map_err(Into::into)
         } else {
             let new_client = status!("Connecting to host {}", creds.host.blue() => {
-                 ssh::Client::new(creds.host.to_string(), creds.username, creds.auth).log_err()?
+                 SshClient::new(creds.host.to_string(), creds.username, creds.auth)?
             });
 
-            let output = f(&new_client)?;
+            let output = f(&new_client).map_err(Into::into)?;
             self.ssh_client.replace(new_client);
             Ok(output)
         }

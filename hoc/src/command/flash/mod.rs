@@ -53,11 +53,11 @@ impl Steps for Flash {
 
         let archive_path = PathBuf::from("image");
         status!("Downloading image" => {
-            let image_real_path = step.register_file(&archive_path).log_err()?;
+            let image_real_path = step.register_file(&archive_path)?;
             let mut file = File::options()
                 .read(false)
                 .write(true)
-                .open(image_real_path).log_err()?;
+                .open(image_real_path)?;
 
             reqwest::blocking::get(image.url()).log_err()?.copy_to(&mut file).log_err()?;
         });
@@ -71,11 +71,11 @@ impl Steps for Flash {
         archive_path: PathBuf,
     ) -> hoclog::Result<Halt<FlashState>> {
         let (archive_data, mut archive_file) = status!("Reading archive" => {
-            let archive_real_path = step.register_file(&archive_path).log_err()?;
+            let archive_real_path = step.register_file(&archive_path)?;
             let file = File::options()
                 .read(true)
                 .write(true)
-                .open(&archive_real_path).log_err()?;
+                .open(&archive_real_path)?;
 
             let mut archive = ZipArchive::new(&file).log_err()?;
 
@@ -108,7 +108,7 @@ impl Steps for Flash {
         });
 
         status!("Save decompressed image to file" => {
-            archive_file.write(&archive_data).log_err()?;
+            archive_file.write(&archive_data)?;
         });
 
         halt!(ModifyImage {
@@ -121,9 +121,9 @@ impl Steps for Flash {
         step: &mut ProcedureStep,
         image_path: PathBuf,
     ) -> hoclog::Result<Halt<FlashState>> {
-        let image_real_path = step.register_file(&image_path).log_err()?;
+        let image_real_path = step.register_file(&image_path)?;
 
-        status!("Attaching image as disk" => hdiutil_attach!(image_real_path).run().log_err()?);
+        status!("Attaching image as disk" => hdiutil_attach!(image_real_path).run()?);
 
         let disk_id = status!("Find attached disk" => {
             let mut attached_disks_info: Vec<_> =
@@ -151,19 +151,19 @@ impl Steps for Flash {
 
         let mount_dir = status!("Mounting image disk" => {
             let mount_dir = TempDir::new().log_err()?;
-            diskutil_mount!(mount_dir.as_ref(), &dev_disk_id).run().log_err()?;
+            diskutil_mount!(mount_dir.as_ref(), &dev_disk_id).run()?;
             mount_dir
         });
 
         status!("Configure image" => {
             status!("Creating SSH file"=> {
-                File::create(mount_dir.as_ref().join("ssh")).log_err()?;
+                File::create(mount_dir.as_ref().join("ssh"))?;
             });
         });
 
-        status!("Syncing image disk writes" => sync!().run().log_err()?);
-        status!("Unmounting image disk" => diskutil_unmount_disk!(dev_disk_id).run().log_err()?);
-        status!("Detaching image disk" => hdiutil_detach!(dev_disk_id).run().log_err()?);
+        status!("Syncing image disk writes" => sync!().run()?);
+        status!("Unmounting image disk" => diskutil_unmount_disk!(dev_disk_id).run()?);
+        status!("Detaching image disk" => hdiutil_detach!(dev_disk_id).run()?);
 
         halt!(FlashImage { image_path })
     }
@@ -184,9 +184,9 @@ impl Steps for Flash {
 
         let disk_path = PathBuf::from(format!("/dev/{}", disk_id));
 
-        status!("Unmounting SD card" => diskutil_unmount_disk!(disk_path).run().log_err()?);
+        status!("Unmounting SD card" => diskutil_unmount_disk!(disk_path).run()?);
 
-        let image_real_path = step.register_file(&image_path).log_err()?;
+        let image_real_path = step.register_file(&image_path)?;
 
         status!("Flashing SD card" => {
             prompt!("Do you want to flash target disk '{}'?", disk_id)?;
@@ -196,7 +196,7 @@ impl Steps for Flash {
                 format!("/dev/r{}", disk_id),
             )
             .sudo()
-            .run().log_err()?;
+            .run()?;
 
             info!(
                 "Image '{}' flashed to target disk '{}'",
@@ -205,7 +205,7 @@ impl Steps for Flash {
             );
         });
 
-        status!("Unmounting image disk" => diskutil_unmount_disk!(disk_path).run().log_err()?);
+        status!("Unmounting image disk" => diskutil_unmount_disk!(disk_path).run()?);
 
         transient_finish!()
     }

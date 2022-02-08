@@ -1,13 +1,13 @@
 use std::{
     borrow::Cow,
     error::Error as StdError,
-    fmt,
+    fmt, io,
     result::Result as StdResult,
     sync::{Arc, Mutex},
 };
 
 use console::Style;
-use dialoguer::{theme::Theme, Confirm, Input, Password, Select};
+use dialoguer::{theme::Theme, Confirm, Input, Select};
 use thiserror::Error;
 
 use crate::{context::PrintContext, prefix::PrefixPrefs, Never, Result, LOG};
@@ -36,6 +36,14 @@ pub enum Error {
 
     #[error("hidden input: {0}")]
     HiddenInput(#[from] hidden_input::Error),
+}
+
+impl From<io::Error> for Error {
+    fn from(err: io::Error) -> Self {
+        StdResult::<Never, _>::Err(err)
+            .log_context("io")
+            .unwrap_err()
+    }
 }
 
 pub trait LogErr<T> {
