@@ -70,7 +70,7 @@ impl Steps for Configure {
         adduser!(new_username)
             .ssh(&client)
             .sudo()
-            .pipe_input([new_password.clone(), new_password.clone()])
+            .pipe_input([&new_password, &new_password])
             .run()?;
 
         self.password.replace(Some(new_password));
@@ -96,7 +96,7 @@ impl Steps for Configure {
         tee!(sudo_file)
             .ssh(&client)
             .sudo()
-            .pipe_input([format!("{username} ALL=(ALL) PASSWD: ALL")])
+            .pipe_input([&format!("{username} ALL=(ALL) PASSWD: ALL")])
             .hide_output()
             .run()?;
 
@@ -114,16 +114,13 @@ impl Steps for Configure {
         let password = self.password_for_user(&username)?;
         let client = self.ssh_client_password_auth(&host, &username, &password)?;
 
-        let result = pkill!().ssh(&client).sudo_password(password.clone()).run();
+        let result = pkill!().ssh(&client).sudo_password(&*password).run();
         match result {
             Ok(_) | Err(ProcessError::Exit { status: 1, .. }) => (),
             Err(err) => return Err(err.into()),
         }
 
-        deluser!()
-            .ssh(&client)
-            .sudo_password(password.clone())
-            .run()?;
+        deluser!().ssh(&client).sudo_password(&*password).run()?;
 
         finish!()
     }

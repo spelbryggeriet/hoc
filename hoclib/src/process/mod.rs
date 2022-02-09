@@ -85,18 +85,18 @@ pub fn reset_sudo_privileges() -> Result<(), ProcessError> {
     cmd!("sudo", "-k").silent().run().map(|_| ())
 }
 
-pub struct Process<'ssh> {
+pub struct Process<'a> {
     program: OsString,
     args: Vec<OsString>,
-    sudo: Option<Option<Vec<u8>>>,
-    ssh_client: Option<&'ssh ssh::SshClient>,
+    ssh_client: Option<&'a ssh::SshClient>,
+    sudo: Option<Option<&'a [u8]>>,
+    pipe_input: Option<Vec<&'a [u8]>>,
     silent: bool,
     hide_stdout: bool,
     hide_stderr: bool,
-    pipe_input: Option<Vec<Vec<u8>>>,
 }
 
-impl<'ssh> Process<'ssh> {
+impl<'process> Process<'process> {
     pub fn cmd<S: AsRef<OsStr>>(program: S) -> Self {
         Self {
             program: program.as_ref().to_os_string(),
@@ -115,18 +115,32 @@ impl<'ssh> Process<'ssh> {
         self
     }
 
+    pub fn ssh(mut self, client: &'process ssh::SshClient) -> Self {
+        self.ssh_client = Some(client);
+        self
+    }
+
     pub fn sudo(mut self) -> Self {
         self.sudo = Some(None);
         self
     }
 
-    pub fn sudo_password<B: Into<Vec<u8>>>(mut self, password: B) -> Self {
-        self.sudo = Some(Some(password.into()));
+    pub fn sudo_password<B: 'process + AsRef<[u8]>>(mut self, password: &'process B) -> Self {
+        self.sudo = Some(Some(password.as_ref()));
         self
     }
 
-    pub fn ssh(mut self, client: &'ssh ssh::SshClient) -> Self {
-        self.ssh_client = Some(client);
+    pub fn pipe_input<I, B>(mut self, input: I) -> Self
+    where
+        I: IntoIterator<Item = &'process B>,
+        B: 'process + AsRef<[u8]>,
+    {
+        let iter = input.into_iter().map(|b| b.as_ref());
+        if let Some(pipe_input) = self.pipe_input.as_mut() {
+            pipe_input.extend(iter)
+        } else {
+            self.pipe_input = Some(iter.collect())
+        }
         self
     }
 
@@ -147,20 +161,6 @@ impl<'ssh> Process<'ssh> {
 
     pub fn hide_output(self) -> Self {
         self.hide_stdout().hide_stderr()
-    }
-
-    pub fn pipe_input<I, B>(mut self, input: I) -> Self
-    where
-        I: IntoIterator<Item = B>,
-        B: Into<Vec<u8>>,
-    {
-        let iter = input.into_iter().map(Into::into);
-        if let Some(pipe_input) = self.pipe_input.as_mut() {
-            pipe_input.extend(iter)
-        } else {
-            self.pipe_input = Some(iter.collect())
-        }
-        self
     }
 
     pub fn run(self) -> Result<String, ProcessError> {
