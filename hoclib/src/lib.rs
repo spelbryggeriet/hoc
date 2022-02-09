@@ -5,7 +5,7 @@ pub use context::{
 pub use procedure::{
     Attributes, Halt, HaltState, Procedure, ProcedureState, ProcedureStateId, ProcedureStep,
 };
-pub use process::{reset_sudo_privileges, ssh, Process};
+pub use process::{reset_sudo_privileges, ssh, Process, ProcessError};
 
 mod context;
 mod procedure;

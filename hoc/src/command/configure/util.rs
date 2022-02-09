@@ -4,25 +4,8 @@ use std::{
     net::Ipv4Addr,
 };
 
-use hoclib::ssh;
 use lazy_regex::regex_captures;
 use serde::{Deserialize, Serialize};
-
-pub struct Creds<'a> {
-    pub host: &'a str,
-    pub username: &'a str,
-    pub auth: ssh::Authentication<'a>,
-}
-
-impl<'a> Creds<'a> {
-    pub fn default(host: &'a str) -> Self {
-        Self {
-            host,
-            username: "pi",
-            auth: ssh::Authentication::Password("raspberry"),
-        }
-    }
-}
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct LocalEndpoint {

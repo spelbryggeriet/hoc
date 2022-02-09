@@ -13,13 +13,13 @@ use hoclib::{cmd_template, halt, transient_finish, Halt, ProcedureStep};
 use hoclog::{bail, choose, info, prompt, status, LogErr};
 
 cmd_template! {
-    dd => "dd", "bs=1m", ("if={}", input), ("of={}", output);
-    diskutil_list => "diskutil", "list", "-plist", "external", disk_type;
-    diskutil_mount => "diskutil", "mount", "-mountPoint", path, device;
-    diskutil_unmount_disk => "diskutil", "unmountDisk", device;
-    hdiutil_attach => "hdiutil", "attach", "-imagekey", "diskimage-class=CRawDiskImage", "-nomount", image;
-    hdiutil_detach => "hdiutil", "detach", dev_name;
-    sync => "sync";
+    dd(input, output) => "dd", "bs=1m", ("if={}", input), ("of={}", output);
+    diskutil_list(disk_type) => "diskutil", "list", "-plist", "external", disk_type;
+    diskutil_mount(path, device) => "diskutil", "mount", "-mountPoint", path, device;
+    diskutil_unmount_disk(device) => "diskutil", "unmountDisk", device;
+    hdiutil_attach(image) => "hdiutil", "attach", "-imagekey", "diskimage-class=CRawDiskImage", "-nomount", image;
+    hdiutil_detach(dev_name) => "hdiutil", "detach", dev_name;
+    sync() => "sync";
 }
 
 mod util;

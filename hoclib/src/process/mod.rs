@@ -3,7 +3,6 @@ use std::{
     ffi::{OsStr, OsString},
     io::{self, BufRead, BufReader, Read, Write},
     mem,
-    num::NonZeroI32,
     process::{self, Stdio},
 };
 
@@ -30,27 +29,27 @@ macro_rules! cmd {
 
 #[macro_export]
 macro_rules! cmd_template {
-    ($($name:ident => $program:literal $(, $args:tt)* $(,)?);* $(;)?) => {
+    ($($name:ident($($args:tt)*) => $program:literal $(, $parts:tt)* $(,)?);* $(;)?) => {
         $crate::_with_dollar_sign!(($d:tt) => {
-            $(cmd_template!(@impl $d, $name => [$($args,)*] => [$program,] => []);)*
+            $(cmd_template!(@impl $d, $name($($args)*) => [$($parts,)*] => [$program,]);)*
         });
     };
 
-    (@impl $d:tt, $name:ident => [$arg:literal, $($args:tt,)*] => [$($cmd:tt)*] => [$($idents:tt)*]) => {
-        $crate::cmd_template!(@impl $d, $name => [$($args,)*] => [$($cmd)* $arg,] => [$($idents)*]);
+    (@impl $d:tt, $name:ident($($args:tt)*) => [$part:literal, $($parts:tt,)*] => [$($cmd:tt)*]) => {
+        $crate::cmd_template!(@impl $d, $name($($args)*) => [$($parts,)*] => [$($cmd)* $part,]);
     };
 
-    (@impl $d:tt, $name:ident => [$arg:ident, $($args:tt,)*] => [$($cmd:tt)*] => [$($idents:tt)*]) => {
-        $crate::cmd_template!(@impl $d, $name => [$($args,)*] => [$($cmd)* $d $arg,] => [$($idents)* $arg]);
+    (@impl $d:tt, $name:ident($($args:tt)*) => [$part:ident, $($parts:tt,)*] => [$($cmd:tt)*]) => {
+        $crate::cmd_template!(@impl $d, $name($($args)*) => [$($parts,)*] => [$($cmd)* $d $part,]);
     };
 
-    (@impl $d:tt, $name:ident => [($tmpl:literal $(, $arg:ident)* $(,)?), $($args:tt,)*] => [$($cmd:tt)*] => [$($idents:tt)*]) => {
-        $crate::cmd_template!(@impl $d, $name => [$($args,)*] => [$($cmd)* format!($tmpl, $( $d $arg,)*),] => [$($idents)* $($arg)*]);
+    (@impl $d:tt, $name:ident($($args:tt)*) => [($tmpl:literal $(, $part:ident)* $(,)?), $($parts:tt,)*] => [$($cmd:tt)*]) => {
+        $crate::cmd_template!(@impl $d, $name($($args)*) => [$($parts,)*] => [$($cmd)* format!($tmpl, $( $d $part,)*),]);
     };
 
-    (@impl $d:tt, $name:ident => [] => [$($cmd:tt)*] => [$($idents:tt)*]) => {
+    (@impl $d:tt, $name:ident($($args:ident),* $(,)?) => [] => [$($cmd:tt)*]) => {
         macro_rules! $name {
-            ($($d $idents:expr),* $d (,)?) => {
+            ($($d $args:expr),* $d (,)?) => {
                 $crate::cmd!($($cmd)*)
             };
         }
@@ -70,7 +69,7 @@ pub enum ProcessError {
     #[error("{program} failed: status code {status}\n\n[stdout]\n{stdout}\n[stderr]\n{stderr}")]
     Exit {
         program: String,
-        status: NonZeroI32,
+        status: i32,
         stdout: String,
         stderr: String,
     },
@@ -277,7 +276,7 @@ impl<'ssh> Process<'ssh> {
             if status != 0 {
                 return Err(ProcessError::Exit {
                     program: program_str,
-                    status: unsafe { NonZeroI32::new_unchecked(status) },
+                    status,
                     stdout,
                     stderr,
                 });

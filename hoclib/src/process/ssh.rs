@@ -1,10 +1,11 @@
 use std::{
     io::{self, Write},
     net::TcpStream,
-    path::Path,
+    path::PathBuf,
 };
 
-use hoclog::error;
+use colored::Colorize;
+use hoclog::{error, status};
 use thiserror::Error;
 
 use crate::process::{ProcessError, ProcessOutput};
@@ -25,40 +26,67 @@ impl From<SshError> for hoclog::Error {
 }
 
 pub struct SshClient {
-    host: String,
     session: ssh2::Session,
+    host: String,
+    username: String,
+    auth: Authentication,
 }
 
 impl SshClient {
-    pub fn new(host: String, username: &str, auth: Authentication) -> Result<Self, SshError> {
-        let session = Self::create_session(&host, username, auth)?;
+    pub fn new_password_auth(
+        host: impl AsRef<str> + ToString,
+        username: impl AsRef<str> + ToString,
+        password: impl ToString,
+    ) -> Result<Self, SshError> {
+        let auth = Authentication::Password(password.to_string());
+        let session = Self::create_session(host.as_ref(), username.as_ref(), &auth)?;
 
-        Ok(Self { host, session })
+        Ok(Self {
+            session,
+            host: host.to_string(),
+            username: username.to_string(),
+            auth,
+        })
+    }
+
+    pub fn update_password_auth(
+        &mut self,
+        username: impl AsRef<str> + ToString,
+        password: impl AsRef<str> + ToString,
+    ) -> Result<(), SshError> {
+        if username.as_ref() != &self.username
+            || !matches!(&self.auth, Authentication::Password(ref pswd) if pswd == password.as_ref())
+        {
+            self.username = username.to_string();
+            self.auth = Authentication::Password(password.to_string());
+            self.session = Self::create_session(&self.host, &self.username, &self.auth)?;
+        }
+
+        Ok(())
     }
 
     fn create_session(
         host: &str,
         username: &str,
-        auth: Authentication,
+        auth: &Authentication,
     ) -> Result<ssh2::Session, SshError> {
-        let port = 22;
-        let stream = TcpStream::connect(format!("{}:{}", host, port))?;
+        let session = status!("Connecting to host {}", host.blue() => {
+            let port = 22;
+            let stream = TcpStream::connect(format!("{}:{}", host, port))?;
 
-        let mut session = ssh2::Session::new()?;
-        session.set_tcp_stream(stream);
-        session.handshake()?;
+            let mut session = ssh2::Session::new()?;
+            session.set_tcp_stream(stream);
+            session.handshake()?;
 
-        match auth {
-            Authentication::KeyBased { pub_key, priv_key } => session.userauth_pubkey_file(
-                username,
-                Some(pub_key.as_ref()),
-                priv_key.as_ref(),
-                None,
-            )?,
-            Authentication::Password(password) => {
-                session.userauth_password(username, password.as_ref())?
+            match auth {
+                Authentication::Key { pub_key, priv_key } => {
+                    session.userauth_pubkey_file(username, Some(&pub_key), &priv_key, None)?
+                }
+                Authentication::Password(password) => session.userauth_password(username, &password)?,
             }
-        }
+
+            session
+        });
 
         Ok(session)
     }
@@ -109,10 +137,8 @@ impl ProcessOutput for ssh2::Channel {
     }
 }
 
-pub enum Authentication<'a> {
-    Password(&'a str),
-    KeyBased {
-        pub_key: &'a Path,
-        priv_key: &'a Path,
-    },
+#[derive(PartialEq, Eq)]
+enum Authentication {
+    Key { pub_key: PathBuf, priv_key: PathBuf },
+    Password(String),
 }

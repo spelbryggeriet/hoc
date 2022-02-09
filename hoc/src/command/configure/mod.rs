@@ -1,14 +1,18 @@
-use colored::Colorize;
+use std::cell::{Ref, RefCell};
+
 use hoclog::{choose, hidden_input, input, status, Result};
 use hocproc::procedure;
 
-use hoclib::{cmd_template, finish, halt, ssh::SshClient, Halt, ProcedureStep};
+use hoclib::{cmd_template, finish, halt, ssh::SshClient, Halt, ProcedureStep, ProcessError};
 
 cmd_template! {
-    adduser => "adduser", username;
-    arp => "arp", "-a";
-    tee => "tee", file;
-    usermod => "usermod", "-a", "-G", "adm,dialout,cdrom,sudo,audio,video,plugdev,games,users,input,netdev,gpio,i2c,spi", username;
+    adduser(username) => "adduser", username;
+    arp() => "arp", "-a";
+    chmod(file) => "chmod", "0440", file;
+    deluser() => "deluser", "--remove-home", "pi";
+    pkill() => "pkill", "-u", "pi";
+    tee(file) => "tee", file;
+    usermod(username) => "usermod", "-a", "-G", "adm,dialout,cdrom,sudo,audio,video,plugdev,games,users,input,netdev,gpio,i2c,spi", username;
 }
 
 mod util;
@@ -19,14 +23,17 @@ procedure! {
         node_name: String,
 
         #[structopt(skip)]
-        ssh_client: Option<SshClient>,
+        password:  RefCell<Option<String>>,
+
+        #[structopt(skip)]
+        ssh_client: RefCell<Option<SshClient>>,
     }
 
     pub enum ConfigureState {
         GetHost,
         AddNewUser { host: String },
-        AddGroupsToNewUser { host: String, new_username: String },
-        AddSudoPasswordRequirement { host: String, new_username: String },
+        AssignSudoPrivileges { host: String, username: String },
+        DeletePiUser { host: String, username: String },
     }
 }
 
@@ -58,68 +65,96 @@ impl Steps for Configure {
         let new_username = input!("Choose a new username");
         let new_password = hidden_input!("Choose a new password").verify().get()?;
 
-        self.with_ssh_client(util::Creds::default(&host), |client| {
-            adduser!(new_username)
-                .ssh(&client)
-                .sudo()
-                .pipe_input([new_password.clone(), new_password])
-                .run()
-        })?;
+        let client = self.ssh_client_password_auth(&host, "pi", "raspberry")?;
 
-        halt!(AddGroupsToNewUser { host, new_username })
+        adduser!(new_username)
+            .ssh(&client)
+            .sudo()
+            .pipe_input([new_password.clone(), new_password.clone()])
+            .run()?;
+
+        self.password.replace(Some(new_password));
+
+        halt!(AssignSudoPrivileges {
+            host,
+            username: new_username
+        })
     }
 
-    fn add_groups_to_new_user(
+    fn assign_sudo_privileges(
         &mut self,
         _step: &mut ProcedureStep,
         host: String,
-        new_username: String,
+        username: String,
     ) -> Result<Halt<ConfigureState>> {
-        self.with_ssh_client(util::Creds::default(&host), |client| {
-            usermod!(new_username).ssh(&client).sudo().run()
-        })?;
+        let client = self.ssh_client_password_auth(&host, "pi", "raspberry")?;
 
-        halt!(AddSudoPasswordRequirement { host, new_username })
+        usermod!(username).ssh(&client).sudo().run()?;
+
+        let sudo_file = format!("/etc/sudoers.d/010_{username}");
+
+        tee!(sudo_file)
+            .ssh(&client)
+            .sudo()
+            .pipe_input([format!("{username} ALL=(ALL) PASSWD: ALL")])
+            .hide_output()
+            .run()?;
+
+        chmod!(sudo_file).ssh(&client).sudo().run()?;
+
+        halt!(DeletePiUser { host, username })
     }
 
-    fn add_sudo_password_requirement(
+    fn delete_pi_user(
         &mut self,
         _step: &mut ProcedureStep,
         host: String,
-        new_username: String,
+        username: String,
     ) -> Result<Halt<ConfigureState>> {
-        self.with_ssh_client(util::Creds::default(&host), |client| {
-            tee!("/etc/sudoers.d/010_pi-nopasswd")
-                .ssh(&client)
-                .sudo()
-                .pipe_input([format!("{new_username} ALL=(ALL) PASSWD: ALL")])
-                .hide_output()
-                .run()
-        })?;
+        let password = self.password_for_user(&username)?;
+        let client = self.ssh_client_password_auth(&host, &username, &password)?;
+
+        let result = pkill!().ssh(&client).sudo_password(password.clone()).run();
+        match result {
+            Ok(_) | Err(ProcessError::Exit { status: 1, .. }) => (),
+            Err(err) => return Err(err.into()),
+        }
+
+        deluser!()
+            .ssh(&client)
+            .sudo_password(password.clone())
+            .run()?;
 
         finish!()
     }
 }
 
 impl Configure {
-    pub fn with_ssh_client<T, E>(
-        &mut self,
-        creds: util::Creds,
-        f: impl FnOnce(&SshClient) -> std::result::Result<T, E>,
-    ) -> Result<T>
-    where
-        E: Into<hoclog::Error>,
-    {
-        if let Some(ref client) = self.ssh_client {
-            f(client).map_err(Into::into)
-        } else {
-            let new_client = status!("Connecting to host {}", creds.host.blue() => {
-                 SshClient::new(creds.host.to_string(), creds.username, creds.auth)?
-            });
-
-            let output = f(&new_client).map_err(Into::into)?;
-            self.ssh_client.replace(new_client);
-            Ok(output)
+    fn password_for_user(&self, username: &str) -> Result<Ref<String>> {
+        if self.password.borrow().is_none() {
+            let password = hidden_input!("Enter password for {}", username).get()?;
+            self.password.replace(Some(password));
         }
+
+        Ok(Ref::map(self.password.borrow(), |o| o.as_ref().unwrap()))
+    }
+
+    fn ssh_client_password_auth(
+        &self,
+        host: &str,
+        username: &str,
+        password: &str,
+    ) -> Result<Ref<SshClient>> {
+        {
+            let mut ref_mut = self.ssh_client.borrow_mut();
+            if let Some(ref mut client) = *ref_mut {
+                client.update_password_auth(username, password)?;
+            } else {
+                let new_client = SshClient::new_password_auth(host, username, password)?;
+                ref_mut.replace(new_client);
+            };
+        }
+
+        Ok(Ref::map(self.ssh_client.borrow(), |o| o.as_ref().unwrap()))
     }
 }
