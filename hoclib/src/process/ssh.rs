@@ -95,7 +95,7 @@ impl SshClient {
         &self.host
     }
 
-    pub fn spawn<S, B>(&self, cmd: &S, pipe_input: Option<&[B]>) -> Result<ssh2::Channel, SshError>
+    pub fn spawn<S, B>(&self, cmd: &S, pipe_input: &[B]) -> Result<ssh2::Channel, SshError>
     where
         S: AsRef<str>,
         B: AsRef<[u8]>,
@@ -104,12 +104,10 @@ impl SshClient {
 
         channel.exec(cmd.as_ref())?;
 
-        if let Some(pipe_input) = pipe_input {
-            for input in pipe_input {
-                channel.write_all(input.as_ref())?;
-                channel.write_all(b"\n")?;
-            }
-        };
+        for input in pipe_input {
+            channel.write_all(input.as_ref())?;
+            channel.write_all(b"\n")?;
+        }
 
         channel.send_eof()?;
 

@@ -36,32 +36,48 @@ impl PrintContext {
     pub fn decorated_println(
         &mut self,
         text: impl AsRef<str>,
+        color: Option<Style>,
         log_type: LogType,
         first_line_prefix_prefs: PrefixPrefs,
         line_prefix_prefs: PrefixPrefs,
     ) {
-        self.print_spacing_if_needed(log_type);
+        let mut prefix_prefs = Some(first_line_prefix_prefs);
+        let mut get_prefix_prefs = || prefix_prefs.take().unwrap_or(line_prefix_prefs);
 
-        let prefix = self.create_line_prefix(first_line_prefix_prefs);
-        let prefix_len = prefix.char_count_without_styling();
+        for line in text.as_ref().lines() {
+            self.print_spacing_if_needed(log_type);
 
-        let text_len = text.as_ref().chars().count();
-        let text_max_width = self
-            .stdout
-            .size_checked()
-            .and_then(|s| (s.1 as usize).checked_sub(prefix_len))
-            .filter(|l| *l > 0)
-            .unwrap_or(text_len);
-        let normalized_text = text.as_ref().normalize_styling();
-        let mut text_chunks = normalized_text.wrapped_lines(text_max_width);
+            let prefix = self.create_line_prefix(get_prefix_prefs());
+            let prefix_len = prefix.char_count_without_styling();
 
-        let first_line = prefix + &text_chunks.next().unwrap_or_default();
-        self.println(first_line);
+            let text_len = line.char_count_without_styling();
+            let text_max_width = self
+                .stdout
+                .size_checked()
+                .and_then(|s| (s.1 as usize).checked_sub(prefix_len))
+                .filter(|l| *l > 0)
+                .unwrap_or(text_len);
+            let normalized_text = line.normalize_styling();
+            let mut line_chunks = normalized_text.wrapped_words(text_max_width);
 
-        for chunk in text_chunks {
-            let mut line = self.create_line_prefix(line_prefix_prefs);
-            line += &chunk;
-            self.println(line);
+            let first_line = if let Some(color) = &color {
+                prefix
+                    + &color
+                        .apply_to(line_chunks.next().unwrap_or_default())
+                        .to_string()
+            } else {
+                prefix + &line_chunks.next().unwrap_or_default()
+            };
+            self.println(first_line);
+
+            for mut chunk in line_chunks {
+                chunk = if let Some(color) = &color {
+                    self.create_line_prefix(get_prefix_prefs()) + &color.apply_to(chunk).to_string()
+                } else {
+                    self.create_line_prefix(get_prefix_prefs()) + &chunk
+                };
+                self.println(chunk);
+            }
         }
     }
 

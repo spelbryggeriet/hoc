@@ -32,13 +32,11 @@ impl Drop for Status {
         if !print_context.failure {
             if let Some(label) = &self.custom_label {
                 line += &label;
-            } else if level == 1 {
-                line += &Style::new().green().apply_to("SUCCESS").to_string();
             } else {
-                line += "DONE";
+                line += &Style::new().green().apply_to("success").to_string();
             }
         } else {
-            line += &Style::new().red().apply_to("FAILURE").to_string();
+            line += &Style::new().red().apply_to("failure").to_string();
             if level == 1 {
                 print_context.failure = false;
             }
@@ -46,6 +44,7 @@ impl Drop for Status {
 
         print_context.decorated_println(
             line,
+            None,
             LogType::StatusEnd,
             PrefixPrefs::with_connector("╙─").flag("─"),
             PrefixPrefs::with_connector("  ").flag(" "),

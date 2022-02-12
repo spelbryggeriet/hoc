@@ -122,7 +122,7 @@ fn run_procedure<P: Procedure>(context: &mut Context, mut proc: P) -> hoclog::Re
                 format!("Step {}", i + 1).yellow(),
                 step.id::<P::State>()?.description()
             ))
-            .with_label("CACHED".blue());
+            .with_label("cached".blue());
         index += 1;
     }
 

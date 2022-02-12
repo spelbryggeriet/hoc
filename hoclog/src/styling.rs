@@ -1,3 +1,5 @@
+use std::iter::StepBy;
+
 pub const CLEAR_STYLE: &str = "\u{1b}[0m";
 
 pub trait Styling {
@@ -58,48 +60,6 @@ impl Styling for str {
 }
 
 #[derive(Clone)]
-pub struct SplitAnsiEscapeCode<'a> {
-    source: Option<&'a str>,
-}
-
-impl<'a> SplitAnsiEscapeCode<'a> {
-    fn new(source: &'a str) -> Self {
-        Self {
-            source: Some(source),
-        }
-    }
-}
-
-impl<'a> Iterator for SplitAnsiEscapeCode<'a> {
-    type Item = &'a str;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        let source = self.source.as_mut()?;
-
-        let mut char_indices = source.char_indices();
-
-        loop {
-            match char_indices.next() {
-                Some((start, '\u{1b}')) if matches!(char_indices.next(), Some((_, '['))) => loop {
-                    match char_indices.next() {
-                        Some((last, c)) if c == 'm' => {
-                            let end = last + c.len_utf8();
-                            let item = &source[..start];
-                            *source = &source[end..];
-                            return Some(item);
-                        }
-                        Some((_, c)) if c.is_ascii_digit() || c == ';' => (),
-                        _ => return self.source.take(),
-                    }
-                },
-                None => return self.source.take(),
-                _ => (),
-            }
-        }
-    }
-}
-
-#[derive(Clone)]
 pub struct SplitAnsiEscapeCodeInclusive<'a> {
     source: Option<&'a str>,
     escape_code: Option<&'a str>,
@@ -145,5 +105,26 @@ impl<'a> Iterator for SplitAnsiEscapeCodeInclusive<'a> {
                 _ => (),
             }
         }
+    }
+}
+
+#[derive(Clone)]
+pub struct SplitAnsiEscapeCode<'a> {
+    iter: StepBy<SplitAnsiEscapeCodeInclusive<'a>>,
+}
+
+impl<'a> SplitAnsiEscapeCode<'a> {
+    fn new(source: &'a str) -> Self {
+        Self {
+            iter: source.split_ansi_escape_code_inclusive().step_by(2),
+        }
+    }
+}
+
+impl<'a> Iterator for SplitAnsiEscapeCode<'a> {
+    type Item = &'a str;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.iter.next()
     }
 }

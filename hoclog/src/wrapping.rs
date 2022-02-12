@@ -1,10 +1,10 @@
-use std::mem;
+use std::{mem, str::SplitInclusive};
 
 use crate::styling::{SplitAnsiEscapeCodeInclusive, Styling, CLEAR_STYLE};
 
 pub trait Wrapping {
     fn words_inclusive(&self) -> WordsInclusive;
-    fn wrapped_lines(&self, line_width: usize) -> WrappedLines;
+    fn wrapped_words(&self, line_width: usize) -> WrappedWords;
 }
 
 impl Wrapping for str {
@@ -12,24 +12,30 @@ impl Wrapping for str {
         WordsInclusive::new(self)
     }
 
-    fn wrapped_lines(&self, line_width: usize) -> WrappedLines {
-        WrappedLines::new(self, line_width)
+    fn wrapped_words(&self, line_width: usize) -> WrappedWords {
+        WrappedWords::new(self, line_width)
     }
 }
 
 #[derive(Clone)]
 pub struct WordsInclusive<'a> {
-    source: &'a str,
-    end: usize,
     words_and_codes: SplitAnsiEscapeCodeInclusive<'a>,
+    subwords: SplitInclusive<'a, &'static [char]>,
 }
 
 impl<'a> WordsInclusive<'a> {
+    const DELIMITERS: &'static [char] = &[' ', '-', ':', '/', ',', '.'];
+
     fn new(source: &'a str) -> Self {
+        let mut words_and_codes = source.split_ansi_escape_code_inclusive();
+        let subwords = words_and_codes
+            .next()
+            .unwrap_or("")
+            .split_inclusive(Self::DELIMITERS);
+
         Self {
-            source,
-            end: 0,
-            words_and_codes: source.split_ansi_escape_code_inclusive(),
+            words_and_codes,
+            subwords,
         }
     }
 }
@@ -38,32 +44,22 @@ impl<'a> Iterator for WordsInclusive<'a> {
     type Item = &'a str;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if self.end == 0 {
-            self.end = self.words_and_codes.next()?.len();
-        };
-
-        let maybe_sub_word = self.source[..self.end]
-            .char_indices()
-            .find(|(_, c)| [' ', '-', ':', '/', ',', '.'].contains(&c));
-
-        let end;
-        if let Some((last, c)) = maybe_sub_word {
-            end = last + c.len_utf8();
-            self.end -= end;
+        if let Some(subword) = self.subwords.next() {
+            Some(subword)
         } else {
-            end = self.end + self.words_and_codes.next().unwrap_or_default().len();
-            self.end = 0;
+            let code = self.words_and_codes.next()?;
+            self.subwords = self
+                .words_and_codes
+                .next()
+                .unwrap()
+                .split_inclusive(Self::DELIMITERS);
+            Some(code)
         }
-
-        let item = &self.source[..end];
-        self.source = &self.source[end..];
-
-        Some(item)
     }
 }
 
 #[derive(Clone)]
-pub struct WrappedLines<'a> {
+pub struct WrappedWords<'a> {
     words: WordsInclusive<'a>,
     line_width: usize,
     line_buf: String,
@@ -71,7 +67,7 @@ pub struct WrappedLines<'a> {
     last_code: Option<&'a str>,
 }
 
-impl<'a> WrappedLines<'a> {
+impl<'a> WrappedWords<'a> {
     fn new(source: &'a str, line_width: usize) -> Self {
         assert!(line_width > 0, "line width must not be 0");
         Self {
@@ -84,7 +80,7 @@ impl<'a> WrappedLines<'a> {
     }
 }
 
-impl<'a> Iterator for WrappedLines<'a> {
+impl<'a> Iterator for WrappedWords<'a> {
     type Item = String;
 
     fn next(&mut self) -> Option<Self::Item> {

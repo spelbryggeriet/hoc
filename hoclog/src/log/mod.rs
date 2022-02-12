@@ -120,6 +120,7 @@ impl Log {
         print_context.increment_status();
         print_context.decorated_println(
             message,
+            None,
             LogType::StatusStart,
             PrefixPrefs::with_connector("╓╴").flag("*"),
             PrefixPrefs::in_status_overflow(),
@@ -131,14 +132,13 @@ impl Log {
     pub fn info(&self, message: impl AsRef<str>) {
         let mut print_context = self.print_context.lock().unwrap();
 
-        for line in message.as_ref().lines() {
-            print_context.decorated_println(
-                line,
-                LogType::Info,
-                PrefixPrefs::in_status().flag(INFO_FLAG),
-                PrefixPrefs::in_status_overflow(),
-            );
-        }
+        print_context.decorated_println(
+            message,
+            None,
+            LogType::Info,
+            PrefixPrefs::in_status().flag(INFO_FLAG),
+            PrefixPrefs::in_status_overflow(),
+        );
     }
 
     pub fn labelled_info(&self, label: impl AsRef<str>, message: impl AsRef<str>) {
@@ -152,28 +152,27 @@ impl Log {
 
         let mut print_context = self.print_context.lock().unwrap();
 
-        for line in message.as_ref().lines() {
-            print_context.decorated_println(
-                line,
-                LogType::Info,
-                PrefixPrefs::in_status().flag(INFO_FLAG).label(&label),
-                PrefixPrefs::in_status_overflow().label(&" ".repeat(1 + label_len)),
-            );
-        }
+        print_context.decorated_println(
+            message,
+            None,
+            LogType::Info,
+            PrefixPrefs::in_status().flag(INFO_FLAG).label(&label),
+            PrefixPrefs::in_status_overflow().label(&" ".repeat(1 + label_len)),
+        );
     }
 
     pub fn warning(&self, message: impl AsRef<str>) -> Result<()> {
         let mut print_context = self.print_context.lock().unwrap();
 
         let yellow = Style::new().yellow();
-        for line in message.as_ref().lines() {
-            print_context.decorated_println(
-                yellow.apply_to(line).to_string(),
-                LogType::Warning,
-                PrefixPrefs::in_status().flag(&yellow.apply_to(ERROR_FLAG).to_string()),
-                PrefixPrefs::in_status_overflow(),
-            );
-        }
+        let flag = yellow.apply_to(ERROR_FLAG).to_string();
+        print_context.decorated_println(
+            message,
+            Some(yellow),
+            LogType::Warning,
+            PrefixPrefs::in_status().flag(&flag),
+            PrefixPrefs::in_status_overflow(),
+        );
 
         self.prompt_impl(&mut print_context, "Do you want to continue?")
     }
@@ -184,14 +183,14 @@ impl Log {
         print_context.failure = true;
 
         let red = Style::new().red();
-        for line in message.as_ref().lines() {
-            print_context.decorated_println(
-                red.apply_to(line).to_string(),
-                LogType::Error,
-                PrefixPrefs::in_status().flag(&red.apply_to(ERROR_FLAG).to_string()),
-                PrefixPrefs::in_status_overflow(),
-            );
-        }
+        let flag = red.apply_to(ERROR_FLAG).to_string();
+        print_context.decorated_println(
+            message,
+            Some(red),
+            LogType::Error,
+            PrefixPrefs::in_status().flag(&flag),
+            PrefixPrefs::in_status_overflow(),
+        );
 
         Err(Error::ErrorLogged)
     }

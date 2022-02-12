@@ -1,19 +1,15 @@
-use std::cell::{Ref, RefCell};
+use std::{
+    cell::{Ref, RefCell},
+    fs,
+};
 
-use hoclog::{choose, hidden_input, input, status, Result};
+use hoclog::{choose, hidden_input, info, input, status, LogErr, Result};
 use hocproc::procedure;
 
-use hoclib::{cmd_template, finish, halt, ssh::SshClient, Halt, ProcedureStep, ProcessError};
+use hoclib::{cmd_macros, finish, halt, ssh::SshClient, Halt, ProcedureStep};
+use osshkeys::{cipher::Cipher, keys::FingerprintHash, KeyPair, KeyType};
 
-cmd_template! {
-    adduser(username) => "adduser", username;
-    arp() => "arp", "-a";
-    chmod(file) => "chmod", "0440", file;
-    deluser() => "deluser", "--remove-home", "pi";
-    pkill() => "pkill", "-u", "pi";
-    tee(file) => "tee", file;
-    usermod(username) => "usermod", "-a", "-G", "adm,dialout,cdrom,sudo,audio,video,plugdev,games,users,input,netdev,gpio,i2c,spi", username;
-}
+cmd_macros!(adduser, arp, chmod, deluser, mkdir, mv, pkill, sed, systemctl, tee, test, usermod);
 
 mod util;
 
@@ -34,13 +30,14 @@ procedure! {
         AddNewUser { host: String },
         AssignSudoPrivileges { host: String, username: String },
         DeletePiUser { host: String, username: String },
+        SetUpSshAccess { host: String, username: String },
     }
 }
 
 impl Steps for Configure {
     fn get_host(&mut self, _step: &mut ProcedureStep) -> Result<Halt<ConfigureState>> {
         let local_endpoint = status!("Finding local endpoints" => {
-            let output = arp!().hide_output().run()?;
+            let (_, output) = arp!("-a").hide_stdout().run()?;
             let (default_index, mut endpoints) = util::LocalEndpoint::parse_arp_output(&output, &self.node_name);
 
             let index = choose!(
@@ -70,7 +67,7 @@ impl Steps for Configure {
         adduser!(new_username)
             .ssh(&client)
             .sudo()
-            .pipe_input([&new_password, &new_password])
+            .stdin_lines([&new_password, &new_password])
             .run()?;
 
         self.password.replace(Some(new_password));
@@ -89,18 +86,26 @@ impl Steps for Configure {
     ) -> Result<Halt<ConfigureState>> {
         let client = self.ssh_client_password_auth(&host, "pi", "raspberry")?;
 
-        usermod!(username).ssh(&client).sudo().run()?;
+        usermod!(
+            "-a",
+            "-G",
+            "adm,dialout,cdrom,sudo,audio,video,plugdev,games,users,input,netdev,gpio,i2c,spi",
+            username
+        )
+        .ssh(&client)
+        .sudo()
+        .run()?;
 
         let sudo_file = format!("/etc/sudoers.d/010_{username}");
 
         tee!(sudo_file)
             .ssh(&client)
             .sudo()
-            .pipe_input([&format!("{username} ALL=(ALL) PASSWD: ALL")])
+            .stdin_line(&format!("{username} ALL=(ALL) PASSWD: ALL"))
             .hide_output()
             .run()?;
 
-        chmod!(sudo_file).ssh(&client).sudo().run()?;
+        chmod!("0440", sudo_file).ssh(&client).sudo().run()?;
 
         halt!(DeletePiUser { host, username })
     }
@@ -114,14 +119,120 @@ impl Steps for Configure {
         let password = self.password_for_user(&username)?;
         let client = self.ssh_client_password_auth(&host, &username, &password)?;
 
-        let result = pkill!().ssh(&client).sudo_password(&*password).run();
-        match result {
-            Ok(_) | Err(ProcessError::Exit { status: 1, .. }) => (),
-            Err(err) => return Err(err.into()),
-        }
+        pkill!("-u", "pi")
+            .ssh(&client)
+            .sudo_password(&*password)
+            .success_codes([0, 1])
+            .run()?;
 
-        deluser!().ssh(&client).sudo_password(&*password).run()?;
+        deluser!("--remove-home", "pi")
+            .ssh(&client)
+            .sudo_password(&*password)
+            .run()?;
 
+        halt!(SetUpSshAccess { host, username })
+    }
+
+    fn set_up_ssh_access(
+        &mut self,
+        step: &mut ProcedureStep,
+        host: String,
+        username: String,
+    ) -> Result<Halt<ConfigureState>> {
+        let password = self.password_for_user(&username)?;
+
+        let (pub_key, priv_key) = status!("Generating SSH keypair" => {
+            let mut key_pair = KeyPair::generate(KeyType::ED25519, 256).log_err()?;
+            *key_pair.comment_mut() = username.clone();
+
+            let pub_key = key_pair.serialize_publickey().log_err()?;
+            let priv_key = key_pair.serialize_openssh(Some(&password), Cipher::Aes256_Cbc).log_err()?;
+
+            let randomart = util::fingerprint_randomart(
+                FingerprintHash::SHA256,
+                &key_pair,
+            )?;
+
+            info!("Fingerprint randomart:");
+            info!(randomart);
+
+            (pub_key, priv_key)
+        });
+
+        status!("Storing SSH keypair" => {
+            let pub_path = step.register_file(format!("ssh/id_{username}_ed25519.pub"))?;
+            let priv_path = step.register_file(format!("ssh/id_{username}_ed25519"))?;
+            fs::write(pub_path, &pub_key)?;
+            fs::write(&priv_path, priv_key)?;
+
+            info!("Key stored in {}", priv_path.to_string_lossy());
+        });
+
+        let client = self.ssh_client_password_auth(&host, &username, &password)?;
+
+        status!("Sending SSH public key" => {
+            let src = format!("/home/{username}/.ssh/authorized_keys");
+            let dest = src.clone() + " updated";
+
+            let (status_code, _) = test!("-s", src).ssh(&client).success_codes([0, 1]).run()?;
+            if status_code == 1 {
+                tee!(src).ssh(&client).stdin_line(&username).run()?;
+            }
+
+            let key = pub_key.replace("/", r"\/");
+            sed!(
+                format!("/{username}$/{{h;s/.*/{key}/}};${{x;/^$/{{s//{key}/;H}};x}}"),
+                src,
+            )
+            .ssh(&client)
+            .stdout(&dest)
+            .secret(&key)
+            .run()?;
+
+            mv!(dest, src).ssh(&client).run()?;
+        });
+
+        hoclog::error!("Abort")?;
+
+        status!("Configuring SSH server" => {
+            mkdir!("-p", "-m", "700", format!("/home/{username}/.ssh"))
+                .ssh(&client)
+                .run()?;
+
+            tee!("/etc/ssh/sshd_config")
+                .ssh(&client)
+                .sudo_password(&*password)
+                .stdin_lines(&[
+                    "Include /etc/ssh/sshd_config.d/*.conf",
+                    "ChallengeResponseAuthentication no",
+                    "UsePAM no",
+                    "PasswordAuthentication no",
+                    "PrintMotd no",
+                    "AcceptEnv LANG LC_*",
+                    "Subsystem sftp /usr/lib/openssh/sftp-server",
+                ])
+                .run()?;
+
+            mkdir!("-p", "-m", "755", "/etc/ssh/sshd_config.d")
+                .ssh(&client)
+                .sudo_password(&*password)
+                .run()?;
+
+            let sshd_config_path = format!("/etc/ssh/sshd_config.d/010_{username}-allowusers.conf");
+
+            tee!(sshd_config_path)
+                .ssh(&client)
+                .sudo_password(&*password)
+                .stdin_line(&format!("AllowUsers {username}"))
+                .run()?;
+
+            //systemctl!("restart", "ssh")
+            //.ssh(&client)
+            //.sudo_password(&*password)
+            //.run()?;
+        });
+
+        hoclog::error!("Abort")?;
         finish!()
     }
 }

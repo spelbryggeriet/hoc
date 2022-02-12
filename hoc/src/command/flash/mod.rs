@@ -9,18 +9,10 @@ use strum::IntoEnumIterator;
 use tempfile::TempDir;
 use zip::ZipArchive;
 
-use hoclib::{cmd_template, halt, transient_finish, Halt, ProcedureStep};
+use hoclib::{cmd_macros, halt, transient_finish, Halt, ProcedureStep};
 use hoclog::{bail, choose, info, prompt, status, LogErr};
 
-cmd_template! {
-    dd(input, output) => "dd", "bs=1m", ("if={}", input), ("of={}", output);
-    diskutil_list(disk_type) => "diskutil", "list", "-plist", "external", disk_type;
-    diskutil_mount(path, device) => "diskutil", "mount", "-mountPoint", path, device;
-    diskutil_unmount_disk(device) => "diskutil", "unmountDisk", device;
-    hdiutil_attach(image) => "hdiutil", "attach", "-imagekey", "diskimage-class=CRawDiskImage", "-nomount", image;
-    hdiutil_detach(dev_name) => "hdiutil", "detach", dev_name;
-    sync() => "sync";
-}
+cmd_macros!(dd, diskutil, hdiutil, sync);
 
 mod util;
 
@@ -123,7 +115,16 @@ impl Steps for Flash {
     ) -> hoclog::Result<Halt<FlashState>> {
         let image_real_path = step.register_file(&image_path)?;
 
-        status!("Attaching image as disk" => hdiutil_attach!(image_real_path).run()?);
+        status!("Attaching image as disk" => {
+            hdiutil!(
+                "attach",
+                "-imagekey",
+                "diskimage-class=CRawDiskImage",
+                "-nomount",
+                image_real_path
+            )
+            .run()?
+        });
 
         let disk_id = status!("Find attached disk" => {
             let mut attached_disks_info: Vec<_> =
@@ -151,7 +152,7 @@ impl Steps for Flash {
 
         let mount_dir = status!("Mounting image disk" => {
             let mount_dir = TempDir::new().log_err()?;
-            diskutil_mount!(mount_dir.as_ref(), &dev_disk_id).run()?;
+            diskutil!("mount", "-mountPoint", mount_dir.as_ref(), &dev_disk_id).run()?;
             mount_dir
         });
 
@@ -162,8 +163,12 @@ impl Steps for Flash {
         });
 
         status!("Syncing image disk writes" => sync!().run()?);
-        status!("Unmounting image disk" => diskutil_unmount_disk!(dev_disk_id).run()?);
-        status!("Detaching image disk" => hdiutil_detach!(dev_disk_id).run()?);
+        status!("Unmounting image disk" => {
+            diskutil!("unmountDisk", dev_disk_id).run()?
+        });
+        status!("Detaching image disk" => {
+            hdiutil!("detach", dev_disk_id).run()?
+        });
 
         halt!(FlashImage { image_path })
     }
@@ -184,7 +189,7 @@ impl Steps for Flash {
 
         let disk_path = PathBuf::from(format!("/dev/{}", disk_id));
 
-        status!("Unmounting SD card" => diskutil_unmount_disk!(disk_path).run()?);
+        status!("Unmounting SD card" => diskutil!("unmountDisk", disk_path).run()?);
 
         let image_real_path = step.register_file(&image_path)?;
 
@@ -192,8 +197,9 @@ impl Steps for Flash {
             prompt!("Do you want to flash target disk '{}'?", disk_id)?;
 
             dd!(
-                image_real_path.to_string_lossy(),
-                format!("/dev/r{}", disk_id),
+                "bs=1m",
+                format!("if={}", image_real_path.to_string_lossy()),
+                format!("of=/dev/r{disk_id}"),
             )
             .sudo()
             .run()?;
@@ -205,7 +211,9 @@ impl Steps for Flash {
             );
         });
 
-        status!("Unmounting image disk" => diskutil_unmount_disk!(disk_path).run()?);
+        status!("Unmounting image disk" => {
+            diskutil!("unmountDisk", disk_path).run()?
+        });
 
         transient_finish!()
     }
