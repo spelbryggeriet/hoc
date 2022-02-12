@@ -1,14 +1,12 @@
-use std::iter::StepBy;
+use std::{iter::StepBy, str::CharIndices, vec::IntoIter};
 
 pub const CLEAR_STYLE: &str = "\u{1b}[0m";
 
 pub trait Styling {
     fn split_ansi_escape_code(&self) -> SplitAnsiEscapeCode;
     fn split_ansi_escape_code_inclusive(&self) -> SplitAnsiEscapeCodeInclusive;
-    fn char_count_without_styling(&self) -> usize;
-    fn is_ansi_escape_code(&self) -> bool;
+    fn visible_char_indices(&self) -> VisibleCharIndices;
     fn active_ansi_escape_code(&self) -> Option<&str>;
-    fn normalize_styling(&self) -> String;
 }
 
 impl Styling for str {
@@ -20,13 +18,8 @@ impl Styling for str {
         SplitAnsiEscapeCodeInclusive::new(self)
     }
 
-    fn char_count_without_styling(&self) -> usize {
-        self.split_ansi_escape_code()
-            .fold(0, |count, word| count + word.chars().count())
-    }
-
-    fn is_ansi_escape_code(&self) -> bool {
-        self.split_ansi_escape_code_inclusive().count() == 3
+    fn visible_char_indices(&self) -> VisibleCharIndices {
+        VisibleCharIndices::new(self)
     }
 
     fn active_ansi_escape_code(&self) -> Option<&str> {
@@ -35,27 +28,65 @@ impl Styling for str {
             .step_by(2)
             .last()
     }
+}
 
-    fn normalize_styling(&self) -> String {
-        let mut iter = self.split_ansi_escape_code_inclusive();
-        let mut normalized = iter.next().unwrap().to_string();
-        let codes = iter.clone().step_by(2);
-        let words = iter.skip(1).step_by(2);
-        let iter = codes.zip(words).scan(None, |active_style, (code, word)| {
-            if *active_style == Some(code) || word.is_empty() {
-                Some(["", word])
-            } else {
-                active_style.replace(code);
-                Some([code, word])
-            }
-        });
+pub struct VisibleCharIndices<'a> {
+    chars: CharIndices<'a>,
+    orphan_chars: IntoIter<(usize, char)>,
+}
 
-        for [code, word] in iter {
-            normalized += code;
-            normalized += word;
+impl<'a> VisibleCharIndices<'a> {
+    fn new(source: &'a str) -> Self {
+        Self {
+            chars: source.char_indices(),
+            orphan_chars: Vec::new().into_iter(),
+        }
+    }
+}
+
+impl<'a> Iterator for VisibleCharIndices<'a> {
+    type Item = (usize, char);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if let Some(c) = self.orphan_chars.next() {
+            return Some(c);
         }
 
-        normalized
+        'outer: loop {
+            match self.chars.next() {
+                Some(esc @ (_, '\x1B')) => match self.chars.next() {
+                    Some(bracket @ (_, '[')) => {
+                        let chars_clone = self.chars.clone();
+                        let mut orphan_chars_count = 0;
+                        'inner: loop {
+                            match self.chars.next() {
+                                Some((_, 'm')) => break 'inner,
+                                Some(_) => orphan_chars_count += 1,
+                                None => {
+                                    self.orphan_chars = [esc, bracket]
+                                        .into_iter()
+                                        .chain(chars_clone.take(orphan_chars_count))
+                                        .collect::<Vec<_>>()
+                                        .into_iter();
+                                    break 'outer;
+                                }
+                            }
+                        }
+                    }
+                    Some(c) => {
+                        self.orphan_chars = vec![esc, c].into_iter();
+                        break 'outer;
+                    }
+                    None => {
+                        self.orphan_chars = vec![esc].into_iter();
+                        break 'outer;
+                    }
+                },
+                opt => return opt,
+            }
+        }
+
+        self.orphan_chars.next()
     }
 }
 

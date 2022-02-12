@@ -172,7 +172,7 @@ impl Steps for Configure {
 
         status!("Sending SSH public key" => {
             let src = format!("/home/{username}/.ssh/authorized_keys");
-            let dest = src.clone() + " updated";
+            let dest = src.clone() + "_updated";
 
             let (status_code, _) = test!("-s", src).ssh(&client).success_codes([0, 1]).run()?;
             if status_code == 1 {

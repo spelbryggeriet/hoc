@@ -2,7 +2,7 @@ use std::io::Write;
 
 use console::{Style, Term};
 
-use crate::{log::LogType, prefix::PrefixPrefs, styling::Styling, wrapping::Wrapping};
+use crate::{log::LogType, prefix::PrefixPrefs, styling::Styling, wrapping::Wrap};
 
 pub struct PrintContext {
     pub failure: bool,
@@ -48,19 +48,18 @@ impl PrintContext {
             self.print_spacing_if_needed(log_type);
 
             let prefix = self.create_line_prefix(get_prefix_prefs());
-            let prefix_len = prefix.char_count_without_styling();
+            let prefix_len = prefix.visible_char_indices().count();
 
-            let text_len = line.char_count_without_styling();
+            let text_len = line.visible_char_indices().count();
             let text_max_width = self
                 .stdout
                 .size_checked()
                 .and_then(|s| (s.1 as usize).checked_sub(prefix_len))
                 .filter(|l| *l > 0)
                 .unwrap_or(text_len);
-            let normalized_text = line.normalize_styling();
-            let mut line_chunks = normalized_text.wrapped_words(text_max_width);
+            let mut line_chunks = Some(line).into_iter().wrap(text_max_width);
 
-            let first_line = if let Some(color) = &color {
+            let first_line = if let Some(ref color) = color {
                 prefix
                     + &color
                         .apply_to(line_chunks.next().unwrap_or_default())

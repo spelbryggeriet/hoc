@@ -10,7 +10,7 @@ use lazy_static::lazy_static;
 
 pub use log::{Error, Log, LogErr, Status, Stream};
 pub use styling::Styling;
-pub use wrapping::Wrapping;
+pub use wrapping::Words;
 
 lazy_static! {
     pub static ref LOG: Log = {
