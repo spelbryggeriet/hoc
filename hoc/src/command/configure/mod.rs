@@ -3,13 +3,15 @@ use std::{
     fs,
 };
 
+use hoclib::{cmd_macros, finish, halt, ssh::SshClient, Halt, ProcedureStep};
 use hoclog::{choose, hidden_input, info, input, status, LogErr, Result};
 use hocproc::procedure;
-
-use hoclib::{cmd_macros, finish, halt, ssh::SshClient, Halt, ProcedureStep};
 use osshkeys::{cipher::Cipher, keys::FingerprintHash, KeyPair, KeyType};
 
-cmd_macros!(adduser, arp, chmod, deluser, mkdir, mv, pkill, sed, systemctl, tee, test, usermod);
+cmd_macros!(
+    adduser, arp, cat, chmod, dd, deluser, mkdir, pkill, rm, sed, sshd, systemctl, tee, test,
+    usermod,
+);
 
 mod util;
 
@@ -64,10 +66,11 @@ impl Steps for Configure {
 
         let client = self.ssh_client_password_auth(&host, "pi", "raspberry")?;
 
+        // Add the new user.
         adduser!(new_username)
-            .ssh(&client)
-            .sudo()
             .stdin_lines([&new_password, &new_password])
+            .sudo()
+            .ssh(&client)
             .run()?;
 
         self.password.replace(Some(new_password));
@@ -86,26 +89,26 @@ impl Steps for Configure {
     ) -> Result<Halt<ConfigureState>> {
         let client = self.ssh_client_password_auth(&host, "pi", "raspberry")?;
 
+        // Assign the user the relevant groups.
         usermod!(
             "-a",
             "-G",
             "adm,dialout,cdrom,sudo,audio,video,plugdev,games,users,input,netdev,gpio,i2c,spi",
             username
         )
-        .ssh(&client)
         .sudo()
+        .ssh(&client)
         .run()?;
 
+        // Create sudo file for the user.
         let sudo_file = format!("/etc/sudoers.d/010_{username}");
-
         tee!(sudo_file)
-            .ssh(&client)
-            .sudo()
             .stdin_line(&format!("{username} ALL=(ALL) PASSWD: ALL"))
+            .sudo()
             .hide_output()
+            .ssh(&client)
             .run()?;
-
-        chmod!("0440", sudo_file).ssh(&client).sudo().run()?;
+        chmod!("440", sudo_file).sudo().ssh(&client).run()?;
 
         halt!(DeletePiUser { host, username })
     }
@@ -119,15 +122,17 @@ impl Steps for Configure {
         let password = self.password_for_user(&username)?;
         let client = self.ssh_client_password_auth(&host, &username, &password)?;
 
+        // Kill all processes owned by the `pi` user.
         pkill!("-u", "pi")
-            .ssh(&client)
             .sudo_password(&*password)
             .success_codes([0, 1])
+            .ssh(&client)
             .run()?;
 
+        // Delete the default `pi` user.
         deluser!("--remove-home", "pi")
-            .ssh(&client)
             .sudo_password(&*password)
+            .ssh(&client)
             .run()?;
 
         halt!(SetUpSshAccess { host, username })
@@ -171,68 +176,68 @@ impl Steps for Configure {
         let client = self.ssh_client_password_auth(&host, &username, &password)?;
 
         status!("Sending SSH public key" => {
-            let src = format!("/home/{username}/.ssh/authorized_keys");
-            let dest = src.clone() + "_updated";
-
-            let (status_code, _) = test!("-s", src).ssh(&client).success_codes([0, 1]).run()?;
-            if status_code == 1 {
-                tee!(src).ssh(&client).stdin_line(&username).run()?;
-            }
-
-            let key = pub_key.replace("/", r"\/");
-            sed!(
-                format!("/{username}$/{{h;s/.*/{key}/}};${{x;/^$/{{s//{key}/;H}};x}}"),
-                src,
-            )
-            .ssh(&client)
-            .stdout(&dest)
-            .secret(&key)
-            .run()?;
-
-            mv!(dest, src).ssh(&client).run()?;
-        });
-
-        hoclog::error!("Abort")?;
-
-        status!("Configuring SSH server" => {
+            // Create the `.ssh` directory.
             mkdir!("-p", "-m", "700", format!("/home/{username}/.ssh"))
                 .ssh(&client)
                 .run()?;
 
-            tee!("/etc/ssh/sshd_config")
-                .ssh(&client)
-                .sudo_password(&*password)
-                .stdin_lines(&[
-                    "Include /etc/ssh/sshd_config.d/*.conf",
-                    "ChallengeResponseAuthentication no",
-                    "UsePAM no",
-                    "PasswordAuthentication no",
-                    "PrintMotd no",
-                    "AcceptEnv LANG LC_*",
-                    "Subsystem sftp /usr/lib/openssh/sftp-server",
-                ])
-                .run()?;
+            let dest = format!("/home/{username}/.ssh/authorized_keys");
+            let src = dest.clone() + "_updated";
 
-            mkdir!("-p", "-m", "755", "/etc/ssh/sshd_config.d")
-                .ssh(&client)
-                .sudo_password(&*password)
-                .run()?;
+            // Check if the authorized keys file exists.
+            let (status_code, _) = test!("-s", dest).success_codes([0, 1]).ssh(&client).run()?;
+            if status_code == 1 {
+                // Create the authorized keys file.
+                cat!().stdin_line(&username).stdout(&dest).ssh(&client).run()?;
+                chmod!("644", dest).ssh(&client).run()?;
+            }
 
-            let sshd_config_path = format!("/etc/ssh/sshd_config.d/010_{username}-allowusers.conf");
+            // Copy the public key to the authorized keys file.
+            let key = pub_key.replace("/", r"\/");
+            sed!(
+                format!("0,/{username}$/{{h;s/^.*{username}$/{key}/}};${{x;/^$/{{s//{key}/;H}};x}}"),
+                dest,
+            )
+            .stdout(&src)
+            .secret(&key)
+            .ssh(&client)
+            .run()?;
 
-            tee!(sshd_config_path)
-                .ssh(&client)
-                .sudo_password(&*password)
-                .stdin_line(&format!("AllowUsers {username}"))
-                .run()?;
-
-            //systemctl!("restart", "ssh")
-            //.ssh(&client)
-            //.sudo_password(&*password)
-            //.run()?;
+            // Move the updated config contents.
+            dd!(format!("if={src}"), format!("of={dest}")).ssh(&client).run()?;
+            rm!(src).ssh(&client).run()?;
         });
 
-        hoclog::error!("Abort")?;
+        status!("Configuring SSH server" => {
+            let dest = "/etc/ssh/sshd_config";
+            let src = format!("/home/{username}/sshd_config_updated");
+
+            // Set `PasswordAuthentication` to `no`.
+            let key = "PasswordAuthentication";
+            sed!(
+                format!("0,/{key}/{{h;s/^.*{key}.*$/{key} no/}};${{x;/^$/{{s//{key} no/;H}};x}}"),
+                dest,
+            )
+            .stdout(&src)
+            .ssh(&client)
+            .run()?;
+
+            // Move the updated config contents.
+            dd!(format!("if={src}"), format!("of={dest}"))
+                .sudo_password(&*password)
+                .ssh(&client)
+                .run()?;
+            rm!(src).ssh(&client).run()?;
+
+            // Verify sshd config and restart the SSH server.
+            sshd!("-t").sudo_password(&*password).ssh(&client).run()?;
+            hoclog::error!("Abort")?;
+            systemctl!("restart", "ssh")
+                .sudo_password(&*password)
+                .ssh(&client)
+                .run()?;
+        });
+
         finish!()
     }
 }

@@ -87,7 +87,11 @@ macro_rules! status {
 
     ($fmt:expr $(=> $code:expr)?) => {{
         let __status = $crate::LOG.status($fmt);
-        $($code)?
+        let mut __wrapper = || -> $crate::Result<_> {
+            let __output = { $($code)? };
+            Ok(__output)
+        };
+        __wrapper()?
     }};
 }
 

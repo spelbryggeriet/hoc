@@ -30,12 +30,15 @@ macro_rules! cmd {
 
 #[macro_export]
 macro_rules! cmd_macros {
-    ($($name:ident),* $(,)?) => {
+    ($($name:ident $(=> $cmd:literal)?),* $(,)?) => {
         $crate::_with_dollar_sign!(($d:tt) => {
             $(
             macro_rules! $name {
                 ($d ($d args:expr),* $d (,)?) => {
-                    $crate::cmd!(stringify!($name), $d ($d args),*)
+                    $crate::cmd!(
+                        $(if true { $cmd } else )? { stringify!($name) },
+                        $d ($d args),*
+                    )
                 };
             }
             )*
@@ -77,16 +80,20 @@ impl<'a> Obfuscate<'a> for &'a str {
 }
 
 trait Quotify<'a> {
+    fn needs_quotes(&self) -> bool;
     fn quotify(self) -> Cow<'a, str>;
 }
 
 impl<'a> Quotify<'a> for Cow<'a, str> {
-    fn quotify(self) -> Cow<'a, str> {
-        if self.is_empty()
+    fn needs_quotes(&self) -> bool {
+        self.is_empty()
             || self
                 .chars()
                 .any(|c| c.is_whitespace() || c == '$' || c == '`')
-        {
+    }
+
+    fn quotify(self) -> Cow<'a, str> {
+        if self.needs_quotes() {
             Cow::Owned(format!("'{}'", self.replace("'", r"'\''")))
         } else {
             self
@@ -95,12 +102,20 @@ impl<'a> Quotify<'a> for Cow<'a, str> {
 }
 
 impl<'a> Quotify<'a> for String {
+    fn needs_quotes(&self) -> bool {
+        Cow::<str>::Borrowed(self).needs_quotes()
+    }
+
     fn quotify(self) -> Cow<'a, str> {
         Cow::<str>::Owned(self).quotify()
     }
 }
 
 impl<'a> Quotify<'a> for &'a str {
+    fn needs_quotes(&self) -> bool {
+        Cow::Borrowed(self).needs_quotes()
+    }
+
     fn quotify(self) -> Cow<'a, str> {
         Cow::Borrowed(self).quotify()
     }
@@ -245,11 +260,22 @@ where
         let show_stderr = !self.silent && !self.hide_stderr;
 
         if !self.silent {
-            let sudo_str = if self.sudo.is_some() { " (sudo)" } else { "" };
+            let sudo_str = if self.sudo.is_some() {
+                format!(" ({})", "sudo".green())
+            } else {
+                String::new()
+            };
             let command_str = self
                 .args
                 .iter()
-                .map(|arg| arg.to_string_lossy().obfuscate(&self.secrets).quotify())
+                .map(|arg| {
+                    let arg = arg.to_string_lossy().obfuscate(&self.secrets);
+                    if arg.needs_quotes() {
+                        Cow::Owned(arg.quotify().yellow().to_string())
+                    } else {
+                        arg.quotify()
+                    }
+                })
                 .fold(
                     self.program.to_string_lossy().green().to_string(),
                     |out, arg| out + " " + &arg,
