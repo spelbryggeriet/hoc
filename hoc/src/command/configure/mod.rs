@@ -3,7 +3,7 @@ use std::{
     fs,
 };
 
-use hoclib::{cmd_macros, finish, halt, ssh::SshClient, Halt, ProcedureStep};
+use hoclib::{cmd_macros, finish, halt, ssh::SshClient, DirState, Halt};
 use hoclog::{choose, hidden_input, info, input, status, LogErr, Result};
 use hocproc::procedure;
 use osshkeys::{cipher::Cipher, keys::FingerprintHash, KeyPair, KeyType};
@@ -37,7 +37,7 @@ procedure! {
 }
 
 impl Steps for Configure {
-    fn get_host(&mut self, _step: &mut ProcedureStep) -> Result<Halt<ConfigureState>> {
+    fn get_host(&mut self, _work_dir_state: &mut DirState) -> Result<Halt<ConfigureState>> {
         let local_endpoint = status!("Finding local endpoints" => {
             let (_, output) = arp!("-a").hide_stdout().run()?;
             let (default_index, mut endpoints) = util::LocalEndpoint::parse_arp_output(&output, &self.node_name);
@@ -58,7 +58,7 @@ impl Steps for Configure {
 
     fn add_new_user(
         &mut self,
-        _step: &mut ProcedureStep,
+        _work_dir_state: &mut DirState,
         host: String,
     ) -> Result<Halt<ConfigureState>> {
         let new_username = input!("Choose a new username");
@@ -83,7 +83,7 @@ impl Steps for Configure {
 
     fn assign_sudo_privileges(
         &mut self,
-        _step: &mut ProcedureStep,
+        _work_dir_state: &mut DirState,
         host: String,
         username: String,
     ) -> Result<Halt<ConfigureState>> {
@@ -115,7 +115,7 @@ impl Steps for Configure {
 
     fn delete_pi_user(
         &mut self,
-        _step: &mut ProcedureStep,
+        _work_dir_state: &mut DirState,
         host: String,
         username: String,
     ) -> Result<Halt<ConfigureState>> {
@@ -140,7 +140,7 @@ impl Steps for Configure {
 
     fn set_up_ssh_access(
         &mut self,
-        step: &mut ProcedureStep,
+        work_dir_state: &mut DirState,
         host: String,
         username: String,
     ) -> Result<Halt<ConfigureState>> {
@@ -165,8 +165,11 @@ impl Steps for Configure {
         });
 
         status!("Storing SSH keypair" => {
-            let pub_path = step.register_file(format!("ssh/id_{username}_ed25519.pub"))?;
-            let priv_path = step.register_file(format!("ssh/id_{username}_ed25519"))?;
+            let ssh_path = work_dir_state.track("ssh");
+            fs::create_dir_all(ssh_path)?;
+
+            let pub_path = work_dir_state.track(format!("ssh/id_{username}_ed25519.pub"));
+            let priv_path = work_dir_state.track(format!("ssh/id_{username}_ed25519"));
             fs::write(pub_path, &pub_key)?;
             fs::write(&priv_path, priv_key)?;
 

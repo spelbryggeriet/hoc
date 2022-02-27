@@ -8,7 +8,7 @@ use colored::Colorize;
 use hoclog::{error, status};
 use thiserror::Error;
 
-use crate::process::{ProcessError, ProcessOutput};
+use crate::process::{self, ProcessOutput};
 
 #[derive(Debug, Error)]
 pub enum SshError {
@@ -127,7 +127,7 @@ impl ProcessOutput for ssh2::Channel {
         ssh2::Channel::stderr(self)
     }
 
-    fn finish(mut self) -> Result<Option<i32>, ProcessError> {
+    fn finish(mut self) -> Result<Option<i32>, process::Error> {
         let err_into = Into::<SshError>::into;
         self.close().map_err(err_into)?;
         self.wait_close().map_err(err_into)?;

@@ -417,7 +417,7 @@ fn gen_run(state_name: &Ident, state_variants: &[StateVariant]) -> TokenStream {
     let calls = state_variants.iter().map(|v| {
         let name = Ident::new(&v.ident.to_string().to_snake_case(), Span::call_site());
         let args = v.fields.iter().map(|f| &f.0);
-        quote!(self.#name(step, #(#args),*))
+        quote!(self.#name(step.work_dir_state_mut() #(, #args)*))
     });
 
     let match_switch = state_variants
@@ -446,7 +446,7 @@ fn gen_steps_trait(
             quote!(#field_name: #field_type)
         });
 
-        quote!(fn #name(&mut self, step: &mut ::hoclib::ProcedureStep #(, #args)*) -> ::hoclog::Result<::hoclib::Halt<#state_name>>;)
+        quote!(fn #name(&mut self, work_dir_state: &mut ::hoclib::DirState #(, #args)*) -> ::hoclog::Result<::hoclib::Halt<#state_name>>;)
     });
 
     let maybe_impl_steps = state_variants

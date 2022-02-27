@@ -48,8 +48,24 @@ macro_rules! cmd_macros {
 
 pub mod ssh;
 
-pub fn reset_sudo_privileges() -> Result<(), ProcessError> {
+pub const SUCCESS_CODE: i32 = 0;
+
+pub fn reset_sudo_privileges() -> Result<(), Error> {
     cmd!("sudo", "-k").silent().run().map(|_| ())
+}
+
+fn process_exit_err_msg(program: &str, status: i32, stdout: &str, stderr: &str) -> String {
+    let output_str = if !stdout.is_empty() && !stderr.is_empty() {
+        format!(":\n\n[stdout]\n{stdout}\n\n[stderr]\n{stderr}")
+    } else if !stdout.is_empty() {
+        format!(":\n\n[stdout]\n{stdout}")
+    } else if !stderr.is_empty() {
+        format!(":\n\n[stderr]\n{stderr}")
+    } else {
+        String::new()
+    };
+
+    format!("{program} exited with status code {status}{output_str}")
 }
 
 trait Obfuscate<'a> {
@@ -122,14 +138,14 @@ impl<'a> Quotify<'a> for &'a str {
 }
 
 #[derive(Debug, Error)]
-pub enum ProcessError {
+pub enum Error {
     #[error("io: {0}")]
     Io(#[from] io::Error),
 
     #[error("ssh: {0}")]
     Ssh(#[from] ssh::SshError),
 
-    #[error("{program} exited with non-zero status code")]
+    #[error("{}", process_exit_err_msg(program, *status, stdout, stderr))]
     Exit {
         program: String,
         status: i32,
@@ -141,8 +157,8 @@ pub enum ProcessError {
     Aborted { program: String },
 }
 
-impl From<ProcessError> for hoclog::Error {
-    fn from(err: ProcessError) -> Self {
+impl From<Error> for hoclog::Error {
+    fn from(err: Error) -> Self {
         error!(err.to_string()).unwrap_err()
     }
 }
@@ -255,7 +271,7 @@ where
         self.hide_stdout().hide_stderr()
     }
 
-    pub fn run(self) -> Result<(i32, String), ProcessError> {
+    pub fn run(self) -> Result<(i32, String), Error> {
         let show_stdout = !self.silent && !self.hide_stdout;
         let show_stderr = !self.silent && !self.hide_stderr;
 
@@ -305,14 +321,14 @@ where
                     Ok((status, output))
                 }
 
-                Err(ProcessError::Exit {
+                Err(Error::Exit {
                     program,
                     status,
                     stdout,
                     stderr,
                 }) => {
                     cmd_status.with_label(format!("exit: {status}").red());
-                    Err(ProcessError::Exit {
+                    Err(Error::Exit {
                         program,
                         status,
                         stdout,
@@ -320,9 +336,9 @@ where
                     })
                 }
 
-                Err(ProcessError::Aborted { program }) => {
+                Err(Error::Aborted { program }) => {
                     cmd_status.with_label(format!("aborted").red());
-                    Err(ProcessError::Aborted { program })
+                    Err(Error::Aborted { program })
                 }
 
                 err => err,
@@ -332,7 +348,7 @@ where
         }
     }
 
-    fn exec(mut self, show_stdout: bool, show_stderr: bool) -> Result<(i32, String), ProcessError> {
+    fn exec(mut self, show_stdout: bool, show_stderr: bool) -> Result<(i32, String), Error> {
         let program_str = self.program.to_string_lossy().into_owned();
         let line_prefix = OsString::from(hoclog::LOG.create_line_prefix("Password:"));
 
@@ -410,7 +426,7 @@ where
         };
 
         if let Some(status) = status {
-            let success_codes = self.success_codes.as_deref().unwrap_or(&[0]);
+            let success_codes = self.success_codes.as_deref().unwrap_or(&[SUCCESS_CODE]);
             if success_codes.contains(&status) {
                 if !self.silent {
                     if !show_stdout && !show_stderr {
@@ -424,7 +440,7 @@ where
 
                 Ok((status, stdout))
             } else {
-                Err(ProcessError::Exit {
+                Err(Error::Exit {
                     program: program_str,
                     status,
                     stdout,
@@ -432,7 +448,7 @@ where
                 })
             }
         } else {
-            Err(ProcessError::Aborted {
+            Err(Error::Aborted {
                 program: program_str,
             })
         }
@@ -445,13 +461,13 @@ trait ProcessOutput {
 
     fn stdout(&mut self) -> Self::Stdout;
     fn stderr(&mut self) -> Self::Stderr;
-    fn finish(self) -> Result<Option<i32>, ProcessError>;
+    fn finish(self) -> Result<Option<i32>, Error>;
 
     fn read_stdout_to_string(
         &mut self,
         show_output: bool,
         secrets: &[&str],
-    ) -> Result<String, ProcessError> {
+    ) -> Result<String, Error> {
         Self::read_lines(self.stdout(), show_output, secrets)
     }
 
@@ -459,15 +475,11 @@ trait ProcessOutput {
         &mut self,
         show_output: bool,
         secrets: &[&str],
-    ) -> Result<String, ProcessError> {
+    ) -> Result<String, Error> {
         Self::read_lines(self.stderr(), show_output, secrets)
     }
 
-    fn read_lines(
-        reader: impl Read,
-        show_output: bool,
-        secrets: &[&str],
-    ) -> Result<String, ProcessError> {
+    fn read_lines(reader: impl Read, show_output: bool, secrets: &[&str]) -> Result<String, Error> {
         let mut output = String::new();
         let buf_reader = BufReader::new(reader);
         for line in buf_reader.lines() {
@@ -504,7 +516,7 @@ impl ProcessOutput for process::Child {
         self.stderr.take().unwrap()
     }
 
-    fn finish(mut self) -> Result<Option<i32>, ProcessError> {
+    fn finish(mut self) -> Result<Option<i32>, Error> {
         let status = self.wait()?;
         Ok(status.code())
     }

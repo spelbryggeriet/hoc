@@ -1,6 +1,6 @@
 use std::{
     fs::File,
-    io::{Read, Write},
+    io::{Read, Seek, SeekFrom, Write},
     path::PathBuf,
 };
 
@@ -9,7 +9,7 @@ use strum::IntoEnumIterator;
 use tempfile::TempDir;
 use zip::ZipArchive;
 
-use hoclib::{cmd_macros, halt, transient_finish, Halt, ProcedureStep};
+use hoclib::{cmd_macros, halt, transient_finish, DirState, Halt};
 use hoclog::{bail, choose, info, prompt, status, LogErr};
 
 cmd_macros!(dd, diskutil, hdiutil, sync);
@@ -34,7 +34,7 @@ procedure! {
 impl Steps for Flash {
     fn download_operating_system_image(
         &mut self,
-        step: &mut ProcedureStep,
+        work_dir_state: &mut DirState,
     ) -> hoclog::Result<Halt<FlashState>> {
         let mut images: Vec<_> = util::Image::iter().collect();
         let index = choose!("Which image do you want to use?", items = &images)?;
@@ -45,10 +45,11 @@ impl Steps for Flash {
 
         let archive_path = PathBuf::from("image");
         status!("Downloading image" => {
-            let image_real_path = step.register_file(&archive_path)?;
+            let image_real_path = work_dir_state.track(&archive_path);
             let mut file = File::options()
                 .read(false)
                 .write(true)
+                .create(true)
                 .open(image_real_path)?;
 
             reqwest::blocking::get(image.url()).log_err()?.copy_to(&mut file).log_err()?;
@@ -59,12 +60,12 @@ impl Steps for Flash {
 
     fn decompress_image_archive(
         &mut self,
-        step: &mut ProcedureStep,
+        work_dir_state: &mut DirState,
         archive_path: PathBuf,
     ) -> hoclog::Result<Halt<FlashState>> {
         let (archive_data, mut archive_file) = status!("Reading archive" => {
-            let archive_real_path = step.register_file(&archive_path)?;
-            let file = File::options()
+            let archive_real_path = work_dir_state.track(&archive_path);
+            let mut file = File::options()
                 .read(true)
                 .write(true)
                 .open(&archive_real_path)?;
@@ -84,13 +85,16 @@ impl Steps for Flash {
                     let mut data = Vec::new();
                     status!("Decompressing image" => {
                         archive_file
-                            .read(&mut data)
+                            .read_to_end(&mut data)
                             .log_context("Failed to read image in Zip archive")?;
                         buf.replace(data);
                     });
                     break;
                 }
             }
+
+            file.seek(SeekFrom::Start(0))?;
+            file.set_len(0)?;
 
             if let Some(data) = buf {
                 (data, file)
@@ -100,7 +104,7 @@ impl Steps for Flash {
         });
 
         status!("Save decompressed image to file" => {
-            archive_file.write(&archive_data)?;
+            archive_file.write_all(&archive_data)?;
         });
 
         halt!(ModifyImage {
@@ -110,10 +114,10 @@ impl Steps for Flash {
 
     fn modify_image(
         &mut self,
-        step: &mut ProcedureStep,
+        work_dir_state: &mut DirState,
         image_path: PathBuf,
     ) -> hoclog::Result<Halt<FlashState>> {
-        let image_real_path = step.register_file(&image_path)?;
+        let image_real_path = work_dir_state.track(&image_path);
 
         status!("Attaching image as disk" => {
             hdiutil!(
@@ -175,7 +179,7 @@ impl Steps for Flash {
 
     fn flash_image(
         &mut self,
-        step: &mut ProcedureStep,
+        work_dir_state: &mut DirState,
         image_path: PathBuf,
     ) -> hoclog::Result<Halt<FlashState>> {
         let disk_id = status!("Find mounted SD card" => {
@@ -191,7 +195,7 @@ impl Steps for Flash {
 
         status!("Unmounting SD card" => diskutil!("unmountDisk", disk_path).run()?);
 
-        let image_real_path = step.register_file(&image_path)?;
+        let image_real_path = work_dir_state.track(&image_path);
 
         status!("Flashing SD card" => {
             prompt!("Do you want to flash target disk '{}'?", disk_id)?;

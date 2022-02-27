@@ -1,32 +1,26 @@
 use std::{
-    collections::HashMap,
+    collections::hash_map::DefaultHasher,
     env,
     fs::{self, File, OpenOptions},
+    hash::{Hash, Hasher},
     io::{self, Seek, SeekFrom},
     ops::{Index, IndexMut},
     path::PathBuf,
 };
 
 use hoclog::error;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use thiserror::Error;
 
-use crate::procedure::{self, Attributes, ProcedureState, ProcedureStep};
+use self::steps::{StepsIndex, StepsMap};
+use crate::{Procedure, Steps};
 
-pub mod dir_state;
+pub mod steps;
 
 const ENV_HOME: &str = "HOME";
 
-#[derive(Debug, Serialize, Deserialize)]
-struct CacheVariant {
-    attributes: Attributes,
-
-    #[serde(flatten)]
-    cache: Cache,
-}
-
 #[derive(Debug, Error)]
-pub enum ContextError {
+pub enum Error {
     #[error("environment variable {0}: {1}")]
     EnvVar(String, env::VarError),
 
@@ -35,10 +29,22 @@ pub enum ContextError {
 
     #[error("serde yaml: {0}")]
     SerdeYaml(#[from] serde_yaml::Error),
+
+    #[error("steps: {0}")]
+    Steps(#[from] steps::Error),
+
+    #[error("steps already exist: {} with attributes {{{}}}",
+        _0.name(),
+        _0.attributes()
+            .iter()
+            .map(|(k, v)| format!("{k:?}: {v}"))
+            .collect::<Vec<_>>()
+            .join(", "))]
+    StepsAlreadyExist(StepsIndex),
 }
 
-impl From<ContextError> for hoclog::Error {
-    fn from(err: ContextError) -> Self {
+impl From<Error> for hoclog::Error {
+    fn from(err: Error) -> Self {
         error!(err.to_string()).unwrap_err()
     }
 }
@@ -46,187 +52,121 @@ impl From<ContextError> for hoclog::Error {
 #[derive(Debug, Serialize)]
 pub struct Context {
     #[serde(flatten)]
-    caches: HashMap<String, Vec<CacheVariant>>,
+    steps: StepsMap,
 
     #[serde(skip_serializing)]
     file: File,
 }
 
-impl Index<(&str, &Attributes)> for Context {
-    type Output = Cache;
+impl Index<&StepsIndex> for Context {
+    type Output = Steps;
 
-    fn index(&self, (cache_id, cache_attributes): (&str, &Attributes)) -> &Self::Output {
-        &self.caches[cache_id]
-            .iter()
-            .find(|cv| cv.attributes == *cache_attributes)
-            .unwrap()
-            .cache
+    fn index(&self, index: &StepsIndex) -> &Self::Output {
+        &self.steps.0[index]
     }
 }
 
-impl IndexMut<(&str, &Attributes)> for Context {
-    fn index_mut(
-        &mut self,
-        (cache_id, cache_attributes): (&str, &Attributes),
-    ) -> &mut Self::Output {
-        &mut self
-            .caches
-            .get_mut(cache_id)
-            .unwrap()
-            .iter_mut()
-            .find(|cv| cv.attributes == *cache_attributes)
-            .unwrap()
-            .cache
+impl IndexMut<&StepsIndex> for Context {
+    fn index_mut(&mut self, index: &StepsIndex) -> &mut Self::Output {
+        self.steps.0.get_mut(index).unwrap()
     }
 }
 
 impl Context {
     pub const CONTEXT_FILE_NAME: &'static str = "context.yaml";
     pub const CONTEXT_DIR: &'static str = ".hoc";
-    pub const WORK_DIR: &'static str = "workdir";
+    pub const WORK_DIR_PARENT: &'static str = "workdir";
 
-    pub fn load() -> Result<Self, ContextError> {
-        let mut work_dir_path = Self::get_work_dir()?;
+    pub fn load() -> Result<Self, Error> {
+        let mut work_dir_parent_path = Self::get_work_dir_parent();
 
-        match fs::metadata(&work_dir_path) {
+        match fs::metadata(&work_dir_parent_path) {
             Ok(_) => (),
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                fs::create_dir_all(&work_dir_path)?;
+                fs::create_dir_all(&work_dir_parent_path)?;
             }
             Err(error) => return Err(error.into()),
         }
 
-        work_dir_path.pop();
-        work_dir_path.push(Self::CONTEXT_FILE_NAME);
-        let context_dir_path = work_dir_path;
+        work_dir_parent_path.pop();
+        work_dir_parent_path.push(Self::CONTEXT_FILE_NAME);
+        let context_dir_path = work_dir_parent_path;
 
-        match OpenOptions::new()
+        let context = match OpenOptions::new()
             .read(true)
             .write(true)
             .open(&context_dir_path)
         {
             Ok(file) => {
-                let caches: HashMap<String, Vec<CacheVariant>> = serde_yaml::from_reader(&file)?;
-                Ok(Self { caches, file })
+                let caches: StepsMap = serde_yaml::from_reader(&file)?;
+                Self {
+                    steps: caches,
+                    file,
+                }
             }
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
                 let file = File::create(&context_dir_path)?;
                 let context = Self {
-                    caches: Default::default(),
+                    steps: Default::default(),
                     file,
                 };
                 serde_yaml::to_writer(&context.file, &context)?;
-                Ok(context)
+                context
             }
-            Err(error) => Err(error.into()),
-        }
+            Err(error) => return Err(error.into()),
+        };
+
+        Ok(context)
     }
 
-    pub fn get_context_dir() -> Result<PathBuf, ContextError> {
-        let home = env::var(ENV_HOME).map_err(|e| ContextError::EnvVar(ENV_HOME.into(), e))?;
+    fn get_context_dir() -> PathBuf {
+        let home = env::var(ENV_HOME).unwrap();
         let mut context_path = PathBuf::new();
         context_path.push(home);
         context_path.push(Self::CONTEXT_DIR);
-
-        Ok(context_path)
+        context_path
     }
 
-    pub fn get_work_dir() -> Result<PathBuf, ContextError> {
-        let mut path = Self::get_context_dir()?;
-        path.push(Self::WORK_DIR);
-        Ok(path)
+    fn get_work_dir_parent() -> PathBuf {
+        let mut path = Self::get_context_dir();
+        path.push(Self::WORK_DIR_PARENT);
+        path
     }
 
-    pub fn contains_cache(&self, name: &str, attributes: &Attributes) -> bool {
-        self.caches.get(name).map_or(false, |variants| {
-            variants.iter().any(|cv| cv.attributes == *attributes)
-        })
+    pub fn get_work_dir<P: Procedure>(procedure: &P) -> PathBuf {
+        let mut path = Self::get_work_dir_parent();
+
+        let mut hasher = DefaultHasher::new();
+        P::NAME.hash(&mut hasher);
+        procedure.get_attributes().hash(&mut hasher);
+        let hash = hasher.finish();
+
+        path.push(format!("{}_{hash:016x}", P::NAME));
+        path
     }
 
-    pub fn update_cache(&mut self, name: String, attributes: Attributes, cache: Cache) {
-        let mut data = Vec::new();
-        data.push(CacheVariant { attributes, cache });
-
-        self.caches
-            .entry(name)
-            .and_modify(|variants| variants.extend(data.drain(..)))
-            .or_insert(data);
+    pub fn get_steps_index<P: Procedure>(&self, procedure: &P) -> Option<StepsIndex> {
+        let cache_index = StepsIndex(P::NAME.to_string(), procedure.get_attributes());
+        self.steps.0.contains_key(&cache_index).then(|| cache_index)
     }
 
-    pub fn persist(&mut self) -> Result<(), ContextError> {
+    pub fn add_steps<P: Procedure>(&mut self, procedure: &P) -> Result<StepsIndex, Error> {
+        fs::create_dir(Self::get_work_dir(procedure))?;
+
+        let cache = Steps::new::<P>(procedure)?;
+        let cache_index = StepsIndex(P::NAME.to_string(), procedure.get_attributes());
+
+        if self.steps.0.contains_key(&cache_index) {
+            return Err(Error::StepsAlreadyExist(cache_index));
+        }
+
+        self.steps.0.insert(cache_index.clone(), cache);
+        Ok(cache_index)
+    }
+
+    pub fn persist(&mut self) -> Result<(), Error> {
         self.file.set_len(0)?;
         self.file.seek(SeekFrom::Start(0))?;
         Ok(serde_yaml::to_writer(&self.file, self)?)
-    }
-}
-
-#[derive(Debug, Error)]
-pub enum CacheError {
-    #[error("context: {0}")]
-    Context(#[from] ContextError),
-
-    #[error("procedure step: {0}")]
-    ProcedureStep(#[from] procedure::ProcedureStepError),
-}
-
-impl From<CacheError> for hoclog::Error {
-    fn from(err: CacheError) -> Self {
-        error!(err.to_string()).unwrap_err()
-    }
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct Cache {
-    completed_steps: Vec<ProcedureStep>,
-    current_step: Option<ProcedureStep>,
-}
-
-impl Cache {
-    pub fn new<S: ProcedureState>() -> Result<Self, CacheError> {
-        Ok(Self {
-            completed_steps: Vec::new(),
-            current_step: Some(ProcedureStep::new(&S::default(), Context::get_work_dir()?)?),
-        })
-    }
-
-    pub fn completed_steps(&self) -> impl DoubleEndedIterator<Item = &ProcedureStep> + '_ {
-        self.completed_steps.iter()
-    }
-
-    pub fn current_step_mut(&mut self) -> Option<&mut ProcedureStep> {
-        self.current_step.as_mut()
-    }
-
-    pub fn advance<S: ProcedureState>(&mut self, state: &Option<S>) -> Result<(), CacheError> {
-        if let Some(state) = state {
-            if let Some(mut current_step) = self.current_step.take() {
-                current_step.save_work_dir_changes()?;
-
-                let step = ProcedureStep::new(state, current_step.work_dir_state().root_path())?;
-
-                self.completed_steps.push(current_step);
-                self.current_step.replace(step);
-            }
-        } else if let Some(mut current_step) = self.current_step.take() {
-            current_step.save_work_dir_changes()?;
-            self.completed_steps.push(current_step);
-        }
-
-        Ok(())
-    }
-
-    pub fn invalidate_state<S: ProcedureState>(&mut self, id: S::Id) -> Result<(), CacheError> {
-        for (index, step) in self.completed_steps.iter().enumerate() {
-            if step.id::<S>()? == id {
-                self.completed_steps.truncate(index + 1);
-
-                let mut current_step = self.completed_steps.remove(index);
-                current_step.unregister_path("")?;
-                self.current_step.replace(current_step);
-                break;
-            }
-        }
-
-        Ok(())
     }
 }
