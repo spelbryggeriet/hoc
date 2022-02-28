@@ -277,7 +277,7 @@ where
 
         if !self.silent {
             let sudo_str = if self.sudo.is_some() {
-                format!(" ({})", "sudo".green())
+                "sudo ".green().to_string()
             } else {
                 String::new()
             };
@@ -296,10 +296,15 @@ where
                     self.program.to_string_lossy().green().to_string(),
                     |out, arg| out + " " + &arg,
                 );
-            let redirect_str = if let Some(path) = self.stdout {
+            let redirect_output_str = if let Some(path) = self.stdout {
                 format!(" 1>{}", path.to_string_lossy().quotify())
                     .blue()
                     .to_string()
+            } else {
+                String::new()
+            };
+            let redirect_input_str = if !self.pipe_input.is_empty() {
+                format!(" {}{}", "0<".blue(), "'mark'".obfuscate(&["mark"]).yellow())
             } else {
                 String::new()
             };
@@ -311,8 +316,7 @@ where
             };
 
             let cmd_status = hoclog::LOG.status(format!(
-                "Running{} command on {}: {}{}",
-                sudo_str, client, command_str, redirect_str
+                "Run command on {client}: {sudo_str}{command_str}{redirect_output_str}{redirect_input_str}",
             ));
 
             match Process::exec(self, show_stdout, show_stderr) {
