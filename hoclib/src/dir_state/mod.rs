@@ -1,4 +1,5 @@
 use std::{
+    cmp::Reverse,
     ffi::{OsStr, OsString},
     fmt,
     fs::{self, File},
@@ -93,7 +94,7 @@ pub enum Error {
     #[error("not a directory: {}", _0.to_string_lossy())]
     NotADir(PathBuf),
 
-    #[error("directory not empyu: {}", _0.to_string_lossy())]
+    #[error("directory not empty: {}", _0.to_string_lossy())]
     NonEmptyDir(PathBuf),
 
     #[error("unexpected file: {}", _0.to_string_lossy())]
@@ -209,24 +210,30 @@ impl DirState {
     }
 
     pub fn is_commited<P: AsRef<Path>>(&self, path_suffix: P) -> bool {
-        let prefix = &self.path;
+        let mut tracker = self.path.clone();
+        let mut dir_state = self;
 
-        for file in &self.files {
-            if file.path.strip_prefix(prefix).unwrap() == path_suffix.as_ref() {
-                return true;
+        if let Some(parent) = path_suffix.as_ref().parent() {
+            for name in parent.iter() {
+                tracker.push(name);
+
+                if let Some(index) = dir_state.dirs.iter().position(|ds| ds.path == tracker) {
+                    dir_state = &dir_state.dirs[index];
+                } else {
+                    return false;
+                }
             }
         }
 
-        for dir in &self.dirs {
-            if path_suffix
-                .as_ref()
-                .starts_with(dir.path.strip_prefix(prefix).unwrap())
-            {
-                return dir.is_commited(path_suffix.as_ref());
-            }
-        }
-
-        false
+        let file_is_commited = dir_state
+            .files
+            .iter()
+            .any(|fs| fs.path.strip_prefix(&self.path).unwrap() == path_suffix.as_ref());
+        let dir_is_commited = dir_state
+            .dirs
+            .iter()
+            .any(|ds| ds.path.strip_prefix(&self.path).unwrap() == path_suffix.as_ref());
+        file_is_commited || dir_is_commited
     }
 
     pub fn is_tracked<P: AsRef<Path>>(&self, file_suffix: P) -> bool {
@@ -294,7 +301,7 @@ impl DirState {
 
     pub fn commit(&mut self) -> Result<(), Error> {
         let tracked_paths: Vec<_> = self.tracked_files.drain(..).collect();
-        let untracked_paths: Vec<_> = self.untracked_files.drain(..).collect();
+        let mut untracked_paths: Vec<_> = self.untracked_files.drain(..).collect();
 
         for path in tracked_paths {
             let metadata = path.metadata()?;
@@ -328,6 +335,7 @@ impl DirState {
             }
         }
 
+        untracked_paths.sort_by_cached_key(|p| Reverse(p.iter().count()));
         for path in untracked_paths {
             let mut tracker = self.path.clone();
             let mut dir_state = &mut *self;
@@ -335,25 +343,22 @@ impl DirState {
             if let Some(parent) = path.strip_prefix(&tracker).unwrap().parent() {
                 for name in parent.iter() {
                     tracker.push(name);
-                    let index = dir_state
-                        .dirs
-                        .iter()
-                        .position(|ds| ds.path == tracker)
-                        .expect("non-existing untracked path");
-                    dir_state = &mut dir_state.dirs[index];
+                    if let Some(index) = dir_state.dirs.iter().position(|ds| ds.path == tracker) {
+                        dir_state = &mut dir_state.dirs[index];
+                    } else {
+                        continue;
+                    }
                 }
             }
 
-            if let Some(index) = self.files.iter().position(|fs| fs.path == path) {
-                self.files.remove(index);
-            } else if let Some(index) = self.dirs.iter().position(|ds| ds.path == path) {
-                if !self.dirs[index].is_empty() {
-                    return Err(Error::NonEmptyDir(self.dirs[index].path.clone()));
+            if let Some(index) = dir_state.files.iter().position(|fs| fs.path == path) {
+                dir_state.files.remove(index);
+            } else if let Some(index) = dir_state.dirs.iter().position(|ds| ds.path == path) {
+                if !dir_state.dirs[index].is_empty() {
+                    return Err(Error::NonEmptyDir(dir_state.dirs[index].path.clone()));
                 }
 
                 self.dirs.remove(index);
-            } else {
-                unreachable!("non-existing untracked path");
             }
         }
 

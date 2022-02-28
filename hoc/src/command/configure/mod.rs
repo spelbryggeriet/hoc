@@ -6,7 +6,7 @@ use std::{
 use hoclib::{cmd_macros, finish, halt, ssh::SshClient, DirState, Halt};
 use hoclog::{choose, hidden_input, info, input, status, LogErr, Result};
 use hocproc::procedure;
-use osshkeys::{cipher::Cipher, keys::FingerprintHash, KeyPair, KeyType};
+use osshkeys::{cipher::Cipher, keys::FingerprintHash, KeyPair, KeyType, PublicParts};
 
 cmd_macros!(
     adduser, arp, cat, chmod, dd, deluser, mkdir, pkill, rm, sed, sshd, systemctl, tee, test,
@@ -153,10 +153,9 @@ impl Steps for Configure {
             let pub_key = key_pair.serialize_publickey().log_err()?;
             let priv_key = key_pair.serialize_openssh(Some(&password), Cipher::Aes256_Cbc).log_err()?;
 
-            let randomart = util::fingerprint_randomart(
+            let randomart = key_pair.fingerprint_randomart(
                 FingerprintHash::SHA256,
-                &key_pair,
-            )?;
+            ).log_err()?;
 
             info!("Fingerprint randomart:");
             info!(randomart);

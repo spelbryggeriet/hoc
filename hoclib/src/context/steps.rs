@@ -231,14 +231,14 @@ impl Steps {
                 .collect();
 
             let comp = if !added_dirs.is_empty() || !added_files.is_empty() {
-                for dir in added_dirs {
-                    fs::remove_dir_all(&dir)?;
-                    cur_dir_state.untrack(dir);
-                }
-
                 for file in added_files {
                     fs::remove_file(&file)?;
-                    cur_dir_state.untrack(&file);
+                    cur_dir_state.untrack(&file.strip_prefix(&work_dir).unwrap());
+                }
+
+                for dir in added_dirs {
+                    fs::remove_dir_all(&dir)?;
+                    cur_dir_state.untrack(&dir.strip_prefix(&work_dir).unwrap());
                 }
 
                 cur_dir_state.commit()?;
@@ -254,12 +254,6 @@ impl Steps {
             };
 
             invalidate_previous_step = comp.has_removed_paths();
-            for dir in comp.all_modified_dirs() {
-                if let Some(old_mode) = dir.old_mode() {
-                    fs::set_permissions(dir.path(), Permissions::from_mode(old_mode))?;
-                }
-            }
-
             for file in comp.all_modified_files() {
                 if file.new_checksum().is_none() {
                     if let Some(old_mode) = file.old_mode() {
@@ -269,6 +263,12 @@ impl Steps {
                 }
 
                 invalidate_previous_step = true;
+            }
+
+            for dir in comp.all_modified_dirs() {
+                if let Some(old_mode) = dir.old_mode() {
+                    fs::set_permissions(dir.path(), Permissions::from_mode(old_mode))?;
+                }
             }
 
             cur_dir_state.refresh_modes()?;
