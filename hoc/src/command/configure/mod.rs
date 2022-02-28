@@ -1,6 +1,9 @@
 use std::{
     cell::{Ref, RefCell},
-    fs,
+    fs::{self, File},
+    io::Write,
+    os::unix::prelude::OpenOptionsExt,
+    path::Path,
 };
 
 use hoclib::{cmd_macros, finish, halt, ssh::SshClient, DirState, Halt};
@@ -33,6 +36,7 @@ procedure! {
         AssignSudoPrivileges { host: String, username: String },
         DeletePiUser { host: String, username: String },
         SetUpSshAccess { host: String, username: String },
+        InstallDependencies { host: String, username: String },
     }
 }
 
@@ -151,7 +155,7 @@ impl Steps for Configure {
             *key_pair.comment_mut() = username.clone();
 
             let pub_key = key_pair.serialize_publickey().log_err()?;
-            let priv_key = key_pair.serialize_openssh(Some(&password), Cipher::Aes256_Cbc).log_err()?;
+            let priv_key = key_pair.serialize_openssh(Some(&password), Cipher::Aes256_Ctr).log_err()?;
 
             let randomart = key_pair.fingerprint_randomart(
                 FingerprintHash::SHA256,
@@ -163,16 +167,20 @@ impl Steps for Configure {
             (pub_key, priv_key)
         });
 
-        status!("Store SSH keypair" => {
-            let ssh_path = work_dir_state.track("ssh");
-            fs::create_dir_all(ssh_path)?;
+        let (pub_path, priv_path) = status!("Store SSH keypair" => {
+            let ssh_dir = work_dir_state.track("ssh");
+            fs::create_dir_all(ssh_dir)?;
 
             let pub_path = work_dir_state.track(format!("ssh/id_{username}_ed25519.pub"));
             let priv_path = work_dir_state.track(format!("ssh/id_{username}_ed25519"));
-            fs::write(pub_path, &pub_key)?;
-            fs::write(&priv_path, priv_key)?;
+            let mut pub_file = File::options().write(true).create(true).mode(0o600).open(&pub_path)?;
+            let mut priv_file = File::options().write(true).create(true).mode(0o600).open(&priv_path)?;
+            pub_file.write_all(pub_key.as_bytes())?;
+            priv_file.write_all(priv_key.as_bytes())?;
 
             info!("Key stored in {}", priv_path.to_string_lossy());
+
+            (pub_path, priv_path)
         });
 
         let client = self.ssh_client_password_auth(&host, &username, &password)?;
@@ -237,7 +245,30 @@ impl Steps for Configure {
                 .sudo_password(&*password)
                 .ssh(&client)
                 .run()?;
+
+            // Verify again after SSH server restart.
+            let client =
+                self.ssh_client_key_auth(&host, &username, &pub_path, &priv_path, &password)?;
+
+            sshd!("-t").sudo_password(&*password).ssh(&client).run()?;
         });
+
+        halt!(InstallDependencies { host, username })
+    }
+
+    fn install_dependencies(
+        &mut self,
+        work_dir_state: &mut DirState,
+        host: String,
+        username: String,
+    ) -> Result<Halt<ConfigureState>> {
+        let pub_path = work_dir_state.track(format!("ssh/id_{username}_ed25519.pub"));
+        let priv_path = work_dir_state.track(format!("ssh/id_{username}_ed25519"));
+        let password = self.password_for_user(&username)?;
+        let client =
+            self.ssh_client_key_auth(&host, &username, &pub_path, &priv_path, &password)?;
+
+        hoclog::error!("Abort")?;
 
         finish!()
     }
@@ -251,6 +282,33 @@ impl Configure {
         }
 
         Ok(Ref::map(self.password.borrow(), |o| o.as_ref().unwrap()))
+    }
+
+    fn ssh_client_key_auth(
+        &self,
+        host: &str,
+        username: &str,
+        pub_key_path: &Path,
+        priv_key_path: &Path,
+        key_passphrase: &str,
+    ) -> Result<Ref<SshClient>> {
+        {
+            let mut ref_mut = self.ssh_client.borrow_mut();
+            if let Some(ref mut client) = *ref_mut {
+                client.update_key_auth(username, pub_key_path, priv_key_path, key_passphrase)?;
+            } else {
+                let new_client = SshClient::new_key_auth(
+                    host,
+                    username,
+                    pub_key_path,
+                    priv_key_path,
+                    key_passphrase,
+                )?;
+                ref_mut.replace(new_client);
+            };
+        }
+
+        Ok(Ref::map(self.ssh_client.borrow(), |o| o.as_ref().unwrap()))
     }
 
     fn ssh_client_password_auth(

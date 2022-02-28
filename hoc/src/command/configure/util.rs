@@ -58,37 +58,3 @@ impl LocalEndpoint {
         }
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_fingerprint_randomart() {
-        const ART: &str = "\
-            +--[ED25519 256]--+\n\
-            |      ..o o..oo=B|\n\
-            |     . . B ooo=oE|\n\
-            |      . * o =..o |\n\
-            |       o = *     |\n\
-            |    .   S * o    |\n\
-            |     + o = =     |\n\
-            |    . = . =      |\n\
-            |     . o...o     |\n\
-            |      .o==o.     |\n\
-            +----[SHA256]-----+";
-        const KEYPAIR: &str = "\
-            -----BEGIN OPENSSH PRIVATE KEY-----\n\
-            b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW\n\
-            QyNTUxOQAAACDhSeGEnFgvaAVu9TWWDbdI5qHN/fUm3YRDci19WcfYQgAAAKCp1NZoqdTW\n\
-            aAAAAAtzc2gtZWQyNTUxOQAAACDhSeGEnFgvaAVu9TWWDbdI5qHN/fUm3YRDci19WcfYQg\n\
-            AAAEDCKVoVjFBKe2trTOEL5PGUSpzk2DdTjwhr7k+FIzX90uFJ4YScWC9oBW71NZYNt0jm\n\
-            oc399SbdhENyLX1Zx9hCAAAAGmxpZGluQEhhbXB1cy1NQlAuaGstcm91dGVyAQID\n\
-            -----END OPENSSH PRIVATE KEY-----";
-
-        let key_pair = KeyPair::from_keystr(KEYPAIR, None).unwrap();
-        let generated_art = fingerprint_randomart(FingerprintHash::SHA256, &key_pair).unwrap();
-
-        assert_eq!(ART, generated_art);
-    }
-}

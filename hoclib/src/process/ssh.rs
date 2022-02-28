@@ -1,7 +1,7 @@
 use std::{
     io::{self, Write},
     net::TcpStream,
-    path::PathBuf,
+    path::{Path, PathBuf},
 };
 
 use colored::Colorize;
@@ -33,6 +33,28 @@ pub struct SshClient {
 }
 
 impl SshClient {
+    pub fn new_key_auth(
+        host: impl AsRef<str> + ToString,
+        username: impl AsRef<str> + ToString,
+        pub_key_path: impl Into<PathBuf>,
+        priv_key_path: impl Into<PathBuf>,
+        key_passphrase: impl ToString,
+    ) -> Result<Self, SshError> {
+        let auth = Authentication::Key {
+            pub_key: pub_key_path.into(),
+            priv_key: priv_key_path.into(),
+            passphrase: key_passphrase.to_string(),
+        };
+        let session = Self::create_session(host.as_ref(), username.as_ref(), &auth)?;
+
+        Ok(Self {
+            session,
+            host: host.to_string(),
+            username: username.to_string(),
+            auth,
+        })
+    }
+
     pub fn new_password_auth(
         host: impl AsRef<str> + ToString,
         username: impl AsRef<str> + ToString,
@@ -49,14 +71,50 @@ impl SshClient {
         })
     }
 
+    pub fn update_key_auth(
+        &mut self,
+        username: impl AsRef<str> + ToString,
+        pub_key_path: impl AsRef<Path> + Into<PathBuf>,
+        priv_key_path: impl AsRef<Path> + Into<PathBuf>,
+        key_passphrase: impl AsRef<str> + ToString,
+    ) -> Result<(), SshError> {
+        let same_username = username.as_ref() == &self.username;
+        let same_key_auth = matches!(
+            &self.auth,
+            Authentication::Key {
+                pub_key,
+                priv_key,
+                passphrase,
+            } if pub_key == pub_key_path.as_ref()
+                && priv_key == priv_key_path.as_ref()
+                && passphrase == key_passphrase.as_ref(),
+        );
+
+        if !same_username || !same_key_auth {
+            self.username = username.to_string();
+            self.auth = Authentication::Key {
+                pub_key: pub_key_path.into(),
+                priv_key: priv_key_path.into(),
+                passphrase: key_passphrase.to_string(),
+            };
+            self.session = Self::create_session(&self.host, &self.username, &self.auth)?;
+        }
+
+        Ok(())
+    }
+
     pub fn update_password_auth(
         &mut self,
         username: impl AsRef<str> + ToString,
         password: impl AsRef<str> + ToString,
     ) -> Result<(), SshError> {
-        if username.as_ref() != &self.username
-            || !matches!(&self.auth, Authentication::Password(ref pswd) if pswd == password.as_ref())
-        {
+        let same_username = username.as_ref() == &self.username;
+        let same_password_auth = matches!(
+            &self.auth,
+            Authentication::Password(pswd) if pswd == password.as_ref(),
+        );
+
+        if !same_username || !same_password_auth {
             self.username = username.to_string();
             self.auth = Authentication::Password(password.to_string());
             self.session = Self::create_session(&self.host, &self.username, &self.auth)?;
@@ -79,8 +137,8 @@ impl SshClient {
             session.handshake()?;
 
             match auth {
-                Authentication::Key { pub_key, priv_key } => {
-                    session.userauth_pubkey_file(username, Some(&pub_key), &priv_key, None)?
+                Authentication::Key { pub_key, priv_key, passphrase } => {
+                    session.userauth_pubkey_file(username, Some(&pub_key), &priv_key, Some(&passphrase))?
                 }
                 Authentication::Password(password) => session.userauth_password(username, &password)?,
             }
@@ -137,6 +195,10 @@ impl ProcessOutput for ssh2::Channel {
 
 #[derive(PartialEq, Eq)]
 enum Authentication {
-    Key { pub_key: PathBuf, priv_key: PathBuf },
+    Key {
+        pub_key: PathBuf,
+        priv_key: PathBuf,
+        passphrase: String,
+    },
     Password(String),
 }
