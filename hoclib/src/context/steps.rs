@@ -3,6 +3,7 @@ use std::{
     fs::{self, Permissions},
     io,
     os::unix::prelude::PermissionsExt,
+    path::PathBuf,
 };
 
 use hoclog::error;
@@ -177,7 +178,10 @@ impl Steps {
                 self.current
                     .replace(ProcedureStep::from_states(state, work_dir_state)?);
             }
-        } else if let Some(current_step) = self.current.take() {
+        } else if let Some(mut current_step) = self.current.take() {
+            current_step.work_dir_state_mut().commit()?;
+            current_step.work_dir_state_mut().refresh()?;
+
             self.completed.push(current_step);
         }
 
@@ -194,6 +198,23 @@ impl Steps {
         }
 
         Ok(())
+    }
+
+    pub fn added_paths<P: Procedure>(&self, procedure: &P) -> Result<Vec<PathBuf>, Error> {
+        if let Some(step) = self.current.as_ref().or(self.completed.last()) {
+            let work_dir = Context::get_work_dir(procedure);
+            let cur_dir_state = DirState::from_dir(&work_dir)?;
+            let comp = DirComparison::compare(step.work_dir_state(), &cur_dir_state);
+            let mut added_paths: Vec<_> = comp
+                .all_added_files()
+                .map(|fs| fs.path().to_path_buf())
+                .chain(comp.all_added_dirs().map(|ds| ds.path().to_path_buf()))
+                .collect();
+            added_paths.sort();
+            Ok(added_paths)
+        } else {
+            Ok(Vec::new())
+        }
     }
 
     pub fn oldest_invalid_state<P: Procedure>(

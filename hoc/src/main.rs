@@ -47,10 +47,8 @@ fn run_procedure<P: Procedure>(context: &mut Context, mut proc: P) -> hoclog::Re
         info!(proc_info);
     }
 
-    let steps = &context[&steps_index];
-
     if let Some(state_id) = proc.rewind_state() {
-        let mut iter = steps
+        let mut iter = context[&steps_index]
             .completed()
             .iter()
             .map(ProcedureStep::id::<P::State>)
@@ -74,7 +72,18 @@ fn run_procedure<P: Procedure>(context: &mut Context, mut proc: P) -> hoclog::Re
         }
     }
 
-    if let Some((step_index, state_id)) = context[&steps_index]
+    let steps = &context[&steps_index];
+    if let arr @ &[_, ..] = steps.added_paths(&proc)?.as_slice() {
+        warning!(
+            "Untracked paths have been added to the working directory and will be removed:\n{}",
+            arr.into_iter()
+                .map(|p| format!("  - {}", p.to_string_lossy()))
+                .collect::<Vec<_>>()
+                .join("\n")
+        )?;
+    }
+
+    if let Some((step_index, state_id)) = steps
         .oldest_invalid_state(&proc)
         .log_context("Retrieving oldest invalid state")?
     {

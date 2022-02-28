@@ -38,7 +38,7 @@ procedure! {
 
 impl Steps for Configure {
     fn get_host(&mut self, _work_dir_state: &mut DirState) -> Result<Halt<ConfigureState>> {
-        let local_endpoint = status!("Finding local endpoints" => {
+        let local_endpoint = status!("Find local endpoints" => {
             let (_, output) = arp!("-a").hide_stdout().run()?;
             let (default_index, mut endpoints) = util::LocalEndpoint::parse_arp_output(&output, &self.node_name);
 
@@ -146,7 +146,7 @@ impl Steps for Configure {
     ) -> Result<Halt<ConfigureState>> {
         let password = self.password_for_user(&username)?;
 
-        let (pub_key, priv_key) = status!("Generating SSH keypair" => {
+        let (pub_key, priv_key) = status!("Generate SSH keypair" => {
             let mut key_pair = KeyPair::generate(KeyType::ED25519, 256).log_err()?;
             *key_pair.comment_mut() = username.clone();
 
@@ -163,7 +163,7 @@ impl Steps for Configure {
             (pub_key, priv_key)
         });
 
-        status!("Storing SSH keypair" => {
+        status!("Store SSH keypair" => {
             let ssh_path = work_dir_state.track("ssh");
             fs::create_dir_all(ssh_path)?;
 
@@ -177,7 +177,7 @@ impl Steps for Configure {
 
         let client = self.ssh_client_password_auth(&host, &username, &password)?;
 
-        status!("Sending SSH public key" => {
+        status!("Send SSH public key" => {
             // Create the `.ssh` directory.
             mkdir!("-p", "-m", "700", format!("/home/{username}/.ssh"))
                 .ssh(&client)
@@ -210,7 +210,7 @@ impl Steps for Configure {
             rm!(src).ssh(&client).run()?;
         });
 
-        status!("Configuring SSH server" => {
+        status!("Configure SSH server" => {
             let dest = "/etc/ssh/sshd_config";
             let src = format!("/home/{username}/sshd_config_updated");
 
@@ -233,7 +233,6 @@ impl Steps for Configure {
 
             // Verify sshd config and restart the SSH server.
             sshd!("-t").sudo_password(&*password).ssh(&client).run()?;
-            hoclog::error!("Abort")?;
             systemctl!("restart", "ssh")
                 .sudo_password(&*password)
                 .ssh(&client)
