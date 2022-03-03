@@ -58,6 +58,7 @@ impl<'a> HiddenInput<'a> {
                 .unwrap_or_else(|e| panic!("failed printing to stdout: {}", e));
 
             if password != password_verify {
+                print_context.failure = true;
                 return Err(Error::MismatchedPasswords.into());
             }
         }

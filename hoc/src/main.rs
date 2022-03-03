@@ -204,6 +204,7 @@ fn main() {
         let mut context = Context::load().log_context("Loading context")?;
 
         match Command::from_args() {
+            Command::CreateUser(proc) => run_procedure(&mut context, proc)?,
             Command::Flash(proc) => run_procedure(&mut context, proc)?,
             Command::Configure(proc) => run_procedure(&mut context, proc)?,
         }

@@ -28,8 +28,15 @@ struct CommandField<'a> {
 struct StateVariant<'a> {
     attrs: Vec<StateVariantAttr>,
     ident: &'a Ident,
-    fields: Vec<(&'a Ident, &'a Type)>,
+    fields: Vec<StateVariantField<'a>>,
     unit: bool,
+}
+
+struct StateVariantField<'a> {
+    #[allow(dead_code)]
+    attrs: Vec<StateVariantFieldAttr>,
+    ident: &'a Ident,
+    ty: &'a Type,
 }
 
 #[derive(PartialOrd, Ord, Clone)]
@@ -109,6 +116,34 @@ impl Parse for StateVariantAttr {
     }
 }
 
+#[derive(PartialOrd, Ord, Clone)]
+enum StateVariantFieldAttr {}
+
+impl PartialEq for StateVariantFieldAttr {
+    fn eq(&self, other: &Self) -> bool {
+        #[allow(unused_imports)]
+        use StateVariantFieldAttr::*;
+
+        match (self, other) {
+            #[allow(unreachable_patterns)]
+            _ => false,
+        }
+    }
+}
+
+impl Eq for StateVariantFieldAttr {}
+
+impl Parse for StateVariantFieldAttr {
+    fn parse(input: ParseStream) -> syn::Result<Self> {
+        let name: Ident = input.parse()?;
+        let name_str = name.to_string();
+
+        match &*name_str {
+            _ => abort!(name, "unexpected attribute: {}", name_str),
+        }
+    }
+}
+
 struct ProcedureTypes {
     command: ItemStruct,
     state: ItemEnum,
@@ -168,7 +203,14 @@ fn parse_state_variant(variant: &Variant) -> StateVariant {
             fields: fields
                 .named
                 .iter()
-                .map(|f| (f.ident.as_ref().unwrap(), &f.ty))
+                .map(|f| {
+                    let ident = f.ident.as_ref().unwrap();
+                    StateVariantField {
+                        attrs: parse_attributes(&f.attrs, ident),
+                        ident,
+                        ty: &f.ty,
+                    }
+                })
                 .collect(),
             unit: false,
         },
@@ -211,6 +253,9 @@ fn impl_procedure(types: &ProcedureTypes) -> TokenStream {
 
     for variant in stripped_state.variants.iter_mut() {
         variant.attrs.retain(|a| !a.path.is_ident("procedure"));
+        for field in variant.fields.iter_mut() {
+            field.attrs.retain(|a| !a.path.is_ident("procedure"));
+        }
     }
 
     set_dummy(quote! {
@@ -301,17 +346,12 @@ fn impl_procedure(types: &ProcedureTypes) -> TokenStream {
 }
 
 fn check_state_variant_attributes(state_variants: &[StateVariant]) {
-    let mut finish_attributes = state_variants.iter().filter_map(|v| {
-        v.attrs.iter().find_map(|a| {
-            if *a == StateVariantAttr::Finish {
-                Some(v.ident)
-            } else {
-                None
-            }
-        })
-    });
-    let _ = finish_attributes.next();
-    if let Some(ident) = finish_attributes.next() {
+    let duplicate_finish_attribute = state_variants
+        .iter()
+        .filter_map(|v| v.attrs.contains(&StateVariantAttr::Finish).then(|| v.ident))
+        .skip(1)
+        .next();
+    if let Some(ident) = duplicate_finish_attribute {
         abort!(ident, "duplicate finish attribute")
     }
 }
@@ -400,7 +440,7 @@ fn gen_impl_default(state_name: &Ident, state_variants: &[StateVariant]) -> Toke
                 quote!(Self::#name)
             } else {
                 let fields = v.fields.iter().map(|f| {
-                    let field_name = &f.0;
+                    let field_name = &f.ident;
                     quote!(#field_name: Default::default())
                 });
                 quote!({ #(#fields),* })
@@ -492,7 +532,7 @@ fn gen_rewind_state(
 fn gen_run(state_name: &Ident, state_variants: &[StateVariant]) -> TokenStream {
     let variant_patterns = state_variants.iter().map(|v| {
         let variant_name = v.ident;
-        let field_names = v.fields.iter().map(|f| &f.0);
+        let field_names = v.fields.iter().map(|f| &f.ident);
 
         if v.unit {
             quote!(#state_name::#variant_name)
@@ -503,7 +543,7 @@ fn gen_run(state_name: &Ident, state_variants: &[StateVariant]) -> TokenStream {
 
     let variant_exprs = state_variants.iter().map(|v| {
         let name = Ident::new(&v.ident.to_string().to_snake_case(), Span::call_site());
-        let args = v.fields.iter().map(|f| &f.0);
+        let args = v.fields.iter().map(|f| &f.ident);
         let persist = !v.attrs.contains(&StateVariantAttr::Transient);
         let work_dir_state = if persist {
             quote!(step.work_dir_state_mut())
@@ -552,8 +592,8 @@ fn gen_run_trait(
     let run_fns = state_variants.iter().map(|v| {
         let name = Ident::new(&v.ident.to_string().to_snake_case(), Span::call_site());
         let args = v.fields.iter().map(|f| {
-            let field_name = f.0;
-            let field_type = f.1;
+            let field_name = f.ident;
+            let field_type = f.ty;
             quote!(#field_name: #field_type)
         });
 
