@@ -33,6 +33,16 @@ impl ModifiedDir<'_, '_> {
                 .iter()
                 .any(DirComparison::has_removed_paths)
     }
+
+    pub fn has_modified_checksums(&self) -> bool {
+        self.modified_files
+            .iter()
+            .any(FileComparison::has_modified_checksum)
+            || self
+                .modified_dirs
+                .iter()
+                .any(DirComparison::has_modified_checksums)
+    }
 }
 
 #[derive(Debug)]
@@ -130,6 +140,13 @@ impl<'lhs, 'rhs> DirComparison<'lhs, 'rhs> {
         match self {
             Self::Same => false,
             Self::Modified(md) => md.has_removed_paths(),
+        }
+    }
+
+    pub fn has_modified_checksums(&self) -> bool {
+        match self {
+            Self::Same => false,
+            Self::Modified(md) => md.has_modified_checksums(),
         }
     }
 
@@ -466,5 +483,15 @@ impl<'rhs> FileComparison<'rhs> {
         {
             *self = Self::Same;
         }
+    }
+
+    pub fn has_modified_checksum(&self) -> bool {
+        matches!(
+            self,
+            Self::Modified(ModifiedFile {
+                new_checksum: Some(_),
+                ..
+            })
+        )
     }
 }

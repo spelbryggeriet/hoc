@@ -12,10 +12,10 @@ use hoclog::error;
 use serde::Serialize;
 use thiserror::Error;
 
-use self::steps::{StepsIndex, StepsMap};
-use crate::{Procedure, Steps};
+use self::step_history::{StepHistory, StepHistoryIndex, StepHistoryMap};
+use crate::procedure::Procedure;
 
-pub mod steps;
+pub mod step_history;
 
 const ENV_HOME: &str = "HOME";
 
@@ -30,17 +30,17 @@ pub enum Error {
     #[error("serde yaml: {0}")]
     SerdeYaml(#[from] serde_yaml::Error),
 
-    #[error("steps: {0}")]
-    Steps(#[from] steps::Error),
+    #[error("step history: {0}")]
+    StepHistory(#[from] step_history::Error),
 
-    #[error("steps already exist: {} with attributes {{{}}}",
+    #[error("step history already exist: {} with attributes {{{}}}",
         _0.name(),
         _0.attributes()
             .iter()
             .map(|(k, v)| format!("{k:?}: {v}"))
             .collect::<Vec<_>>()
             .join(", "))]
-    StepsAlreadyExist(StepsIndex),
+    StepHistoryAlreadyExist(StepHistoryIndex),
 }
 
 impl From<Error> for hoclog::Error {
@@ -52,22 +52,22 @@ impl From<Error> for hoclog::Error {
 #[derive(Debug, Serialize)]
 pub struct Context {
     #[serde(flatten)]
-    steps: StepsMap,
+    steps: StepHistoryMap,
 
     #[serde(skip_serializing)]
     file: File,
 }
 
-impl Index<&StepsIndex> for Context {
-    type Output = Steps;
+impl Index<&StepHistoryIndex> for Context {
+    type Output = StepHistory;
 
-    fn index(&self, index: &StepsIndex) -> &Self::Output {
+    fn index(&self, index: &StepHistoryIndex) -> &Self::Output {
         &self.steps.0[index]
     }
 }
 
-impl IndexMut<&StepsIndex> for Context {
-    fn index_mut(&mut self, index: &StepsIndex) -> &mut Self::Output {
+impl IndexMut<&StepHistoryIndex> for Context {
+    fn index_mut(&mut self, index: &StepHistoryIndex) -> &mut Self::Output {
         self.steps.0.get_mut(index).unwrap()
     }
 }
@@ -98,7 +98,7 @@ impl Context {
             .open(&context_dir_path)
         {
             Ok(file) => {
-                let caches: StepsMap = serde_yaml::from_reader(&file)?;
+                let caches: StepHistoryMap = serde_yaml::from_reader(&file)?;
                 Self {
                     steps: caches,
                     file,
@@ -145,19 +145,22 @@ impl Context {
         path
     }
 
-    pub fn get_steps_index<P: Procedure>(&self, procedure: &P) -> Option<StepsIndex> {
-        let cache_index = StepsIndex(P::NAME.to_string(), procedure.get_attributes());
+    pub fn get_step_history_index<P: Procedure>(&self, procedure: &P) -> Option<StepHistoryIndex> {
+        let cache_index = StepHistoryIndex(P::NAME.to_string(), procedure.get_attributes());
         self.steps.0.contains_key(&cache_index).then(|| cache_index)
     }
 
-    pub fn add_steps<P: Procedure>(&mut self, procedure: &P) -> Result<StepsIndex, Error> {
+    pub fn add_step_history<P: Procedure>(
+        &mut self,
+        procedure: &P,
+    ) -> Result<StepHistoryIndex, Error> {
         fs::create_dir(Self::get_work_dir(procedure))?;
 
-        let cache = Steps::new::<P>(procedure)?;
-        let cache_index = StepsIndex(P::NAME.to_string(), procedure.get_attributes());
+        let cache = StepHistory::new::<P>(procedure)?;
+        let cache_index = StepHistoryIndex(P::NAME.to_string(), procedure.get_attributes());
 
         if self.steps.0.contains_key(&cache_index) {
-            return Err(Error::StepsAlreadyExist(cache_index));
+            return Err(Error::StepHistoryAlreadyExist(cache_index));
         }
 
         self.steps.0.insert(cache_index.clone(), cache);

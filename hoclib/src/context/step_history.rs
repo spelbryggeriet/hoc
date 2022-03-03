@@ -1,7 +1,7 @@
 use std::{
     collections::HashMap,
     fs::{self, Permissions},
-    io,
+    io, mem,
     os::unix::prelude::PermissionsExt,
     path::PathBuf,
 };
@@ -12,14 +12,14 @@ use thiserror::Error;
 
 use crate::{
     dir_state,
-    procedure::{self, Attributes, ProcedureState, ProcedureStep},
-    process, Context, DirComparison, DirState, Procedure,
+    procedure::{self, Attributes, Procedure, State, Step},
+    process, DirComparison, DirState,
 };
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
-pub struct StepsIndex(pub(super) String, pub(super) Attributes);
+pub struct StepHistoryIndex(pub(super) String, pub(super) Attributes);
 
-impl StepsIndex {
+impl StepHistoryIndex {
     pub fn name(&self) -> &str {
         self.0.as_str()
     }
@@ -30,9 +30,9 @@ impl StepsIndex {
 }
 
 #[derive(Debug, Default)]
-pub struct StepsMap(pub(super) HashMap<StepsIndex, Steps>);
+pub struct StepHistoryMap(pub(super) HashMap<StepHistoryIndex, StepHistory>);
 
-impl Serialize for StepsMap {
+impl Serialize for StepHistoryMap {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: serde::Serializer,
@@ -41,7 +41,7 @@ impl Serialize for StepsMap {
         struct Output<'a> {
             attributes: &'a Attributes,
             #[serde(flatten)]
-            cache: &'a Steps,
+            cache: &'a StepHistory,
         }
 
         let mut map = serializer.serialize_map(Some(self.0.len()))?;
@@ -66,7 +66,7 @@ impl Serialize for StepsMap {
     }
 }
 
-impl<'de> Deserialize<'de> for StepsMap {
+impl<'de> Deserialize<'de> for StepHistoryMap {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: serde::Deserializer<'de>,
@@ -74,7 +74,7 @@ impl<'de> Deserialize<'de> for StepsMap {
         struct InputVisitor;
 
         impl<'de> Visitor<'de> for InputVisitor {
-            type Value = StepsMap;
+            type Value = StepHistoryMap;
 
             fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
                 formatter.write_str("a map of attributed caches")
@@ -88,13 +88,13 @@ impl<'de> Deserialize<'de> for StepsMap {
                 struct Input {
                     attributes: Attributes,
                     #[serde(flatten)]
-                    cache: Steps,
+                    cache: StepHistory,
                 }
 
                 let mut cache_map = HashMap::with_capacity(map.size_hint().unwrap_or(0));
                 while let Some((key, caches)) = map.next_entry::<String, Vec<Input>>()? {
                     for attr_cache in caches {
-                        let cache_index = StepsIndex(key.clone(), attr_cache.attributes);
+                        let cache_index = StepHistoryIndex(key.clone(), attr_cache.attributes);
                         if cache_map.contains_key(&cache_index) {
                             let key = cache_index.name();
                             let attrs = cache_index.attributes();
@@ -110,7 +110,7 @@ impl<'de> Deserialize<'de> for StepsMap {
                         cache_map.insert(cache_index, attr_cache.cache);
                     }
                 }
-                Ok(StepsMap(cache_map))
+                Ok(StepHistoryMap(cache_map))
             }
         }
 
@@ -140,43 +140,43 @@ impl From<Error> for hoclog::Error {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct Steps {
+pub struct StepHistory {
     #[serde(rename = "completed_steps")]
-    completed: Vec<ProcedureStep>,
+    completed: Vec<Step>,
     #[serde(rename = "current_step")]
-    current: Option<ProcedureStep>,
+    current: Option<Step>,
 }
 
-impl Steps {
+impl StepHistory {
     pub fn new<P: Procedure>(procedure: &P) -> Result<Self, Error> {
         Ok(Self {
             completed: Vec::new(),
-            current: Some(ProcedureStep::new(procedure)?),
+            current: Some(Step::from_procedure(procedure)?),
         })
     }
 
-    pub fn completed(&self) -> &[ProcedureStep] {
+    pub fn completed(&self) -> &[Step] {
         &self.completed
     }
 
-    pub fn current(&self) -> Option<&ProcedureStep> {
+    pub fn current(&self) -> Option<&Step> {
         self.current.as_ref()
     }
 
-    pub fn current_mut(&mut self) -> Option<&mut ProcedureStep> {
+    pub fn current_mut(&mut self) -> Option<&mut Step> {
         self.current.as_mut()
     }
 
-    pub fn next<S: ProcedureState>(&mut self, state: &Option<S>) -> Result<(), Error> {
+    pub fn next<S: State>(&mut self, state: &Option<S>) -> Result<(), Error> {
         if let Some(state) = state {
-            if let Some(mut current_step) = self.current.take() {
+            if let Some(ref mut current_step) = self.current {
                 current_step.work_dir_state_mut().commit()?;
                 current_step.work_dir_state_mut().refresh()?;
 
                 let work_dir_state = current_step.work_dir_state().clone();
-                self.completed.push(current_step);
-                self.current
-                    .replace(ProcedureStep::from_states(state, work_dir_state)?);
+                let completed_step =
+                    mem::replace(current_step, Step::from_states(state, work_dir_state)?);
+                self.completed.push(completed_step);
             }
         } else if let Some(mut current_step) = self.current.take() {
             current_step.work_dir_state_mut().commit()?;
@@ -188,22 +188,19 @@ impl Steps {
         Ok(())
     }
 
-    pub fn invalidate_state<S: ProcedureState>(&mut self, id: S::Id) -> Result<(), Error> {
-        for (index, step) in self.completed.iter().enumerate() {
-            if step.id::<S>()? == id {
-                self.completed.truncate(index + 1);
-                self.current.replace(self.completed.remove(index));
-                break;
-            }
-        }
-
-        Ok(())
+    pub fn read_work_dir_state(&self) -> Result<DirState, Error> {
+        Ok(DirState::from_dir(
+            self.current
+                .as_ref()
+                .or(self.completed.last())
+                .unwrap()
+                .work_dir_state()
+                .path(),
+        )?)
     }
 
-    pub fn added_paths<P: Procedure>(&self, procedure: &P) -> Result<Vec<PathBuf>, Error> {
+    pub fn added_work_dir_paths(&self, cur_dir_state: &DirState) -> Result<Vec<PathBuf>, Error> {
         if let Some(step) = self.current.as_ref().or(self.completed.last()) {
-            let work_dir = Context::get_work_dir(procedure);
-            let cur_dir_state = DirState::from_dir(&work_dir)?;
             let comp = DirComparison::compare(step.work_dir_state(), &cur_dir_state);
             let mut added_paths: Vec<_> = comp
                 .all_added_files()
@@ -217,15 +214,42 @@ impl Steps {
         }
     }
 
-    pub fn oldest_invalid_state<P: Procedure>(
+    pub fn is_work_dir_corrupt(&self, cur_dir_state: &DirState) -> bool {
+        let comp = DirComparison::compare(
+            self.current
+                .as_ref()
+                .or(self.completed.last())
+                .unwrap()
+                .work_dir_state(),
+            cur_dir_state,
+        );
+        comp.has_removed_paths() || comp.has_modified_checksums()
+    }
+
+    pub fn invalidate_state<S: State>(&mut self, id: S::Id) -> Result<(), Error> {
+        for (index, step) in self.completed.iter().enumerate() {
+            if id == step.id::<S>()? {
+                self.completed.truncate(index + 1);
+                let mut current = self.completed.remove(index);
+                if let Some(prev) = self.completed.get(index) {
+                    *current.work_dir_state_mut() = prev.work_dir_state().clone();
+                } else {
+                    current.work_dir_state_mut().clear();
+                }
+                self.current.replace(current);
+                break;
+            }
+        }
+
+        Ok(())
+    }
+
+    pub fn restore_work_dir<S: State>(
         &self,
-        procedure: &P,
-    ) -> Result<Option<(usize, <P::State as ProcedureState>::Id)>, Error> {
-        let work_dir = Context::get_work_dir(procedure);
+        mut cur_dir_state: DirState,
+    ) -> Result<Option<(usize, S::Id)>, Error> {
         let completed_steps = self.completed.len();
-        let mut invalid_state = None;
-        let mut invalidate_previous_step = false;
-        let mut cur_dir_state = DirState::from_dir(&work_dir)?;
+        let mut first_invalid_state = None;
 
         for (step, index) in self
             .current
@@ -233,13 +257,9 @@ impl Steps {
             .chain(self.completed.iter().rev())
             .zip((0..=completed_steps).rev())
         {
-            if invalidate_previous_step {
-                invalid_state.replace((index, step.id::<P::State>()?));
-            }
-
             let comp = DirComparison::compare(step.work_dir_state(), &cur_dir_state);
             if matches!(comp, DirComparison::Same) {
-                break;
+                return Ok(first_invalid_state);
             }
 
             let added_dirs: Vec<_> = comp
@@ -254,19 +274,19 @@ impl Steps {
             let comp = if !added_dirs.is_empty() || !added_files.is_empty() {
                 for file in added_files {
                     fs::remove_file(&file)?;
-                    cur_dir_state.untrack(&file.strip_prefix(&work_dir).unwrap());
+                    cur_dir_state.untrack(&file.strip_prefix(cur_dir_state.path()).unwrap());
                 }
 
                 for dir in added_dirs {
                     fs::remove_dir_all(&dir)?;
-                    cur_dir_state.untrack(&dir.strip_prefix(&work_dir).unwrap());
+                    cur_dir_state.untrack(&dir.strip_prefix(cur_dir_state.path()).unwrap());
                 }
 
                 cur_dir_state.commit()?;
 
                 let comp = DirComparison::compare(step.work_dir_state(), &cur_dir_state);
                 if matches!(comp, DirComparison::Same) {
-                    break;
+                    return Ok(first_invalid_state);
                 }
 
                 comp
@@ -274,27 +294,38 @@ impl Steps {
                 comp
             };
 
-            invalidate_previous_step = comp.has_removed_paths();
-            for file in comp.all_modified_files() {
-                if file.new_checksum().is_none() {
+            if !comp.has_removed_paths() && !comp.has_modified_checksums() {
+                for file in comp.all_modified_files() {
                     if let Some(old_mode) = file.old_mode() {
                         fs::set_permissions(file.path(), Permissions::from_mode(old_mode))?;
-                        continue;
                     }
                 }
 
-                invalidate_previous_step = true;
-            }
+                for dir in comp.all_modified_dirs() {
+                    if let Some(old_mode) = dir.old_mode() {
+                        fs::set_permissions(dir.path(), Permissions::from_mode(old_mode))?;
+                    }
+                }
 
-            for dir in comp.all_modified_dirs() {
-                if let Some(old_mode) = dir.old_mode() {
-                    fs::set_permissions(dir.path(), Permissions::from_mode(old_mode))?;
+                cur_dir_state.refresh_modes()?;
+
+                let comp = DirComparison::compare(step.work_dir_state(), &cur_dir_state);
+                if matches!(comp, DirComparison::Same) {
+                    return Ok(first_invalid_state);
                 }
             }
 
-            cur_dir_state.refresh_modes()?;
+            first_invalid_state.replace((index, step.id::<S>()?));
         }
 
-        Ok(invalid_state)
+        for dir in cur_dir_state.dirs() {
+            fs::remove_dir_all(&dir.path())?;
+        }
+
+        for file in cur_dir_state.files() {
+            fs::remove_file(&file.path())?;
+        }
+
+        Ok(first_invalid_state)
     }
 }

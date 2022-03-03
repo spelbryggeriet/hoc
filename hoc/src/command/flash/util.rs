@@ -1,31 +1,54 @@
 use std::fmt::{self, Display, Formatter};
 
-use serde::Deserialize;
-use strum::EnumIter;
+use derive_more::Display;
+use serde::{Deserialize, Serialize};
+use smart_default::SmartDefault;
 
-#[derive(Clone, Copy, EnumIter, Eq, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, SmartDefault, Display, Serialize, Deserialize)]
 pub enum Image {
-    Raspbian2021_05_07,
-}
-
-impl Display for Image {
-    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
-        self.description().fmt(f)
-    }
+    #[display(fmt = "Raspberry Pi OS ({_0})")]
+    RaspberryPiOs(RaspberryPiOsVersion),
+    #[default]
+    #[display(fmt = "Ubuntu ({_0})")]
+    Ubuntu(UbuntuVersion),
 }
 
 impl Image {
-    pub const fn description(&self) -> &'static str {
+    pub fn url(&self) -> String {
         match self {
-            Self::Raspbian2021_05_07 => "Raspbian (2021-05-07)",
+            Self::RaspberryPiOs(version) => format!("https://downloads.raspberrypi.org/raspios_lite_arm64/images/raspios_lite_arm64-{version}/{version}-raspios-bullseye-arm64-lite.zip"),
+            Self::Ubuntu(version)=> format!("https://cdimage.ubuntu.com/releases/{version}/release/ubuntu-{version}-preinstalled-server-arm64+raspi.img.xz"),
         }
     }
 
-    pub const fn url(&self) -> &'static str {
-        match self {
-            Self::Raspbian2021_05_07 => "https://downloads.raspberrypi.org/raspios_lite_armhf/images/raspios_lite_armhf-2021-05-28/2021-05-07-raspios-buster-armhf-lite.zip",
-        }
+    pub fn supported_versions() -> [Image; 2] {
+        [
+            Self::RaspberryPiOs(Default::default()),
+            Self::Ubuntu(Default::default()),
+        ]
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, SmartDefault, Display, Serialize, Deserialize)]
+#[display(fmt = "{year:04}-{month:02}-{day:02}")]
+pub struct RaspberryPiOsVersion {
+    #[default = 2022]
+    year: u32,
+    #[default = 1]
+    month: u32,
+    #[default = 28]
+    day: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, SmartDefault, Display, Serialize, Deserialize)]
+#[display(fmt = "{major}.{minor:02}.{patch}")]
+pub struct UbuntuVersion {
+    #[default = 20]
+    major: u32,
+    #[default = 4]
+    minor: u32,
+    #[default = 4]
+    patch: u32,
 }
 
 #[derive(Deserialize)]

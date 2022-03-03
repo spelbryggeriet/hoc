@@ -1,10 +1,10 @@
-pub use context::{steps::Steps, Context};
+pub use context::{
+    step_history::{StepHistory, StepHistoryIndex},
+    Context,
+};
 pub use dir_state::{
     dir_comp::{DirComparison, FileComparison},
     DirState,
-};
-pub use procedure::{
-    Attributes, Halt, HaltState, Procedure, ProcedureState, ProcedureStateId, ProcedureStep,
 };
 pub use process::{reset_sudo_privileges, ssh, Process};
 
@@ -13,4 +13,4 @@ mod process;
 
 mod context;
 mod dir_state;
-mod procedure;
+pub mod procedure;

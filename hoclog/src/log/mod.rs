@@ -254,11 +254,12 @@ impl Log {
     where
         T: ToString,
     {
+        let mut print_context = self.print_context.lock().unwrap();
+
         if items.len() == 0 {
+            print_context.failure = true;
             return Err(Error::ChooseNoItems);
         }
-
-        let mut print_context = self.print_context.lock().unwrap();
 
         print_context.print_spacing_if_needed(LogType::Choose);
 
@@ -296,6 +297,7 @@ impl Log {
         if let Some(index) = index {
             Ok(index)
         } else {
+            print_context.failure = true;
             Err(Error::UserAborted)
         }
     }

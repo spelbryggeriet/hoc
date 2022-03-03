@@ -1,7 +1,7 @@
 use heck::{ToKebabCase, ToSnakeCase, ToTitleCase};
 use proc_macro2::{Span, TokenStream};
 use proc_macro_error::{abort, proc_macro_error, set_dummy, ResultExt};
-use quote::quote;
+use quote::{quote, ToTokens};
 use syn::{
     parse::{Parse, ParseStream},
     punctuated::Punctuated,
@@ -26,15 +26,31 @@ struct CommandField<'a> {
 }
 
 struct StateVariant<'a> {
+    attrs: Vec<StateVariantAttr>,
     ident: &'a Ident,
     fields: Vec<(&'a Ident, &'a Type)>,
     unit: bool,
 }
 
+#[derive(PartialOrd, Ord, Clone)]
 enum CommandAttr {
     Attribute,
     Rewind(Ident),
 }
+
+impl PartialEq for CommandAttr {
+    fn eq(&self, other: &Self) -> bool {
+        use CommandAttr::*;
+
+        match (self, other) {
+            (Attribute, Attribute) => true,
+            (Rewind(_), Rewind(_)) => true,
+            _ => false,
+        }
+    }
+}
+
+impl Eq for CommandAttr {}
 
 impl Parse for CommandAttr {
     fn parse(input: ParseStream) -> syn::Result<Self> {
@@ -56,6 +72,39 @@ impl Parse for CommandAttr {
                 "attribute" => Ok(Self::Attribute),
                 _ => abort!(name, "unexpected attribute: {}", name_str),
             }
+        }
+    }
+}
+
+#[derive(PartialOrd, Ord, Clone)]
+enum StateVariantAttr {
+    Transient,
+    Finish,
+}
+
+impl PartialEq for StateVariantAttr {
+    fn eq(&self, other: &Self) -> bool {
+        use StateVariantAttr::*;
+
+        match (self, other) {
+            (Transient, Transient) => true,
+            (Finish, Finish) => true,
+            _ => false,
+        }
+    }
+}
+
+impl Eq for StateVariantAttr {}
+
+impl Parse for StateVariantAttr {
+    fn parse(input: ParseStream) -> syn::Result<Self> {
+        let name: Ident = input.parse()?;
+        let name_str = name.to_string();
+
+        match &*name_str {
+            "transient" => Ok(Self::Transient),
+            "finish" => Ok(Self::Finish),
+            _ => abort!(name, "unexpected attribute: {}", name_str),
         }
     }
 }
@@ -82,25 +131,40 @@ pub fn procedure(item: proc_macro::TokenStream) -> proc_macro::TokenStream {
     gen.into()
 }
 
-fn parse_command_attributes(attrs: &[Attribute]) -> Vec<CommandAttr> {
-    attrs
+fn parse_attributes<T: Parse + Clone + Ord, U: ToTokens>(
+    attrs: &[Attribute],
+    blame_tokens: U,
+) -> Vec<T> {
+    let parsed: Vec<T> = attrs
         .iter()
         .filter(|a| a.path.is_ident("procedure"))
         .flat_map(|a| {
-            a.parse_args_with(Punctuated::<CommandAttr, Token![,]>::parse_terminated)
+            a.parse_args_with(Punctuated::<T, Token![,]>::parse_terminated)
                 .unwrap_or_abort()
         })
-        .collect()
+        .collect();
+    let mut sorted_parsed = parsed.clone();
+    sorted_parsed.sort();
+    sorted_parsed.dedup_by(|a, b| {
+        if a == b {
+            abort!(blame_tokens, "duplicate attributes specified");
+        } else {
+            false
+        }
+    });
+    parsed
 }
 
 fn parse_state_variant(variant: &Variant) -> StateVariant {
     match variant {
         Variant {
-            discriminant: None,
+            attrs,
+            ident,
             fields: Fields::Named(ref fields),
-            ..
+            discriminant: None,
         } => StateVariant {
-            ident: &variant.ident,
+            attrs: parse_attributes(attrs, ident),
+            ident,
             fields: fields
                 .named
                 .iter()
@@ -109,11 +173,13 @@ fn parse_state_variant(variant: &Variant) -> StateVariant {
             unit: false,
         },
         Variant {
-            discriminant: None,
+            attrs,
+            ident,
             fields: Fields::Unit,
-            ..
+            discriminant: None,
         } => StateVariant {
-            ident: &variant.ident,
+            attrs: parse_attributes(attrs, ident),
+            ident,
             fields: Vec::new(),
             unit: true,
         },
@@ -130,6 +196,7 @@ fn parse_state_variant(variant: &Variant) -> StateVariant {
 
 fn impl_procedure(types: &ProcedureTypes) -> TokenStream {
     let mut stripped_command = types.command.clone();
+    let mut stripped_state = types.state.clone();
     let command = &types.command;
     let state = &types.state;
 
@@ -142,17 +209,21 @@ fn impl_procedure(types: &ProcedureTypes) -> TokenStream {
         field.attrs.retain(|a| !a.path.is_ident("procedure"));
     }
 
+    for variant in stripped_state.variants.iter_mut() {
+        variant.attrs.retain(|a| !a.path.is_ident("procedure"));
+    }
+
     set_dummy(quote! {
         use #state_name::*;
 
         #[derive(::structopt::StructOpt)]
         #stripped_command
 
-        impl ::hoclib::Procedure for #command_name {
+        impl ::hoclib::procedure::Procedure for #command_name {
             type State = #state_name;
             const NAME: &'static str = #procedure_desc;
 
-            fn run(&mut self, _step: &mut ::hoclib::ProcedureStep) -> ::hoclog::Result<::hoclib::Halt<Self::State>> {
+            fn run(&mut self, _step: &mut ::hoclib::procedure::Step) -> ::hoclog::Result<::hoclib::procedure::Halt<Self::State>> {
                 unreachable!()
             }
         }
@@ -160,9 +231,9 @@ fn impl_procedure(types: &ProcedureTypes) -> TokenStream {
         #[derive(Debug, ::serde::Serialize, ::serde::Deserialize, ::strum::EnumDiscriminants)]
         #[strum_discriminants(derive(Hash, PartialOrd, Ord, ::strum::EnumString, ::strum::IntoStaticStr))]
         #[strum_discriminants(name(#state_id_name))]
-        #state
+        #stripped_state
 
-        impl ::hoclib::ProcedureState for #state_name {
+        impl ::hoclib::procedure::State for #state_name {
             type Id = #state_id_name;
 
             fn id(&self) -> Self::Id {
@@ -170,7 +241,7 @@ fn impl_procedure(types: &ProcedureTypes) -> TokenStream {
             }
         }
 
-        impl ::hoclib::ProcedureStateId for #state_id_name {
+        impl ::hoclib::procedure::Id for #state_id_name {
             type DeserializeError = ::strum::ParseError;
 
             fn description(&self) -> &'static str {
@@ -192,6 +263,8 @@ fn impl_procedure(types: &ProcedureTypes) -> TokenStream {
         .map(parse_state_variant)
         .collect();
 
+    check_state_variant_attributes(&state_variants);
+
     let impl_procedure = gen_impl_procedure(
         command_name,
         state_name,
@@ -200,11 +273,11 @@ fn impl_procedure(types: &ProcedureTypes) -> TokenStream {
         &types.command,
         &state_variants,
     );
-    let impl_procedure_state = gen_impl_procedure_state(state_name, &state_id_name);
-    let impl_procedure_state_id = gen_impl_procedure_state_id(&state_id_name, &state_variants);
+    let impl_state = gen_impl_state(state_name, &state_id_name);
+    let impl_id = gen_impl_id(&state_id_name, &state_variants);
     let impl_default = gen_impl_default(state_name, &state_variants);
 
-    let steps_trait = gen_steps_trait(command_name, state_name, &state_variants);
+    let run_trait = gen_run_trait(command_name, state_name, &state_variants);
 
     quote! {
         use #state_name::*;
@@ -217,13 +290,29 @@ fn impl_procedure(types: &ProcedureTypes) -> TokenStream {
         #[derive(Debug, ::serde::Serialize, ::serde::Deserialize, ::strum::EnumDiscriminants)]
         #[strum_discriminants(derive(Hash, PartialOrd, Ord, ::strum::EnumString, ::strum::IntoStaticStr))]
         #[strum_discriminants(name(#state_id_name))]
-        #state
+        #stripped_state
 
-        #impl_procedure_state
-        #impl_procedure_state_id
+        #impl_state
+        #impl_id
         #impl_default
 
-        #steps_trait
+        #run_trait
+    }
+}
+
+fn check_state_variant_attributes(state_variants: &[StateVariant]) {
+    let mut finish_attributes = state_variants.iter().filter_map(|v| {
+        v.attrs.iter().find_map(|a| {
+            if *a == StateVariantAttr::Finish {
+                Some(v.ident)
+            } else {
+                None
+            }
+        })
+    });
+    let _ = finish_attributes.next();
+    if let Some(ident) = finish_attributes.next() {
+        abort!(ident, "duplicate finish attribute")
     }
 }
 
@@ -241,7 +330,7 @@ fn gen_impl_procedure(
             .iter()
             .map(|f| CommandField {
                 ident: f.ident.as_ref().unwrap(),
-                attrs: parse_command_attributes(&f.attrs),
+                attrs: parse_attributes(&f.attrs, &f.ident),
             })
             .collect(),
         _ => abort!(
@@ -255,7 +344,7 @@ fn gen_impl_procedure(
     let run = gen_run(state_name, &state_variants);
 
     quote! {
-        impl ::hoclib::Procedure for #struct_name {
+        impl ::hoclib::procedure::Procedure for #struct_name {
             type State = #state_name;
             const NAME: &'static str = #procedure_desc;
 
@@ -266,10 +355,10 @@ fn gen_impl_procedure(
     }
 }
 
-fn gen_impl_procedure_state(state_name: &Ident, state_id_name: &Ident) -> TokenStream {
+fn gen_impl_state(state_name: &Ident, id_name: &Ident) -> TokenStream {
     quote! {
-        impl ::hoclib::ProcedureState for #state_name {
-            type Id = #state_id_name;
+        impl ::hoclib::procedure::State for #state_name {
+            type Id = #id_name;
 
             fn id(&self) -> Self::Id {
                 self.into()
@@ -278,10 +367,7 @@ fn gen_impl_procedure_state(state_name: &Ident, state_id_name: &Ident) -> TokenS
     }
 }
 
-fn gen_impl_procedure_state_id(
-    state_id_name: &Ident,
-    state_variants: &[StateVariant],
-) -> TokenStream {
+fn gen_impl_id(id_name: &Ident, state_variants: &[StateVariant]) -> TokenStream {
     let cases = state_variants.iter().map(|v| {
         let name = v.ident;
         let desc = to_title_lower_case(v.ident.to_string());
@@ -294,7 +380,7 @@ fn gen_impl_procedure_state_id(
         .or_else(|| Some(quote!(match self { #(#cases)* })));
 
     quote! {
-        impl ::hoclib::ProcedureStateId for #state_id_name {
+        impl ::hoclib::procedure::Id for #id_name {
             type DeserializeError = ::strum::ParseError;
 
             fn description(&self) -> &'static str {
@@ -348,8 +434,8 @@ fn gen_get_attributes(command_fields: &[CommandField]) -> TokenStream {
     };
 
     quote! {
-        fn get_attributes(&self) -> ::hoclib::Attributes {
-            let mut variant = ::hoclib::Attributes::new();
+        fn get_attributes(&self) -> ::hoclib::procedure::Attributes {
+            let mut variant = ::hoclib::procedure::Attributes::new();
             #(#insertions)*
             variant
         }
@@ -396,8 +482,9 @@ fn gen_rewind_state(
     let first = rewinds.next().unwrap();
 
     quote! {
-        fn rewind_state(&self) -> Option<<Self::State as ::hoclib::ProcedureState>::Id> {
-            #first #(.or_else(|| #rewinds))*
+        fn rewind_state(&self) -> Option<<Self::State as ::hoclib::procedure::State>::Id> {
+            #first
+                #(.or(#rewinds))*
         }
     }
 }
@@ -414,31 +501,55 @@ fn gen_run(state_name: &Ident, state_variants: &[StateVariant]) -> TokenStream {
         }
     });
 
-    let calls = state_variants.iter().map(|v| {
+    let variant_exprs = state_variants.iter().map(|v| {
         let name = Ident::new(&v.ident.to_string().to_snake_case(), Span::call_site());
         let args = v.fields.iter().map(|f| &f.0);
-        quote!(self.#name(step.work_dir_state_mut() #(, #args)*))
+        let persist = !v.attrs.contains(&StateVariantAttr::Transient);
+        let work_dir_state = if persist {
+            quote!(step.work_dir_state_mut())
+        } else {
+            quote!(step.work_dir_state())
+        };
+
+        if !v.attrs.contains(&StateVariantAttr::Finish) {
+            quote!({
+                let state = self.#name(#work_dir_state #(, #args)*)?;
+                ::hoclib::procedure::Halt {
+                    persist: #persist,
+                    state: ::hoclib::procedure::HaltState::Halt(state),
+                }
+            })
+        } else {
+            quote!({
+                self.#name(#work_dir_state #(, #args)*)?;
+                ::hoclib::procedure::Halt {
+                    persist: #persist,
+                    state: ::hoclib::procedure::HaltState::Finish,
+                }
+            })
+        }
     });
 
     let match_switch = state_variants
         .is_empty()
         .then(|| quote!(unreachable!()))
-        .or_else(|| Some(quote!(match step.state()? { #(#variant_patterns => #calls,)* })));
+        .or_else(|| Some(quote!(match step.state()? { #(#variant_patterns => #variant_exprs,)* })));
 
     quote! {
         #[allow(unreachable_code)]
-        fn run(&mut self, step: &mut ::hoclib::ProcedureStep) -> ::hoclog::Result<::hoclib::Halt<Self::State>> {
-            #match_switch
+        fn run(&mut self, step: &mut ::hoclib::procedure::Step) -> ::hoclog::Result<::hoclib::procedure::Halt<Self::State>> {
+            let halt = #match_switch;
+            Ok(halt)
         }
     }
 }
 
-fn gen_steps_trait(
+fn gen_run_trait(
     command_name: &Ident,
     state_name: &Ident,
     state_variants: &[StateVariant],
 ) -> TokenStream {
-    let step_fns = state_variants.iter().map(|v| {
+    let run_fns = state_variants.iter().map(|v| {
         let name = Ident::new(&v.ident.to_string().to_snake_case(), Span::call_site());
         let args = v.fields.iter().map(|f| {
             let field_name = f.0;
@@ -446,21 +557,33 @@ fn gen_steps_trait(
             quote!(#field_name: #field_type)
         });
 
-        quote!(fn #name(&mut self, work_dir_state: &mut ::hoclib::DirState #(, #args)*) -> ::hoclog::Result<::hoclib::Halt<#state_name>>;)
+        let work_dir_ref_type = v
+            .attrs
+            .contains(&StateVariantAttr::Transient)
+            .then(|| quote!(&))
+            .unwrap_or_else(|| quote!(&mut));
+
+        let return_type = v
+            .attrs
+            .contains(&StateVariantAttr::Finish)
+            .then(|| quote!(()))
+            .unwrap_or_else(|| quote!(#state_name));
+
+        quote!(fn #name(&mut self, work_dir_state: #work_dir_ref_type ::hoclib::DirState #(, #args)*) -> ::hoclog::Result<#return_type>;)
     });
 
-    let maybe_impl_steps = state_variants
+    let maybe_impl_run = state_variants
         .is_empty()
-        .then(|| quote!(impl Steps for #command_name {}));
+        .then(|| quote!(impl Run for #command_name {}));
 
     quote! {
-        trait StepsImplRequired: Steps {}
+        trait RunImplRequired: Run {}
 
-        impl StepsImplRequired for #command_name {}
-        #maybe_impl_steps
+        impl RunImplRequired for #command_name {}
+        #maybe_impl_run
 
-        trait Steps {
-            #(#step_fns)*
+        trait Run {
+            #(#run_fns)*
         }
     }
 }

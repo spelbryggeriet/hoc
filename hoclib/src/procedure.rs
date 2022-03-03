@@ -13,36 +13,6 @@ use thiserror::Error;
 
 use crate::{dir_state, process, Context, DirState};
 
-#[macro_export]
-macro_rules! halt {
-    ($state:expr) => {
-        Ok(::hoclib::Halt {
-            persist: true,
-            state: ::hoclib::HaltState::Halt($state),
-        })
-    };
-}
-
-#[macro_export]
-macro_rules! finish {
-    () => {
-        Ok(::hoclib::Halt {
-            persist: true,
-            state: ::hoclib::HaltState::Finish,
-        })
-    };
-}
-
-#[macro_export]
-macro_rules! transient_finish {
-    () => {
-        Ok(::hoclib::Halt {
-            persist: false,
-            state: ::hoclib::HaltState::Finish,
-        })
-    };
-}
-
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Attributes(HashMap<String, Value>);
 
@@ -117,7 +87,7 @@ pub struct Halt<S> {
 }
 
 pub trait Procedure: Sized {
-    type State: ProcedureState;
+    type State: State;
 
     const NAME: &'static str;
 
@@ -125,14 +95,14 @@ pub trait Procedure: Sized {
         Attributes::default()
     }
 
-    fn rewind_state(&self) -> Option<<Self::State as ProcedureState>::Id> {
+    fn rewind_state(&self) -> Option<<Self::State as State>::Id> {
         None
     }
 
-    fn run(&mut self, step: &mut ProcedureStep) -> hoclog::Result<Halt<Self::State>>;
+    fn run(&mut self, step: &mut Step) -> hoclog::Result<Halt<Self::State>>;
 }
 
-pub trait ProcedureStateId:
+pub trait Id:
     Clone + Copy + Eq + Ord + FromStr<Err = Self::DeserializeError> + Into<&'static str>
 where
     Self: Sized,
@@ -153,8 +123,8 @@ where
     }
 }
 
-pub trait ProcedureState: Serialize + DeserializeOwned + Default {
-    type Id: ProcedureStateId;
+pub trait State: Serialize + DeserializeOwned + Default {
+    type Id: Id;
 
     fn id(&self) -> Self::Id;
 }
@@ -181,14 +151,14 @@ impl From<Error> for hoclog::Error {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct ProcedureStep {
-    id: String,
+pub struct Step {
     state: String,
+    id: String,
     work_dir_state: DirState,
 }
 
-impl ProcedureStep {
-    pub fn new<P: Procedure>(procedure: &P) -> Result<Self, Error> {
+impl Step {
+    pub fn from_procedure<P: Procedure>(procedure: &P) -> Result<Self, Error> {
         let state = P::State::default();
         Ok(Self {
             id: state.id().as_str().to_string(),
@@ -197,10 +167,7 @@ impl ProcedureStep {
         })
     }
 
-    pub fn from_states<S: ProcedureState>(
-        state: &S,
-        work_dir_state: DirState,
-    ) -> Result<Self, Error> {
+    pub fn from_states<S: State>(state: &S, work_dir_state: DirState) -> Result<Self, Error> {
         Ok(Self {
             id: state.id().as_str().to_string(),
             state: serde_json::to_string(state)?,
@@ -208,11 +175,11 @@ impl ProcedureStep {
         })
     }
 
-    pub fn id<S: ProcedureState>(&self) -> Result<S::Id, Error> {
+    pub fn id<S: State>(&self) -> Result<S::Id, Error> {
         S::Id::parse(&self.id).map_err(|e| Error::Id(Box::new(e)))
     }
 
-    pub fn state<S: ProcedureState>(&self) -> Result<S, Error> {
+    pub fn state<S: State>(&self) -> Result<S, Error> {
         serde_json::from_str(&self.state).map_err(|e| Error::Id(Box::new(e)))
     }
 

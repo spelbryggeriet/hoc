@@ -6,7 +6,7 @@ use std::{
     path::Path,
 };
 
-use hoclib::{cmd_macros, finish, halt, ssh::SshClient, DirState, Halt};
+use hoclib::{cmd_macros, ssh::SshClient, DirState};
 use hoclog::{choose, hidden_input, info, input, status, LogErr, Result};
 use hocproc::procedure;
 use osshkeys::{cipher::Cipher, keys::FingerprintHash, KeyPair, KeyType, PublicParts};
@@ -32,16 +32,34 @@ procedure! {
 
     pub enum ConfigureState {
         GetHost,
+
         AddNewUser { host: String },
-        AssignSudoPrivileges { host: String, username: String },
-        DeletePiUser { host: String, username: String },
-        SetUpSshAccess { host: String, username: String },
-        InstallDependencies { host: String, username: String },
+
+        AssignSudoPrivileges {
+            host: String,
+            username: String,
+        },
+
+        DeletePiUser {
+            host: String,
+            username: String,
+        },
+
+        SetUpSshAccess {
+            host: String,
+            username: String,
+        },
+
+        #[procedure(finish)]
+        InstallDependencies {
+            host: String,
+            username: String,
+        },
     }
 }
 
-impl Steps for Configure {
-    fn get_host(&mut self, _work_dir_state: &mut DirState) -> Result<Halt<ConfigureState>> {
+impl Run for Configure {
+    fn get_host(&mut self, _work_dir_state: &mut DirState) -> Result<ConfigureState> {
         let local_endpoint = status!("Find local endpoints" => {
             let (_, output) = arp!("-a").hide_stdout().run()?;
             let (default_index, mut endpoints) = util::LocalEndpoint::parse_arp_output(&output, &self.node_name);
@@ -55,8 +73,8 @@ impl Steps for Configure {
             endpoints.remove(index)
         });
 
-        halt!(AddNewUser {
-            host: local_endpoint.host().into_owned()
+        Ok(AddNewUser {
+            host: local_endpoint.host().into_owned(),
         })
     }
 
@@ -64,7 +82,7 @@ impl Steps for Configure {
         &mut self,
         _work_dir_state: &mut DirState,
         host: String,
-    ) -> Result<Halt<ConfigureState>> {
+    ) -> Result<ConfigureState> {
         let new_username = input!("Choose a new username");
         let new_password = hidden_input!("Choose a new password").verify().get()?;
 
@@ -79,9 +97,9 @@ impl Steps for Configure {
 
         self.password.replace(Some(new_password));
 
-        halt!(AssignSudoPrivileges {
+        Ok(AssignSudoPrivileges {
             host,
-            username: new_username
+            username: new_username,
         })
     }
 
@@ -90,7 +108,7 @@ impl Steps for Configure {
         _work_dir_state: &mut DirState,
         host: String,
         username: String,
-    ) -> Result<Halt<ConfigureState>> {
+    ) -> Result<ConfigureState> {
         let client = self.ssh_client_password_auth(&host, "pi", "raspberry")?;
 
         // Assign the user the relevant groups.
@@ -114,7 +132,7 @@ impl Steps for Configure {
             .run()?;
         chmod!("440", sudo_file).sudo().ssh(&client).run()?;
 
-        halt!(DeletePiUser { host, username })
+        Ok(DeletePiUser { host, username })
     }
 
     fn delete_pi_user(
@@ -122,7 +140,7 @@ impl Steps for Configure {
         _work_dir_state: &mut DirState,
         host: String,
         username: String,
-    ) -> Result<Halt<ConfigureState>> {
+    ) -> Result<ConfigureState> {
         let password = self.password_for_user(&username)?;
         let client = self.ssh_client_password_auth(&host, &username, &password)?;
 
@@ -139,7 +157,7 @@ impl Steps for Configure {
             .ssh(&client)
             .run()?;
 
-        halt!(SetUpSshAccess { host, username })
+        Ok(SetUpSshAccess { host, username })
     }
 
     fn set_up_ssh_access(
@@ -147,7 +165,7 @@ impl Steps for Configure {
         work_dir_state: &mut DirState,
         host: String,
         username: String,
-    ) -> Result<Halt<ConfigureState>> {
+    ) -> Result<ConfigureState> {
         let password = self.password_for_user(&username)?;
 
         let (pub_key, priv_key) = status!("Generate SSH keypair" => {
@@ -253,7 +271,7 @@ impl Steps for Configure {
             sshd!("-t").sudo_password(&*password).ssh(&client).run()?;
         });
 
-        halt!(InstallDependencies { host, username })
+        Ok(InstallDependencies { host, username })
     }
 
     fn install_dependencies(
@@ -261,7 +279,7 @@ impl Steps for Configure {
         work_dir_state: &mut DirState,
         host: String,
         username: String,
-    ) -> Result<Halt<ConfigureState>> {
+    ) -> Result<()> {
         let pub_path = work_dir_state.track(format!("ssh/id_{username}_ed25519.pub"));
         let priv_path = work_dir_state.track(format!("ssh/id_{username}_ed25519"));
         let password = self.password_for_user(&username)?;
@@ -270,7 +288,7 @@ impl Steps for Configure {
 
         hoclog::error!("Abort")?;
 
-        finish!()
+        Ok(())
     }
 }
 

@@ -103,6 +103,9 @@ pub enum Error {
     #[error("unexpected dir: {}", _0.to_string_lossy())]
     UnexpectedDir(OsString),
 
+    #[error("path not found: {}", _0.to_string_lossy())]
+    PathNotFound(PathBuf),
+
     #[error("io: {0}")]
     Io(#[from] io::Error),
 }
@@ -209,6 +212,13 @@ impl DirState {
         Ok(dir_state)
     }
 
+    pub fn clear(&mut self) {
+        self.dirs.clear();
+        self.files.clear();
+        self.tracked_files.clear();
+        self.untracked_files.clear();
+    }
+
     pub fn is_commited<P: AsRef<Path>>(&self, path_suffix: P) -> bool {
         let mut tracker = self.path.clone();
         let mut dir_state = self;
@@ -252,6 +262,33 @@ impl DirState {
 
     pub fn is_empty(&self) -> bool {
         self.files.is_empty() && self.dirs.is_empty()
+    }
+
+    pub fn get_path<P: AsRef<Path>>(&self, path_suffix: P) -> Result<PathBuf, Error> {
+        let mut tracker = self.path.clone();
+        let mut dir_state = self;
+
+        if let Some(parent) = path_suffix.as_ref().parent() {
+            for name in parent.iter() {
+                tracker.push(name);
+
+                if let Some(index) = dir_state.dirs.iter().position(|ds| ds.path == tracker) {
+                    dir_state = &dir_state.dirs[index];
+                } else {
+                    return Err(Error::PathNotFound(tracker));
+                }
+            }
+
+            tracker.push(path_suffix.as_ref().file_name().unwrap());
+        }
+
+        let is_file = dir_state.files.iter().any(|fs| fs.path == tracker);
+        let is_dir = dir_state.dirs.iter().any(|ds| ds.path == tracker);
+        if is_file || is_dir {
+            Ok(tracker)
+        } else {
+            Err(Error::PathNotFound(tracker))
+        }
     }
 
     pub fn track<P: AsRef<Path>>(&mut self, file_suffix: P) -> PathBuf {

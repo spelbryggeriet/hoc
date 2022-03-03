@@ -2,7 +2,7 @@
 name = "hosting-on-command"
 version = "0.1.0"
 authors = ["Hampus Lidin <hampuslidin@gmail.com>"]
-edition = "2018"
+edition = "2021"
 
 [[bin]]
 name = "hoc"
@@ -11,17 +11,22 @@ path = "./src/main.rs"
 [dependencies]
 colored = "2.0.0"
 ctrlc = "3.2.1"
+derive_more = { version = "0.99.17", default_features = false, features = ["default"] }
 lazy-regex = "2.2.1"
 lazy_static = "1.4.0"
 osshkeys = "0.6.0"
 plist = "1.2.1"
 reqwest = { version = "0.11.4", features = ["blocking"] }
 serde = { version = "1.0.130", features = ["derive"] }
+serde_json = "1.0.67"
+serde_yaml = "0.8.21"
+smart-default = "0.6.0"
 structopt = "0.3.23"
 strum = { version = "0.21.0", features = ["derive"] }
 tempfile = "3.2.0"
 thiserror = "1.0.29"
 zip = "0.5.13"
+xz2 = "0.1.6"
 
 hoclog = { path = "../hoclog" }
 hocproc = { path = "../hocproc" }
