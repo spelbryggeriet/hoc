@@ -354,7 +354,6 @@ where
 
     fn exec(mut self, show_stdout: bool, show_stderr: bool) -> Result<(i32, String), Error> {
         let program_str = self.program.to_string_lossy().into_owned();
-        let line_prefix = OsString::from(hoclog::LOG.create_line_prefix("Password:"));
 
         if let Some(sudo) = self.sudo {
             self.args.insert(
@@ -369,6 +368,8 @@ where
                 pipe_input.extend(self.pipe_input);
                 self.pipe_input = pipe_input;
             } else {
+                let line_prefix =
+                    OsString::from(hoclog::LOG.create_line_prefix("[sudo] Password:"));
                 self.args.insert(0, Cow::Borrowed(OsStr::new("-p")));
                 self.args.insert(1, Cow::Owned(line_prefix));
             }

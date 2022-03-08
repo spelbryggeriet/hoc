@@ -1,6 +1,6 @@
 use structopt::StructOpt;
 
-use self::{configure::Configure, create_user::CreateUser, flash::Flash};
+pub use self::{configure::Configure, create_user::CreateUser, flash::Flash};
 
 mod configure;
 mod create_user;

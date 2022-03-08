@@ -36,7 +36,7 @@ impl Run for CreateUser {
 
     fn generate_ssh_key_pair(&mut self, work_dir_state: &mut DirState) -> Result<()> {
         info!("Storing username: {}", &self.username);
-        let username_file_path = work_dir_state.track(format!("username.txt"));
+        let username_file_path = work_dir_state.track_file(format!("username.txt"));
         fs::write(username_file_path, &self.username)?;
 
         let (pub_key, priv_key) = status!("Generate SSH keypair" => {
@@ -51,19 +51,18 @@ impl Run for CreateUser {
                 FingerprintHash::SHA256,
             ).log_err()?;
 
-            info!("Fingerprint randomart:");
-            info!(randomart);
+            info!("Fingerprint randomart:\n{}", randomart);
 
             (pub_key, priv_key)
         });
 
         status!("Store SSH keypair" => {
-            let ssh_dir = work_dir_state.track("ssh");
+            let ssh_dir = work_dir_state.track_file("ssh");
             fs::create_dir_all(ssh_dir)?;
 
             let username = &self.username;
-            let pub_path = work_dir_state.track(format!("ssh/id_{username}_ed25519.pub"));
-            let priv_path = work_dir_state.track(format!("ssh/id_{username}_ed25519"));
+            let pub_path = work_dir_state.track_file(format!("ssh/id_{username}_ed25519.pub"));
+            let priv_path = work_dir_state.track_file(format!("ssh/id_{username}_ed25519"));
             let mut pub_file = File::options().write(true).create(true).mode(0o600).open(&pub_path)?;
             let mut priv_file = File::options().write(true).create(true).mode(0o600).open(&priv_path)?;
             pub_file.write_all(pub_key.as_bytes())?;

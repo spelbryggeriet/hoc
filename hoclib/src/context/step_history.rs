@@ -12,19 +12,19 @@ use thiserror::Error;
 
 use crate::{
     dir_state,
-    procedure::{self, Attributes, Procedure, State, Step},
+    procedure::{self, Attribute, Procedure, State, Step},
     process, DirComparison, DirState,
 };
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
-pub struct StepHistoryIndex(pub(super) String, pub(super) Attributes);
+pub struct StepHistoryIndex(pub(super) String, pub(super) Vec<Attribute>);
 
 impl StepHistoryIndex {
     pub fn name(&self) -> &str {
         self.0.as_str()
     }
 
-    pub fn attributes(&self) -> &Attributes {
+    pub fn attributes(&self) -> &[Attribute] {
         &self.1
     }
 }
@@ -39,7 +39,7 @@ impl Serialize for StepHistoryMap {
     {
         #[derive(Serialize)]
         struct Output<'a> {
-            attributes: &'a Attributes,
+            attributes: &'a [Attribute],
             #[serde(flatten)]
             cache: &'a StepHistory,
         }
@@ -86,7 +86,7 @@ impl<'de> Deserialize<'de> for StepHistoryMap {
             {
                 #[derive(Deserialize)]
                 struct Input {
-                    attributes: Attributes,
+                    attributes: Vec<Attribute>,
                     #[serde(flatten)]
                     cache: StepHistory,
                 }
@@ -102,7 +102,7 @@ impl<'de> Deserialize<'de> for StepHistoryMap {
                                 "duplicate cache {key} with attributes {{{}}}",
                                 attrs
                                     .iter()
-                                    .map(|(k, v)| format!("{k:?}: {v}"))
+                                    .map(|Attribute { key, value }| format!("{key:?}: {value}"))
                                     .collect::<Vec<_>>()
                                     .join(", ")
                             )));
@@ -173,7 +173,7 @@ impl StepHistory {
                 current_step.work_dir_state_mut().commit()?;
                 current_step.work_dir_state_mut().refresh()?;
 
-                let work_dir_state = current_step.work_dir_state().clone();
+                let work_dir_state = DirState::new_from(current_step.work_dir_state());
                 let completed_step =
                     mem::replace(current_step, Step::from_states(state, work_dir_state)?);
                 self.completed.push(completed_step);
@@ -232,7 +232,7 @@ impl StepHistory {
                 self.completed.truncate(index + 1);
                 let mut current = self.completed.remove(index);
                 if let Some(prev) = self.completed.get(index) {
-                    *current.work_dir_state_mut() = prev.work_dir_state().clone();
+                    *current.work_dir_state_mut() = DirState::new_from(prev.work_dir_state());
                 } else {
                     current.work_dir_state_mut().clear();
                 }
@@ -274,12 +274,12 @@ impl StepHistory {
             let comp = if !added_dirs.is_empty() || !added_files.is_empty() {
                 for file in added_files {
                     fs::remove_file(&file)?;
-                    cur_dir_state.untrack(&file.strip_prefix(cur_dir_state.path()).unwrap());
+                    cur_dir_state.untrack_file(&file.strip_prefix(cur_dir_state.path()).unwrap());
                 }
 
                 for dir in added_dirs {
                     fs::remove_dir_all(&dir)?;
-                    cur_dir_state.untrack(&dir.strip_prefix(cur_dir_state.path()).unwrap());
+                    cur_dir_state.untrack_file(&dir.strip_prefix(cur_dir_state.path()).unwrap());
                 }
 
                 cur_dir_state.commit()?;

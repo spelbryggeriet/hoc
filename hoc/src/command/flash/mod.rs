@@ -1,21 +1,21 @@
 use std::{
-    collections::BTreeMap,
-    fs::File,
+    fs::{self, File},
     io::{self, Read, Seek, SeekFrom, Write},
-    mem,
+    net::IpAddr,
     path::{Path, PathBuf},
 };
 
 use colored::Colorize;
 use hocproc::procedure;
-use tempfile::{NamedTempFile, TempDir};
+use osshkeys::{keys::FingerprintHash, PublicKey, PublicParts};
 use xz2::read::XzDecoder;
 use zip::ZipArchive;
 
-use hoclib::{cmd_macros, DirState};
+use hoclib::{attributes, cmd_macros, procedure::Procedure, DirState};
 use hoclog::{bail, choose, error, info, prompt, status, LogErr, Result};
 
-use self::util::Image;
+use self::util::{Cidr, Image};
+use super::CreateUser;
 
 cmd_macros!(dd, diskutil, cmd_file => "file", hdiutil, sync);
 
@@ -27,30 +27,40 @@ procedure! {
         #[structopt(long)]
         redownload: bool,
 
+        /// The name of the node, which will be used as the host name, for instance.
+        #[structopt(long)]
         node_name: String,
 
-        #[structopt(skip)]
-        temp_file: Option<NamedTempFile>,
+        /// The username of the administrator.
+        #[structopt(long)]
+        username: String,
+
+        /// List of CIDR addresses to attach to the network interface.
+        #[structopt(long)]
+        address: Cidr,
+
+        /// The default gateway for the network interface.
+        #[structopt(long)]
+        gateway: IpAddr,
     }
 
     pub enum FlashState {
         DownloadOperatingSystemImage,
 
         DecompressZipArchive {
-            archive_path: PathBuf,
             image: Image,
         },
 
         DecompressXzFile {
-            file_path: PathBuf,
             image: Image,
         },
 
-        ModifyRaspberryPiOsImage { image_path: PathBuf },
+        ModifyRaspberryPiOsImage,
 
         #[procedure(transient)]
-        ModifyUbuntuImage { image_path: PathBuf },
+        ModifyUbuntuImage,
 
+        #[procedure(transient)]
         #[procedure(finish)]
         FlashImage { image_path: PathBuf },
     }
@@ -78,7 +88,7 @@ impl Run for Flash {
 
         let file_path = PathBuf::from("image");
         let file_real_path = status!("Download image" => {
-            let file_real_path = work_dir_state.track(&file_path);
+            let file_real_path = work_dir_state.track_file(&file_path);
             let mut file = File::options()
                 .read(false)
                 .write(true)
@@ -94,12 +104,11 @@ impl Run for Flash {
             if output.contains("zip archive") {
                 info!("Zip archive file type detected");
                 DecompressZipArchive {
-                    archive_path: file_path,
                     image,
                 }
             } else if output.contains("xz compressed data") {
                 info!("XZ compressed data file type detected");
-                DecompressXzFile { file_path, image }
+                DecompressXzFile { image }
             } else {
                 error!("Unsupported file type")?.into()
             }
@@ -110,16 +119,15 @@ impl Run for Flash {
 
     fn decompress_zip_archive(
         &mut self,
-        work_dir_state: &mut DirState,
-        archive_path: PathBuf,
+        _work_dir_state: &mut DirState,
         image: Image,
     ) -> Result<FlashState> {
         let (image_data, mut image_file) = status!("Read ZIP archive" => {
-            let archive_real_path = work_dir_state.track(&archive_path);
+            let archive_path = DirState::get_path::<Self>(&self.get_attributes(), Path::new("image"))?;
             let file = File::options()
                 .read(true)
                 .write(true)
-                .open(&archive_real_path)?;
+                .open(&archive_path)?;
 
             let mut archive = ZipArchive::new(&file).log_err()?;
 
@@ -158,12 +166,8 @@ impl Run for Flash {
         });
 
         let state = match image {
-            Image::RaspberryPiOs(_) => ModifyRaspberryPiOsImage {
-                image_path: archive_path,
-            },
-            Image::Ubuntu(_) => ModifyUbuntuImage {
-                image_path: archive_path,
-            },
+            Image::RaspberryPiOs(_) => ModifyRaspberryPiOsImage,
+            Image::Ubuntu(_) => ModifyUbuntuImage,
         };
 
         Ok(state)
@@ -171,16 +175,15 @@ impl Run for Flash {
 
     fn decompress_xz_file(
         &mut self,
-        work_dir_state: &mut DirState,
-        file_path: PathBuf,
+        _work_dir_state: &mut DirState,
         image: Image,
     ) -> Result<FlashState> {
         let (image_data, mut image_file) = status!("Read XZ file" => {
-            let file_real_path = work_dir_state.track(&file_path);
+            let file_path = DirState::get_path::<Self>(&self.get_attributes(), Path::new("image"))?;
             let file = File::options()
                 .read(true)
                 .write(true)
-                .open(&file_real_path)?;
+                .open(&file_path)?;
 
             let mut decompressor = XzDecoder::new(&file);
 
@@ -201,12 +204,8 @@ impl Run for Flash {
         });
 
         let state = match image {
-            Image::RaspberryPiOs(_) => ModifyRaspberryPiOsImage {
-                image_path: file_path,
-            },
-            Image::Ubuntu(_) => ModifyUbuntuImage {
-                image_path: file_path,
-            },
+            Image::RaspberryPiOs(_) => ModifyRaspberryPiOsImage,
+            Image::Ubuntu(_) => ModifyUbuntuImage,
         };
 
         Ok(state)
@@ -214,15 +213,14 @@ impl Run for Flash {
 
     fn modify_raspberry_pi_os_image(
         &mut self,
-        work_dir_state: &mut DirState,
-        image_path: PathBuf,
+        _work_dir_state: &mut DirState,
     ) -> Result<FlashState> {
-        let image_real_path = work_dir_state.track(&image_path);
-        let (mount_dir, dev_disk_id) = self.attach_disk(&image_real_path, "boot")?;
+        let image_path = DirState::get_path::<Self>(&self.get_attributes(), Path::new("image"))?;
+        let (mount_dir, dev_disk_id) = self.attach_disk(&image_path, "boot")?;
 
         status!("Configure image" => {
             status!("Create SSH file"=> {
-                File::create(mount_dir.as_ref().join("ssh"))?;
+                File::create(mount_dir.join("ssh"))?;
             });
         });
 
@@ -231,67 +229,140 @@ impl Run for Flash {
         Ok(FlashImage { image_path })
     }
 
-    fn modify_ubuntu_image(
-        &mut self,
-        work_dir_state: &DirState,
-        image_path: PathBuf,
-    ) -> Result<FlashState> {
-        let image_real_path = work_dir_state.get_path(&image_path)?;
+    fn modify_ubuntu_image(&mut self, _work_dir_state: &DirState) -> Result<FlashState> {
+        let username = self.username.as_str();
+        let pub_key_path = DirState::get_path::<CreateUser>(
+            &attributes!("Username" => username),
+            Path::new(&format!("ssh/id_{username}_ed25519.pub")),
+        )
+        .log_context("user not found")?;
+        let pub_key = fs::read_to_string(pub_key_path)?;
 
+        info!(
+            "SSH public key fingerprint randomart:\n{}",
+            PublicKey::from_keystr(&pub_key)
+                .log_err()?
+                .fingerprint_randomart(FingerprintHash::SHA256)
+                .log_err()?
+        );
+
+        let image_path = DirState::get_path::<Self>(&self.get_attributes(), Path::new("image"))?;
         let image_temp_path = status!("Copy image to temporary location" => {
-            let mut image_temp_file = NamedTempFile::new()?;
-            let image_temp_path = image_temp_file.path().to_path_buf();
+            let image_temp_path = DirState::create_temp_file("image")?;
 
             info!("Destination: {}", image_temp_path.to_string_lossy());
-            io::copy(&mut File::open(image_real_path)?, &mut image_temp_file)?;
+            io::copy(
+                &mut File::open(image_path)?,
+                &mut File::options().write(true).open(&image_temp_path)?,
+            )?;
 
-            self.temp_file = Some(image_temp_file);
             image_temp_path
         });
 
         let (mount_dir, dev_disk_id) = self.attach_disk(&image_temp_path, "system-boot")?;
 
         status!("Configure image" => {
-            use serde_yaml::Value;
+            use serde_yaml::{Mapping as Map, Value::Sequence as Seq};
 
-            let mut user_data_path = mount_dir.path().to_path_buf();
-            user_data_path.push("user-data");
+            let user_data_path = mount_dir.join("user-data");
 
-            let mut map: BTreeMap<String, Value> =
-                serde_yaml::from_reader(File::open(&user_data_path)?).log_err()?;
-
-            let [heads @ .., last] = [
-                ("hostname", Value::String(self.node_name.clone())),
-                ("manage_etc_hosts", Value::Bool(true)),
-            ];
-
-            info!(
-                "Updating {} with the following values:{}\n└╴{}: {}",
-                "/user-data".blue(),
-                heads
-                    .iter()
-                    .map(|(k, v)| Ok(format!("\n├╴{k}: {}", serde_json::to_string(v)?)))
-                    .collect::<serde_json::Result<Vec<_>>>()
-                    .log_err()?
-                    .join(""),
-                last.0,
-                serde_json::to_string(&last.1).log_err()?,
+            let mut data_map = Map::new();
+            data_map.insert("hostname".into(), self.node_name.clone().into());
+            data_map.insert("manage_etc_hosts".into(), true.into());
+            data_map.insert("package_update".into(), false.into());
+            data_map.insert("package_upgrade".into(), false.into());
+            data_map.insert("packages".into(), ["whois"].into_iter().collect());
+            data_map.insert(
+                "users".into(),
+                Seq(vec![{
+                    let mut users_map = Map::new();
+                    users_map.insert("name".into(), username.into());
+                    users_map.insert(
+                        "groups".into(),
+                        [
+                            "adm", "dialout", "cdrom", "sudo", "audio", "video", "plugdev",
+                            "games", "users", "input", "netdev", "gpio", "i2c", "spi",
+                        ]
+                        .into_iter()
+                        .collect(),
+                    );
+                    users_map.insert("lock_passwd".into(), true.into());
+                    users_map.insert("ssh_authorized_keys".into(), Seq(vec![pub_key.into()]));
+                    users_map.insert("sudo".into(), "ALL=(ALL) PASSWD:ALL".into());
+                    users_map.insert("system".into(), true.into());
+                    users_map.into()
+                }]),
             );
+            data_map.insert("chpasswd".into(), {
+                let mut chpasswd_map = Map::new();
+                chpasswd_map.insert(
+                    "list".into(),
+                    [format!("{username}:temp_password")].into_iter().collect(),
+                );
+                chpasswd_map.insert("expire".into(), true.into());
+                chpasswd_map.into()
+            });
 
-            for (k, mut v) in heads.into_iter().chain([last].into_iter()) {
-                map.entry(k.to_string())
-                    .and_modify(|e| *e = mem::take(&mut v))
-                    .or_insert_with(|| v);
-            }
+            let data = serde_yaml::to_string(&data_map).log_err()?;
+            let data = "#cloud-config".to_string() + data.strip_prefix("---").unwrap_or(&data);
+            info!(
+                "Updating {} with the following configuration:\n{}",
+                "/user-data".blue(),
+                data
+            );
+            fs::write(&user_data_path, &data)?;
 
-            serde_yaml::to_writer(
-                File::options()
-                    .write(true)
-                    .truncate(true)
-                    .open(&user_data_path)?,
-                &map,
-            )
-            .log_err()?;
+            let network_config_path = mount_dir.join("network-config");
+
+            let mut network_map = data_map;
+            network_map.clear();
+            network_map.insert("version".into(), 2_u32.into());
+            network_map.insert("ethernets".into(), {
+                let mut ethernets_map = Map::new();
+                ethernets_map.insert("eth0".into(), {
+                    let mut ethernets_map = Map::new();
+                    ethernets_map.insert("dhcp4".into(), false.into());
+                    ethernets_map.insert("dhcp6".into(), false.into());
+                    ethernets_map.insert(
+                        "addresses".into(),
+                        Seq(vec![self.address.to_string().into()]),
+                    );
+                    ethernets_map.insert(
+                        if self.gateway.is_ipv4() {
+                            "gateway4".into()
+                        } else {
+                            "gateway6".into()
+                        },
+                        self.gateway.to_string().into(),
+                    );
+                    ethernets_map.insert("nameservers".into(), {
+                        let mut nameservers_map = Map::new();
+                        nameservers_map.insert(
+                            "addresses".into(),
+                            Seq(vec![
+                                self.gateway.to_string().into(),
+                                "8.8.8.8".into(),
+                                "8.8.4.4".into(),
+                            ]),
+                        );
+                        nameservers_map.into()
+                    });
+                    ethernets_map.into()
+                });
+                ethernets_map.into()
+            });
+
+            let data = serde_yaml::to_string(&network_map).log_err()?;
+            let data = data
+                .strip_prefix("---\n")
+                .map(ToString::to_string)
+                .unwrap_or(data);
+            info!(
+                "Updating {} with the following configuration:\n{}",
+                "/network-config".blue(),
+                data
+            );
+            fs::write(&network_config_path, &data)?;
         });
 
         self.detach_disk(dev_disk_id)?;
@@ -301,7 +372,7 @@ impl Run for Flash {
         })
     }
 
-    fn flash_image(&mut self, work_dir_state: &mut DirState, image_path: PathBuf) -> Result<()> {
+    fn flash_image(&mut self, _work_dir_state: &DirState, image_path: PathBuf) -> Result<()> {
         let disk_id = status!("Find mounted SD card" => {
             let mut physical_disk_infos: Vec<_> =
                 util::get_attached_disks([util::DiskType::Physical])
@@ -315,14 +386,12 @@ impl Run for Flash {
 
         status!("Unmount SD card" => diskutil!("unmountDisk", disk_path).run()?);
 
-        let image_real_path = work_dir_state.track(&image_path);
-
         status!("Flash SD card" => {
             prompt!("Do you want to flash target disk '{}'?", disk_id)?;
 
             dd!(
                 "bs=1m",
-                format!("if={}", image_real_path.to_string_lossy()),
+                format!("if={}", image_path.to_string_lossy()),
                 format!("of=/dev/r{disk_id}"),
             )
             .sudo()
@@ -344,7 +413,7 @@ impl Run for Flash {
 }
 
 impl Flash {
-    fn attach_disk(&self, image_path: &Path, partition_name: &str) -> Result<(TempDir, String)> {
+    fn attach_disk(&self, image_path: &Path, partition_name: &str) -> Result<(PathBuf, String)> {
         status!("Attach image as disk" => {
             hdiutil!(
                 "attach",
@@ -381,8 +450,8 @@ impl Flash {
         let dev_disk_id = format!("/dev/{}", disk_id);
 
         let mount_dir = status!("Mount image disk" => {
-            let mount_dir = TempDir::new().log_err()?;
-            diskutil!("mount", "-mountPoint", mount_dir.as_ref(), &dev_disk_id).run()?;
+            let mount_dir = DirState::create_temp_dir("mounted_image")?;
+            diskutil!("mount", "-mountPoint", mount_dir, dev_disk_id).run()?;
             mount_dir
         });
 

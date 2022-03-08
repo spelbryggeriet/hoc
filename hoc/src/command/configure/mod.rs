@@ -186,11 +186,11 @@ impl Run for Configure {
         });
 
         let (pub_path, priv_path) = status!("Store SSH keypair" => {
-            let ssh_dir = work_dir_state.track("ssh");
+            let ssh_dir = work_dir_state.track_file("ssh");
             fs::create_dir_all(ssh_dir)?;
 
-            let pub_path = work_dir_state.track(format!("ssh/id_{username}_ed25519.pub"));
-            let priv_path = work_dir_state.track(format!("ssh/id_{username}_ed25519"));
+            let pub_path = work_dir_state.track_file(format!("ssh/id_{username}_ed25519.pub"));
+            let priv_path = work_dir_state.track_file(format!("ssh/id_{username}_ed25519"));
             let mut pub_file = File::options().write(true).create(true).mode(0o600).open(&pub_path)?;
             let mut priv_file = File::options().write(true).create(true).mode(0o600).open(&priv_path)?;
             pub_file.write_all(pub_key.as_bytes())?;
@@ -280,8 +280,8 @@ impl Run for Configure {
         host: String,
         username: String,
     ) -> Result<()> {
-        let pub_path = work_dir_state.track(format!("ssh/id_{username}_ed25519.pub"));
-        let priv_path = work_dir_state.track(format!("ssh/id_{username}_ed25519"));
+        let pub_path = work_dir_state.track_file(format!("ssh/id_{username}_ed25519.pub"));
+        let priv_path = work_dir_state.track_file(format!("ssh/id_{username}_ed25519"));
         let password = self.password_for_user(&username)?;
         let client =
             self.ssh_client_key_auth(&host, &username, &pub_path, &priv_path, &password)?;

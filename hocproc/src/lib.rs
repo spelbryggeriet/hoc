@@ -464,7 +464,10 @@ fn gen_get_attributes(command_fields: &[CommandField]) -> TokenStream {
         .map(|f| {
             let title = to_title_lower_case(f.ident.to_string());
             let ident = f.ident;
-            quote!(variant.insert(#title.to_string(), self.#ident.clone().into());)
+            quote!(variant.push(::hoclib::procedure::Attribute {
+                key: #title.to_string(),
+                value: self.#ident.clone().into(),
+            }))
         });
 
     let insertions = if let Some(insertion) = insertions.next() {
@@ -474,9 +477,9 @@ fn gen_get_attributes(command_fields: &[CommandField]) -> TokenStream {
     };
 
     quote! {
-        fn get_attributes(&self) -> ::hoclib::procedure::Attributes {
-            let mut variant = ::hoclib::procedure::Attributes::new();
-            #(#insertions)*
+        fn get_attributes(&self) -> Vec<::hoclib::procedure::Attribute> {
+            let mut variant = Vec::new();
+            #(#insertions;)*
             variant
         }
     }

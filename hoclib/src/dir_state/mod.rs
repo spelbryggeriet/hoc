@@ -13,6 +13,11 @@ use hoclog::error;
 use serde::{de::Visitor, Deserialize, Deserializer, Serialize, Serializer};
 use thiserror::Error;
 
+use crate::{
+    procedure::{Attribute, Procedure},
+    Context,
+};
+
 pub mod dir_comp;
 
 const PERMISSION_BITS: u32 = 0o777;
@@ -116,7 +121,7 @@ impl From<Error> for hoclog::Error {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct DirState {
     path: PathBuf,
 
@@ -160,6 +165,14 @@ impl DirState {
         }
     }
 
+    pub fn new_from(dir_state: &Self) -> Self {
+        Self {
+            dirs: dir_state.dirs.iter().map(Self::new_from).collect(),
+            files: dir_state.files.clone(),
+            ..Self::empty_unchecked(dir_state.path.clone(), dir_state.mode)
+        }
+    }
+
     pub fn from_dir<P: Into<PathBuf>>(root_path: P) -> Result<Self, Error> {
         let root_path = root_path.into();
         let metadata = fs::metadata(&root_path)?;
@@ -176,14 +189,7 @@ impl DirState {
         mode: u32,
         exclude_paths: &[PathBuf],
     ) -> Result<Self, Error> {
-        let mut dir_state = Self {
-            path: root_path,
-            mode,
-            dirs: Vec::new(),
-            files: Vec::new(),
-            tracked_files: Vec::new(),
-            untracked_files: Vec::new(),
-        };
+        let mut dir_state = Self::empty_unchecked(root_path, mode);
 
         for entry in fs::read_dir(dir_state.path())? {
             let entry = entry?;
@@ -264,34 +270,30 @@ impl DirState {
         self.files.is_empty() && self.dirs.is_empty()
     }
 
-    pub fn get_path<P: AsRef<Path>>(&self, path_suffix: P) -> Result<PathBuf, Error> {
-        let mut tracker = self.path.clone();
-        let mut dir_state = self;
-
-        if let Some(parent) = path_suffix.as_ref().parent() {
-            for name in parent.iter() {
-                tracker.push(name);
-
-                if let Some(index) = dir_state.dirs.iter().position(|ds| ds.path == tracker) {
-                    dir_state = &dir_state.dirs[index];
-                } else {
-                    return Err(Error::PathNotFound(tracker));
-                }
-            }
-
-            tracker.push(path_suffix.as_ref().file_name().unwrap());
-        }
-
-        let is_file = dir_state.files.iter().any(|fs| fs.path == tracker);
-        let is_dir = dir_state.dirs.iter().any(|ds| ds.path == tracker);
-        if is_file || is_dir {
-            Ok(tracker)
+    pub fn get_path<P: Procedure>(
+        attributes: &[Attribute],
+        path_suffix: &Path,
+    ) -> Result<PathBuf, Error> {
+        let mut path = Context::get_work_dir::<P>(attributes);
+        path.push(path_suffix);
+        if path.exists() {
+            Ok(path)
         } else {
-            Err(Error::PathNotFound(tracker))
+            Err(Error::PathNotFound(path))
         }
     }
 
-    pub fn track<P: AsRef<Path>>(&mut self, file_suffix: P) -> PathBuf {
+    pub fn get_temp_path(path_suffix: &Path) -> Result<PathBuf, Error> {
+        let mut path = Context::get_temp_dir();
+        path.push(path_suffix);
+        if path.exists() {
+            Ok(path)
+        } else {
+            Err(Error::PathNotFound(path))
+        }
+    }
+
+    pub fn track_file<P: AsRef<Path>>(&mut self, file_suffix: P) -> PathBuf {
         let mut new_path = self.path.clone();
         new_path.push(&file_suffix);
 
@@ -314,7 +316,29 @@ impl DirState {
         new_path
     }
 
-    pub fn untrack<P: AsRef<Path>>(&mut self, path_suffix: P) {
+    pub fn create_temp_file<P: AsRef<Path>>(file_suffix: P) -> Result<PathBuf, Error> {
+        if let Some(parent) = file_suffix.as_ref().parent() {
+            Self::create_temp_dir(parent)?;
+        }
+
+        let mut new_path = Context::get_temp_dir();
+        new_path.push(&file_suffix);
+
+        File::create(&new_path)?;
+
+        Ok(new_path)
+    }
+
+    pub fn create_temp_dir<P: AsRef<Path>>(dir_suffix: P) -> Result<PathBuf, Error> {
+        let mut temp_path = Context::get_temp_dir();
+        temp_path.push(&dir_suffix);
+
+        fs::create_dir_all(&temp_path)?;
+
+        Ok(temp_path)
+    }
+
+    pub fn untrack_file<P: AsRef<Path>>(&mut self, path_suffix: P) {
         if !self.is_commited(&path_suffix) || self.is_untracked(&path_suffix) {
             return;
         }
@@ -337,16 +361,16 @@ impl DirState {
     }
 
     pub fn commit(&mut self) -> Result<(), Error> {
-        let tracked_paths: Vec<_> = self.tracked_files.drain(..).collect();
-        let mut untracked_paths: Vec<_> = self.untracked_files.drain(..).collect();
+        let tracked_files: Vec<_> = self.tracked_files.drain(..).collect();
+        let mut untracked_files: Vec<_> = self.untracked_files.drain(..).collect();
 
-        for path in tracked_paths {
-            let metadata = path.metadata()?;
+        for file in tracked_files {
+            let metadata = file.metadata()?;
 
             let mut tracker = self.path.clone();
             let mut dir_state = &mut *self;
 
-            if let Some(parent) = path.strip_prefix(&tracker).unwrap().parent() {
+            if let Some(parent) = file.strip_prefix(&tracker).unwrap().parent() {
                 for name in parent.iter() {
                     tracker.push(name);
 
@@ -362,18 +386,18 @@ impl DirState {
             if metadata.is_dir() {
                 dir_state
                     .dirs
-                    .push(Self::empty_unchecked(path, metadata.mode()));
+                    .push(Self::empty_unchecked(file, metadata.mode()));
             } else {
                 dir_state.files.push(FileState::new(
-                    path,
+                    file,
                     metadata.mode() & PERMISSION_BITS,
                     metadata.len(),
                 )?);
             }
         }
 
-        untracked_paths.sort_by_cached_key(|p| Reverse(p.iter().count()));
-        for path in untracked_paths {
+        untracked_files.sort_by_cached_key(|p| Reverse(p.iter().count()));
+        for path in untracked_files {
             let mut tracker = self.path.clone();
             let mut dir_state = &mut *self;
 

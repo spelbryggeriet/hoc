@@ -1,79 +1,24 @@
-use std::{
-    collections::{hash_map::Iter, HashMap},
-    error::Error as StdError,
-    hash::{Hash, Hasher},
-    mem,
-    str::FromStr,
-};
+use std::{error::Error as StdError, hash::Hash, str::FromStr};
 
 use hoclog::error;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
-use serde_json::Value;
 use thiserror::Error;
 
 use crate::{dir_state, process, Context, DirState};
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Attributes(HashMap<String, Value>);
-
-impl Hash for Attributes {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        fn hash_value<H: Hasher>(v: &Value, state: &mut H) {
-            match v {
-                Value::Null => ().hash(state),
-                Value::Bool(b) => b.hash(state),
-                Value::Number(n) => {
-                    if let Some(f) = n.as_f64() {
-                        let bits: u64 = unsafe { mem::transmute(f) };
-                        bits.hash(state)
-                    } else if let Some(i) = n.as_i64() {
-                        i.hash(state)
-                    } else {
-                        n.as_u64().unwrap().hash(state)
-                    }
-                }
-                Value::String(s) => s.hash(state),
-                Value::Array(vs) => {
-                    for v in vs {
-                        hash_value(v, state);
-                    }
-                }
-                Value::Object(vs) => {
-                    for (k, v) in vs.iter() {
-                        k.hash(state);
-                        hash_value(v, state);
-                    }
-                }
-            }
-        }
-
-        for (key, value) in self.0.iter() {
-            key.hash(state);
-            hash_value(value, state);
-        }
-    }
+#[macro_export]
+macro_rules! attributes {
+    ($($k:expr => $v:expr),* $(,)?) => {{
+        let mut map = Vec::new();
+        $(map.push($crate::procedure::Attribute { key: ($k).into(), value: ($v).into() });)*
+        map
+    }};
 }
 
-impl Attributes {
-    pub fn new() -> Self {
-        Self(HashMap::new())
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.0.is_empty()
-    }
-
-    pub fn len(&self) -> usize {
-        self.0.len()
-    }
-
-    pub fn iter(&self) -> Iter<String, Value> {
-        self.0.iter()
-    }
-
-    pub fn insert(&mut self, k: String, v: Value) -> Option<Value> {
-        self.0.insert(k, v)
-    }
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash, Deserialize, Serialize)]
+pub struct Attribute {
+    pub key: String,
+    pub value: String,
 }
 
 pub enum HaltState<S> {
@@ -91,8 +36,8 @@ pub trait Procedure: Sized {
 
     const NAME: &'static str;
 
-    fn get_attributes(&self) -> Attributes {
-        Attributes::default()
+    fn get_attributes(&self) -> Vec<Attribute> {
+        Vec::default()
     }
 
     fn rewind_state(&self) -> Option<<Self::State as State>::Id> {
@@ -163,7 +108,9 @@ impl Step {
         Ok(Self {
             id: state.id().as_str().to_string(),
             state: serde_json::to_string(&state)?,
-            work_dir_state: DirState::empty(Context::get_work_dir(procedure))?,
+            work_dir_state: DirState::empty(Context::get_work_dir::<P>(
+                &procedure.get_attributes(),
+            ))?,
         })
     }
 

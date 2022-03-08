@@ -11,7 +11,7 @@ use lazy_static::lazy_static;
 use structopt::StructOpt;
 
 use hoclib::{
-    procedure::{HaltState, Id, Procedure, Step},
+    procedure::{Attribute, HaltState, Id, Procedure, Step},
     Context, StepHistoryIndex,
 };
 use hoclog::{error, info, status, warning, LogErr};
@@ -43,11 +43,11 @@ fn run_procedure<P: Procedure>(context: &mut Context, mut proc: P) -> hoclog::Re
     let attrs = step_history_index.attributes();
     if !attrs.is_empty() {
         let mut proc_info = "Attributes:".to_string();
-        for (i, (key, value)) in attrs.iter().enumerate() {
+        for (i, Attribute { key, value }) in attrs.iter().enumerate() {
             if i < attrs.len() - 1 {
-                proc_info += &format!("\n├╴{}: {}", key, value);
+                proc_info += &format!("\n├╴{key}: {value}");
             } else {
-                proc_info += &format!("\n└╴{}: {}", key, value);
+                proc_info += &format!("\n└╴{key}: {value}");
             }
         }
         info!(proc_info);
