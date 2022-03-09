@@ -4,12 +4,15 @@ use std::{
     os::unix::prelude::OpenOptionsExt,
 };
 
+use osshkeys::{cipher::Cipher, keys::FingerprintHash, KeyPair, KeyType, PublicParts};
+use structopt::StructOpt;
+
 use hoclib::DirState;
 use hoclog::{hidden_input, info, status, LogErr, Result};
 use hocproc::procedure;
-use osshkeys::{cipher::Cipher, keys::FingerprintHash, KeyPair, KeyType, PublicParts};
 
 procedure! {
+    #[derive(StructOpt)]
     pub struct CreateUser {
         #[procedure(attribute)]
         username: String,
@@ -27,23 +30,23 @@ procedure! {
     }
 }
 
-impl Run for CreateUser {
-    fn choose_password(&mut self, _work_dir_state: &DirState) -> Result<CreateUserState> {
-        self.password = Some(hidden_input!("Choose a password").verify().get()?);
+impl Run for CreateUserState {
+    fn choose_password(proc: &mut CreateUser, _work_dir_state: &DirState) -> Result<Self> {
+        proc.password = Some(hidden_input!("Choose a password").verify().get()?);
 
         Ok(GenerateSshKeyPair)
     }
 
-    fn generate_ssh_key_pair(&mut self, work_dir_state: &mut DirState) -> Result<()> {
-        info!("Storing username: {}", &self.username);
+    fn generate_ssh_key_pair(proc: &mut CreateUser, work_dir_state: &mut DirState) -> Result<()> {
+        info!("Storing username: {}", &proc.username);
         let username_file_path = work_dir_state.track_file(format!("username.txt"));
-        fs::write(username_file_path, &self.username)?;
+        fs::write(username_file_path, &proc.username)?;
 
         let (pub_key, priv_key) = status!("Generate SSH keypair" => {
             let mut key_pair = KeyPair::generate(KeyType::ED25519, 256).log_err()?;
-            *key_pair.comment_mut() = self.username.clone();
+            *key_pair.comment_mut() = proc.username.clone();
 
-            let password = self.password.clone().unwrap();
+            let password = proc.password.clone().unwrap();
             let pub_key = key_pair.serialize_publickey().log_err()?;
             let priv_key = key_pair.serialize_openssh(Some(&password), Cipher::Aes256_Ctr).log_err()?;
 
@@ -60,7 +63,7 @@ impl Run for CreateUser {
             let ssh_dir = work_dir_state.track_file("ssh");
             fs::create_dir_all(ssh_dir)?;
 
-            let username = &self.username;
+            let username = &proc.username;
             let pub_path = work_dir_state.track_file(format!("ssh/id_{username}_ed25519.pub"));
             let priv_path = work_dir_state.track_file(format!("ssh/id_{username}_ed25519"));
             let mut pub_file = File::options().write(true).create(true).mode(0o600).open(&pub_path)?;

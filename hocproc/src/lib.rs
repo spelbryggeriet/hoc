@@ -86,6 +86,7 @@ impl Parse for CommandAttr {
 #[derive(PartialOrd, Ord, Clone)]
 enum StateVariantAttr {
     Transient,
+    MaybeFinish,
     Finish,
 }
 
@@ -95,6 +96,7 @@ impl PartialEq for StateVariantAttr {
 
         match (self, other) {
             (Transient, Transient) => true,
+            (MaybeFinish, MaybeFinish) => true,
             (Finish, Finish) => true,
             _ => false,
         }
@@ -110,6 +112,7 @@ impl Parse for StateVariantAttr {
 
         match &*name_str {
             "transient" => Ok(Self::Transient),
+            "maybe_finish" => Ok(Self::MaybeFinish),
             "finish" => Ok(Self::Finish),
             _ => abort!(name, "unexpected attribute: {}", name_str),
         }
@@ -259,9 +262,6 @@ fn impl_procedure(types: &ProcedureTypes) -> TokenStream {
     }
 
     set_dummy(quote! {
-        use #state_name::*;
-
-        #[derive(::structopt::StructOpt)]
         #stripped_command
 
         impl ::hoclib::procedure::Procedure for #command_name {
@@ -308,8 +308,6 @@ fn impl_procedure(types: &ProcedureTypes) -> TokenStream {
         .map(parse_state_variant)
         .collect();
 
-    check_state_variant_attributes(&state_variants);
-
     let impl_procedure = gen_impl_procedure(
         command_name,
         state_name,
@@ -327,7 +325,6 @@ fn impl_procedure(types: &ProcedureTypes) -> TokenStream {
     quote! {
         use #state_name::*;
 
-        #[derive(::structopt::StructOpt)]
         #stripped_command
 
         #impl_procedure
@@ -342,17 +339,6 @@ fn impl_procedure(types: &ProcedureTypes) -> TokenStream {
         #impl_default
 
         #run_trait
-    }
-}
-
-fn check_state_variant_attributes(state_variants: &[StateVariant]) {
-    let duplicate_finish_attribute = state_variants
-        .iter()
-        .filter_map(|v| v.attrs.contains(&StateVariantAttr::Finish).then(|| v.ident))
-        .skip(1)
-        .next();
-    if let Some(ident) = duplicate_finish_attribute {
-        abort!(ident, "duplicate finish attribute")
     }
 }
 
@@ -381,7 +367,7 @@ fn gen_impl_procedure(
 
     let get_attributes = gen_get_attributes(&command_fields);
     let rewind_state = gen_rewind_state(&state_id_name, &command_fields, state_variants);
-    let run = gen_run(state_name, &state_variants);
+    let run = gen_run();
 
     quote! {
         impl ::hoclib::procedure::Procedure for #struct_name {
@@ -466,7 +452,7 @@ fn gen_get_attributes(command_fields: &[CommandField]) -> TokenStream {
             let ident = f.ident;
             quote!(variant.push(::hoclib::procedure::Attribute {
                 key: #title.to_string(),
-                value: self.#ident.clone().into(),
+                value: self.#ident.clone().to_string(),
             }))
         });
 
@@ -532,57 +518,10 @@ fn gen_rewind_state(
     }
 }
 
-fn gen_run(state_name: &Ident, state_variants: &[StateVariant]) -> TokenStream {
-    let variant_patterns = state_variants.iter().map(|v| {
-        let variant_name = v.ident;
-        let field_names = v.fields.iter().map(|f| &f.ident);
-
-        if v.unit {
-            quote!(#state_name::#variant_name)
-        } else {
-            quote!(#state_name::#variant_name { #(#field_names),* })
-        }
-    });
-
-    let variant_exprs = state_variants.iter().map(|v| {
-        let name = Ident::new(&v.ident.to_string().to_snake_case(), Span::call_site());
-        let args = v.fields.iter().map(|f| &f.ident);
-        let persist = !v.attrs.contains(&StateVariantAttr::Transient);
-        let work_dir_state = if persist {
-            quote!(step.work_dir_state_mut())
-        } else {
-            quote!(step.work_dir_state())
-        };
-
-        if !v.attrs.contains(&StateVariantAttr::Finish) {
-            quote!({
-                let state = self.#name(#work_dir_state #(, #args)*)?;
-                ::hoclib::procedure::Halt {
-                    persist: #persist,
-                    state: ::hoclib::procedure::HaltState::Halt(state),
-                }
-            })
-        } else {
-            quote!({
-                self.#name(#work_dir_state #(, #args)*)?;
-                ::hoclib::procedure::Halt {
-                    persist: #persist,
-                    state: ::hoclib::procedure::HaltState::Finish,
-                }
-            })
-        }
-    });
-
-    let match_switch = state_variants
-        .is_empty()
-        .then(|| quote!(unreachable!()))
-        .or_else(|| Some(quote!(match step.state()? { #(#variant_patterns => #variant_exprs,)* })));
-
+fn gen_run() -> TokenStream {
     quote! {
-        #[allow(unreachable_code)]
         fn run(&mut self, step: &mut ::hoclib::procedure::Step) -> ::hoclog::Result<::hoclib::procedure::Halt<Self::State>> {
-            let halt = #match_switch;
-            Ok(halt)
+            __run_state(step.state::<Self::State>()?, self, step.work_dir_state_mut())
         }
     }
 }
@@ -606,26 +545,89 @@ fn gen_run_trait(
             .then(|| quote!(&))
             .unwrap_or_else(|| quote!(&mut));
 
-        let return_type = v
+        let return_type = if v
             .attrs
             .contains(&StateVariantAttr::Finish)
-            .then(|| quote!(()))
-            .unwrap_or_else(|| quote!(#state_name));
+        {
+            quote!(())
+        } else if v
+            .attrs
+            .contains(&StateVariantAttr::MaybeFinish)
+        {
+            quote!(Option<Self>)
+        } else {
+            quote!(Self)
+        };
 
-        quote!(fn #name(&mut self, work_dir_state: #work_dir_ref_type ::hoclib::DirState #(, #args)*) -> ::hoclog::Result<#return_type>;)
+        quote!(fn #name(procedure: &mut #command_name, work_dir_state: #work_dir_ref_type ::hoclib::DirState #(, #args)*) -> ::hoclog::Result<#return_type>;)
     });
 
     let maybe_impl_run = state_variants
         .is_empty()
-        .then(|| quote!(impl Run for #command_name {}));
+        .then(|| quote!(impl Run for #state_name {}));
+
+    let variant_patterns = state_variants.iter().map(|v| {
+        let variant_name = v.ident;
+        let field_names = v.fields.iter().map(|f| &f.ident);
+
+        if v.unit {
+            quote!(#variant_name)
+        } else {
+            quote!(#variant_name { #(#field_names),* })
+        }
+    });
+
+    let variant_exprs = state_variants.iter().map(|v| {
+        let name = Ident::new(&v.ident.to_string().to_snake_case(), Span::call_site());
+        let args = v.fields.iter().map(|f| &f.ident);
+        let persist = !v.attrs.contains(&StateVariantAttr::Transient);
+
+        if v.attrs.contains(&StateVariantAttr::Finish) {
+            quote!({
+                #state_name::#name(procedure, work_dir_state #(, #args)*)?;
+                ::hoclib::procedure::Halt {
+                    persist: #persist,
+                    state: ::hoclib::procedure::HaltState::Finish,
+                }
+            })
+        } else if v.attrs.contains(&StateVariantAttr::MaybeFinish) {
+            quote!({
+                let new_state = #state_name::#name(procedure, work_dir_state #(, #args)*)?;
+                ::hoclib::procedure::Halt {
+                    persist: #persist,
+                    state: new_state
+                        .map(::hoclib::procedure::HaltState::Halt)
+                        .unwrap_or(::hoclib::procedure::HaltState::Finish),
+                }
+            })
+        } else {
+            quote!({
+                let new_state = #state_name::#name(procedure, work_dir_state #(, #args)*)?;
+                ::hoclib::procedure::Halt {
+                    persist: #persist,
+                    state: ::hoclib::procedure::HaltState::Halt(new_state),
+                }
+            })
+        }
+    });
+
+    let match_switch = state_variants
+        .is_empty()
+        .then(|| quote!(unreachable!()))
+        .or_else(|| Some(quote!(match state { #(#variant_patterns => #variant_exprs,)* })));
 
     quote! {
         trait RunImplRequired: Run {}
 
-        impl RunImplRequired for #command_name {}
+        impl RunImplRequired for #state_name {}
         #maybe_impl_run
 
-        trait Run {
+        fn __run_state(state: #state_name, procedure: &mut #command_name, work_dir_state: &mut ::hoclib::DirState) -> ::hoclog::Result<::hoclib::procedure::Halt<#state_name>> {
+            let halt = #match_switch;
+            Ok(halt)
+        }
+
+        trait Run: Sized {
             #(#run_fns)*
         }
     }

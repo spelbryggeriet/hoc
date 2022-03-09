@@ -6,19 +6,17 @@ use std::{
     path::Path,
 };
 
-use hoclib::{cmd_macros, ssh::SshClient, DirState};
+use osshkeys::{cipher::Cipher, keys::FingerprintHash, KeyPair, KeyType, PublicParts};
+use structopt::StructOpt;
+
+use hoclib::{ssh::SshClient, DirState};
 use hoclog::{choose, hidden_input, info, input, status, LogErr, Result};
 use hocproc::procedure;
-use osshkeys::{cipher::Cipher, keys::FingerprintHash, KeyPair, KeyType, PublicParts};
-
-cmd_macros!(
-    adduser, arp, cat, chmod, dd, deluser, mkdir, pkill, rm, sed, sshd, systemctl, tee, test,
-    usermod,
-);
 
 mod util;
 
 procedure! {
+    #[derive(StructOpt)]
     pub struct Configure {
         #[procedure(attribute)]
         node_name: String,
@@ -58,11 +56,11 @@ procedure! {
     }
 }
 
-impl Run for Configure {
-    fn get_host(&mut self, _work_dir_state: &mut DirState) -> Result<ConfigureState> {
+impl Run for ConfigureState {
+    fn get_host(proc: &mut Configure, _work_dir_state: &mut DirState) -> Result<Self> {
         let local_endpoint = status!("Find local endpoints" => {
             let (_, output) = arp!("-a").hide_stdout().run()?;
-            let (default_index, mut endpoints) = util::LocalEndpoint::parse_arp_output(&output, &self.node_name);
+            let (default_index, mut endpoints) = util::LocalEndpoint::parse_arp_output(&output, &proc.node_name);
 
             let index = choose!(
                 "Which endpoint do you want to configure?",
@@ -79,14 +77,14 @@ impl Run for Configure {
     }
 
     fn add_new_user(
-        &mut self,
+        proc: &mut Configure,
         _work_dir_state: &mut DirState,
         host: String,
-    ) -> Result<ConfigureState> {
+    ) -> Result<Self> {
         let new_username = input!("Choose a new username");
         let new_password = hidden_input!("Choose a new password").verify().get()?;
 
-        let client = self.ssh_client_password_auth(&host, "pi", "raspberry")?;
+        let client = proc.ssh_client_password_auth(&host, "pi", "raspberry")?;
 
         // Add the new user.
         adduser!(new_username)
@@ -95,7 +93,7 @@ impl Run for Configure {
             .ssh(&client)
             .run()?;
 
-        self.password.replace(Some(new_password));
+        proc.password.replace(Some(new_password));
 
         Ok(AssignSudoPrivileges {
             host,
@@ -104,12 +102,12 @@ impl Run for Configure {
     }
 
     fn assign_sudo_privileges(
-        &mut self,
+        proc: &mut Configure,
         _work_dir_state: &mut DirState,
         host: String,
         username: String,
-    ) -> Result<ConfigureState> {
-        let client = self.ssh_client_password_auth(&host, "pi", "raspberry")?;
+    ) -> Result<Self> {
+        let client = proc.ssh_client_password_auth(&host, "pi", "raspberry")?;
 
         // Assign the user the relevant groups.
         usermod!(
@@ -136,13 +134,13 @@ impl Run for Configure {
     }
 
     fn delete_pi_user(
-        &mut self,
+        proc: &mut Configure,
         _work_dir_state: &mut DirState,
         host: String,
         username: String,
-    ) -> Result<ConfigureState> {
-        let password = self.password_for_user(&username)?;
-        let client = self.ssh_client_password_auth(&host, &username, &password)?;
+    ) -> Result<Self> {
+        let password = proc.password_for_user(&username)?;
+        let client = proc.ssh_client_password_auth(&host, &username, &password)?;
 
         // Kill all processes owned by the `pi` user.
         pkill!("-u", "pi")
@@ -161,12 +159,12 @@ impl Run for Configure {
     }
 
     fn set_up_ssh_access(
-        &mut self,
+        proc: &mut Configure,
         work_dir_state: &mut DirState,
         host: String,
         username: String,
-    ) -> Result<ConfigureState> {
-        let password = self.password_for_user(&username)?;
+    ) -> Result<Self> {
+        let password = proc.password_for_user(&username)?;
 
         let (pub_key, priv_key) = status!("Generate SSH keypair" => {
             let mut key_pair = KeyPair::generate(KeyType::ED25519, 256).log_err()?;
@@ -201,7 +199,7 @@ impl Run for Configure {
             (pub_path, priv_path)
         });
 
-        let client = self.ssh_client_password_auth(&host, &username, &password)?;
+        let client = proc.ssh_client_password_auth(&host, &username, &password)?;
 
         status!("Send SSH public key" => {
             // Create the `.ssh` directory.
@@ -266,7 +264,7 @@ impl Run for Configure {
 
             // Verify again after SSH server restart.
             let client =
-                self.ssh_client_key_auth(&host, &username, &pub_path, &priv_path, &password)?;
+                proc.ssh_client_key_auth(&host, &username, &pub_path, &priv_path, &password)?;
 
             sshd!("-t").sudo_password(&*password).ssh(&client).run()?;
         });
@@ -275,16 +273,16 @@ impl Run for Configure {
     }
 
     fn install_dependencies(
-        &mut self,
+        proc: &mut Configure,
         work_dir_state: &mut DirState,
         host: String,
         username: String,
     ) -> Result<()> {
         let pub_path = work_dir_state.track_file(format!("ssh/id_{username}_ed25519.pub"));
         let priv_path = work_dir_state.track_file(format!("ssh/id_{username}_ed25519"));
-        let password = self.password_for_user(&username)?;
+        let password = proc.password_for_user(&username)?;
         let client =
-            self.ssh_client_key_auth(&host, &username, &pub_path, &priv_path, &password)?;
+            proc.ssh_client_key_auth(&host, &username, &pub_path, &priv_path, &password)?;
 
         hoclog::error!("Abort")?;
 
