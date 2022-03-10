@@ -207,7 +207,7 @@ fn main() {
             Command::CreateUser(proc) => run_procedure(&mut context, proc)?,
             Command::DownloadImage(proc) => run_procedure(&mut context, proc)?,
             Command::Flash(proc) => run_procedure(&mut context, proc)?,
-            Command::Configure(proc) => run_procedure(&mut context, proc)?,
+            Command::Init(proc) => run_procedure(&mut context, proc)?,
         }
         Ok(())
     };

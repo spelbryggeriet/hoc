@@ -17,10 +17,10 @@ use super::CreateUser;
 
 procedure! {
     #[derive(StructOpt)]
-    pub struct Configure {
+    pub struct Init {
         #[procedure(attribute)]
         #[structopt(long)]
-        os: OperatingSystem,
+        node_os: OperatingSystem,
 
         #[procedure(attribute)]
         #[structopt(long)]
@@ -36,7 +36,7 @@ procedure! {
         ssh_client: RefCell<Option<SshClient>>,
     }
 
-    pub enum ConfigureState {
+    pub enum InitState {
         Prepare,
 
         AddNewUser,
@@ -51,9 +51,9 @@ procedure! {
     }
 }
 
-impl Run for ConfigureState {
-    fn prepare(proc: &mut Configure, _work_dir_state: &mut DirState) -> Result<Self> {
-        let state = match proc.os {
+impl Run for InitState {
+    fn prepare(proc: &mut Init, _work_dir_state: &mut DirState) -> Result<Self> {
+        let state = match proc.node_os {
             OperatingSystem::RaspberryPiOs { .. } => AddNewUser,
             OperatingSystem::Ubuntu { .. } => ChangePassword,
         };
@@ -61,7 +61,7 @@ impl Run for ConfigureState {
         Ok(state)
     }
 
-    fn add_new_user(proc: &mut Configure, _work_dir_state: &mut DirState) -> Result<Self> {
+    fn add_new_user(proc: &mut Init, _work_dir_state: &mut DirState) -> Result<Self> {
         let username = &proc.username;
         let password = proc.password_for_user(username)?;
         let client = proc.ssh_client_password_auth(&proc.node_address, "pi", "raspberry")?;
@@ -86,10 +86,7 @@ impl Run for ConfigureState {
         Ok(AssignSudoPrivileges)
     }
 
-    fn assign_sudo_privileges(
-        proc: &mut Configure,
-        _work_dir_state: &mut DirState,
-    ) -> Result<Self> {
+    fn assign_sudo_privileges(proc: &mut Init, _work_dir_state: &mut DirState) -> Result<Self> {
         let username = &proc.username;
         let client = proc.ssh_client_password_auth(&proc.node_address, "pi", "raspberry")?;
 
@@ -117,7 +114,7 @@ impl Run for ConfigureState {
         Ok(DeletePiUser)
     }
 
-    fn delete_pi_user(proc: &mut Configure, _work_dir_state: &mut DirState) -> Result<Self> {
+    fn delete_pi_user(proc: &mut Init, _work_dir_state: &mut DirState) -> Result<Self> {
         let username = &proc.username;
         let password = proc.password_for_user(&username)?;
         let client = proc.ssh_client_password_auth(&proc.node_address, &username, &password)?;
@@ -138,7 +135,7 @@ impl Run for ConfigureState {
         Ok(SetUpSshAccess)
     }
 
-    fn set_up_ssh_access(proc: &mut Configure, _work_dir_state: &mut DirState) -> Result<Self> {
+    fn set_up_ssh_access(proc: &mut Init, _work_dir_state: &mut DirState) -> Result<Self> {
         let username = &proc.username;
         let password = proc.password_for_user(username)?;
 
@@ -201,7 +198,7 @@ impl Run for ConfigureState {
             rm!(src).ssh(&client).run()?;
         });
 
-        status!("Configure SSH server" => {
+        status!("Init SSH server" => {
             let dest = "/etc/ssh/sshd_config";
             let src = format!("/home/{username}/sshd_config_updated");
 
@@ -239,7 +236,7 @@ impl Run for ConfigureState {
         Ok(InstallDependencies)
     }
 
-    fn install_dependencies(proc: &mut Configure, _work_dir_state: &mut DirState) -> Result<()> {
+    fn install_dependencies(proc: &mut Init, _work_dir_state: &mut DirState) -> Result<()> {
         let username = &proc.username;
         let pub_path = DirState::get_path::<CreateUser>(
             &attributes!("Username" => username),
@@ -266,7 +263,7 @@ impl Run for ConfigureState {
         Ok(())
     }
 
-    fn change_password(proc: &mut Configure, _work_dir_state: &mut DirState) -> Result<()> {
+    fn change_password(proc: &mut Init, _work_dir_state: &mut DirState) -> Result<()> {
         let username = &proc.username;
 
         let pub_path = DirState::get_path::<CreateUser>(
@@ -299,7 +296,7 @@ impl Run for ConfigureState {
     }
 }
 
-impl Configure {
+impl Init {
     fn password_for_user(&self, username: &str) -> Result<Ref<String>> {
         if self.password.borrow().is_none() {
             let password = hidden_input!("Enter password for {}", username).get()?;
