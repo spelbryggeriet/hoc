@@ -2,9 +2,9 @@ use hoclib::cmd_macros;
 
 cmd_macros!(
     adduser,
-    arp,
     cat,
     chmod,
+    chpasswd,
     cmd_file => "file",
     dd,
     deluser,
@@ -22,5 +22,6 @@ cmd_macros!(
     usermod,
 );
 
+pub mod cidr;
 pub mod disk;
-pub mod image;
+pub mod os;

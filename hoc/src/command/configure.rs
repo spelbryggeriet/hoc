@@ -1,25 +1,33 @@
 use std::{
     cell::{Ref, RefCell},
-    fs::{self, File},
-    io::Write,
-    os::unix::prelude::OpenOptionsExt,
+    fs,
     path::Path,
 };
 
-use osshkeys::{cipher::Cipher, keys::FingerprintHash, KeyPair, KeyType, PublicParts};
+use osshkeys::{keys::FingerprintHash, KeyPair, PublicKey, PublicParts};
 use structopt::StructOpt;
 
-use hoclib::{ssh::SshClient, DirState};
-use hoclog::{choose, hidden_input, info, input, status, LogErr, Result};
+use hoclib::{attributes, ssh::SshClient, DirState};
+use hoclog::{hidden_input, info, status, LogErr, Result};
 use hocproc::procedure;
 
-mod util;
+use crate::command::util::os::OperatingSystem;
+
+use super::CreateUser;
 
 procedure! {
     #[derive(StructOpt)]
     pub struct Configure {
         #[procedure(attribute)]
-        node_name: String,
+        #[structopt(long)]
+        os: OperatingSystem,
+
+        #[procedure(attribute)]
+        #[structopt(long)]
+        node_address: String,
+
+        #[structopt(long)]
+        username: String,
 
         #[structopt(skip)]
         password:  RefCell<Option<String>>,
@@ -29,92 +37,68 @@ procedure! {
     }
 
     pub enum ConfigureState {
-        GetHost,
+        Prepare,
 
-        AddNewUser { host: String },
-
-        AssignSudoPrivileges {
-            host: String,
-            username: String,
-        },
-
-        DeletePiUser {
-            host: String,
-            username: String,
-        },
-
-        SetUpSshAccess {
-            host: String,
-            username: String,
-        },
+        AddNewUser,
+        AssignSudoPrivileges,
+        DeletePiUser,
+        SetUpSshAccess,
+        #[procedure(finish)]
+        InstallDependencies,
 
         #[procedure(finish)]
-        InstallDependencies {
-            host: String,
-            username: String,
-        },
+        ChangePassword,
     }
 }
 
 impl Run for ConfigureState {
-    fn get_host(proc: &mut Configure, _work_dir_state: &mut DirState) -> Result<Self> {
-        let local_endpoint = status!("Find local endpoints" => {
-            let (_, output) = arp!("-a").hide_stdout().run()?;
-            let (default_index, mut endpoints) = util::LocalEndpoint::parse_arp_output(&output, &proc.node_name);
+    fn prepare(proc: &mut Configure, _work_dir_state: &mut DirState) -> Result<Self> {
+        let state = match proc.os {
+            OperatingSystem::RaspberryPiOs { .. } => AddNewUser,
+            OperatingSystem::Ubuntu { .. } => ChangePassword,
+        };
 
-            let index = choose!(
-                "Which endpoint do you want to configure?",
-                items = &endpoints,
-                default_index = default_index,
-            )?;
-
-            endpoints.remove(index)
-        });
-
-        Ok(AddNewUser {
-            host: local_endpoint.host().into_owned(),
-        })
+        Ok(state)
     }
 
-    fn add_new_user(
-        proc: &mut Configure,
-        _work_dir_state: &mut DirState,
-        host: String,
-    ) -> Result<Self> {
-        let new_username = input!("Choose a new username");
-        let new_password = hidden_input!("Choose a new password").verify().get()?;
+    fn add_new_user(proc: &mut Configure, _work_dir_state: &mut DirState) -> Result<Self> {
+        let username = &proc.username;
+        let password = proc.password_for_user(username)?;
+        let client = proc.ssh_client_password_auth(&proc.node_address, "pi", "raspberry")?;
 
-        let client = proc.ssh_client_password_auth(&host, "pi", "raspberry")?;
+        let priv_path = DirState::get_path::<CreateUser>(
+            &attributes!("Username" => username),
+            Path::new(&format!("ssh/id_{username}_ed25519")),
+        )
+        .log_context("user not found")?;
+        let priv_key = fs::read_to_string(priv_path)?;
+
+        KeyPair::from_keystr(&priv_key, Some(&password))
+            .log_context("incorrect password provided")?;
 
         // Add the new user.
-        adduser!(new_username)
-            .stdin_lines([&new_password, &new_password])
+        adduser!(username)
+            .stdin_lines([&*password, &*password])
             .sudo()
             .ssh(&client)
             .run()?;
 
-        proc.password.replace(Some(new_password));
-
-        Ok(AssignSudoPrivileges {
-            host,
-            username: new_username,
-        })
+        Ok(AssignSudoPrivileges)
     }
 
     fn assign_sudo_privileges(
         proc: &mut Configure,
         _work_dir_state: &mut DirState,
-        host: String,
-        username: String,
     ) -> Result<Self> {
-        let client = proc.ssh_client_password_auth(&host, "pi", "raspberry")?;
+        let username = &proc.username;
+        let client = proc.ssh_client_password_auth(&proc.node_address, "pi", "raspberry")?;
 
         // Assign the user the relevant groups.
         usermod!(
             "-a",
             "-G",
             "adm,dialout,cdrom,sudo,audio,video,plugdev,games,users,input,netdev,gpio,i2c,spi",
-            username
+            username,
         )
         .sudo()
         .ssh(&client)
@@ -130,17 +114,13 @@ impl Run for ConfigureState {
             .run()?;
         chmod!("440", sudo_file).sudo().ssh(&client).run()?;
 
-        Ok(DeletePiUser { host, username })
+        Ok(DeletePiUser)
     }
 
-    fn delete_pi_user(
-        proc: &mut Configure,
-        _work_dir_state: &mut DirState,
-        host: String,
-        username: String,
-    ) -> Result<Self> {
+    fn delete_pi_user(proc: &mut Configure, _work_dir_state: &mut DirState) -> Result<Self> {
+        let username = &proc.username;
         let password = proc.password_for_user(&username)?;
-        let client = proc.ssh_client_password_auth(&host, &username, &password)?;
+        let client = proc.ssh_client_password_auth(&proc.node_address, &username, &password)?;
 
         // Kill all processes owned by the `pi` user.
         pkill!("-u", "pi")
@@ -155,51 +135,38 @@ impl Run for ConfigureState {
             .ssh(&client)
             .run()?;
 
-        Ok(SetUpSshAccess { host, username })
+        Ok(SetUpSshAccess)
     }
 
-    fn set_up_ssh_access(
-        proc: &mut Configure,
-        work_dir_state: &mut DirState,
-        host: String,
-        username: String,
-    ) -> Result<Self> {
-        let password = proc.password_for_user(&username)?;
+    fn set_up_ssh_access(proc: &mut Configure, _work_dir_state: &mut DirState) -> Result<Self> {
+        let username = &proc.username;
+        let password = proc.password_for_user(username)?;
 
-        let (pub_key, priv_key) = status!("Generate SSH keypair" => {
-            let mut key_pair = KeyPair::generate(KeyType::ED25519, 256).log_err()?;
-            *key_pair.comment_mut() = username.clone();
+        let (pub_key, pub_path, priv_path) = status!("Read SSH keypair" => {
+            let pub_path = DirState::get_path::<CreateUser>(
+                &attributes!("Username" => username),
+                Path::new(&format!("ssh/id_{username}_ed25519.pub")),
+            )
+            .log_context("user not found")?;
+            let priv_path = DirState::get_path::<CreateUser>(
+                &attributes!("Username" => username),
+                Path::new(&format!("ssh/id_{username}_ed25519")),
+            )
+            .log_context("user not found")?;
 
-            let pub_key = key_pair.serialize_publickey().log_err()?;
-            let priv_key = key_pair.serialize_openssh(Some(&password), Cipher::Aes256_Ctr).log_err()?;
+            let pub_key = fs::read_to_string(&pub_path)?;
+            info!(
+                "SSH public key fingerprint randomart:\n{}",
+                PublicKey::from_keystr(&pub_key)
+                    .log_err()?
+                    .fingerprint_randomart(FingerprintHash::SHA256)
+                    .log_err()?
+            );
 
-            let randomart = key_pair.fingerprint_randomart(
-                FingerprintHash::SHA256,
-            ).log_err()?;
-
-            info!("Fingerprint randomart:");
-            info!(randomart);
-
-            (pub_key, priv_key)
+            (pub_key, pub_path, priv_path)
         });
 
-        let (pub_path, priv_path) = status!("Store SSH keypair" => {
-            let ssh_dir = work_dir_state.track_file("ssh");
-            fs::create_dir_all(ssh_dir)?;
-
-            let pub_path = work_dir_state.track_file(format!("ssh/id_{username}_ed25519.pub"));
-            let priv_path = work_dir_state.track_file(format!("ssh/id_{username}_ed25519"));
-            let mut pub_file = File::options().write(true).create(true).mode(0o600).open(&pub_path)?;
-            let mut priv_file = File::options().write(true).create(true).mode(0o600).open(&priv_path)?;
-            pub_file.write_all(pub_key.as_bytes())?;
-            priv_file.write_all(priv_key.as_bytes())?;
-
-            info!("Key stored in {}", priv_path.to_string_lossy());
-
-            (pub_path, priv_path)
-        });
-
-        let client = proc.ssh_client_password_auth(&host, &username, &password)?;
+        let client = proc.ssh_client_password_auth(&proc.node_address, username, &password)?;
 
         status!("Send SSH public key" => {
             // Create the `.ssh` directory.
@@ -214,7 +181,7 @@ impl Run for ConfigureState {
             let (status_code, _) = test!("-s", dest).success_codes([0, 1]).ssh(&client).run()?;
             if status_code == 1 {
                 // Create the authorized keys file.
-                cat!().stdin_line(&username).stdout(&dest).ssh(&client).run()?;
+                cat!().stdin_line(username).stdout(&dest).ssh(&client).run()?;
                 chmod!("644", dest).ssh(&client).run()?;
             }
 
@@ -264,27 +231,69 @@ impl Run for ConfigureState {
 
             // Verify again after SSH server restart.
             let client =
-                proc.ssh_client_key_auth(&host, &username, &pub_path, &priv_path, &password)?;
+                proc.ssh_client_key_auth(&proc.node_address, username, &pub_path, &priv_path, &password)?;
 
             sshd!("-t").sudo_password(&*password).ssh(&client).run()?;
         });
 
-        Ok(InstallDependencies { host, username })
+        Ok(InstallDependencies)
     }
 
-    fn install_dependencies(
-        proc: &mut Configure,
-        work_dir_state: &mut DirState,
-        host: String,
-        username: String,
-    ) -> Result<()> {
-        let pub_path = work_dir_state.track_file(format!("ssh/id_{username}_ed25519.pub"));
-        let priv_path = work_dir_state.track_file(format!("ssh/id_{username}_ed25519"));
-        let password = proc.password_for_user(&username)?;
-        let client =
-            proc.ssh_client_key_auth(&host, &username, &pub_path, &priv_path, &password)?;
+    fn install_dependencies(proc: &mut Configure, _work_dir_state: &mut DirState) -> Result<()> {
+        let username = &proc.username;
+        let pub_path = DirState::get_path::<CreateUser>(
+            &attributes!("Username" => username),
+            Path::new(&format!("ssh/id_{username}_ed25519.pub")),
+        )
+        .log_context("user not found")?;
+        let priv_path = DirState::get_path::<CreateUser>(
+            &attributes!("Username" => username),
+            Path::new(&format!("ssh/id_{username}_ed25519")),
+        )
+        .log_context("user not found")?;
 
-        hoclog::error!("Abort")?;
+        let password = proc.password_for_user(&username)?;
+        let _client = proc.ssh_client_key_auth(
+            &proc.node_address,
+            &username,
+            &pub_path,
+            &priv_path,
+            &password,
+        )?;
+
+        hoclog::error!("not implemented")?;
+
+        Ok(())
+    }
+
+    fn change_password(proc: &mut Configure, _work_dir_state: &mut DirState) -> Result<()> {
+        let username = &proc.username;
+
+        let pub_path = DirState::get_path::<CreateUser>(
+            &attributes!("Username" => username),
+            Path::new(&format!("ssh/id_{username}_ed25519.pub")),
+        )
+        .log_context("user not found")?;
+        let priv_path = DirState::get_path::<CreateUser>(
+            &attributes!("Username" => username),
+            Path::new(&format!("ssh/id_{username}_ed25519")),
+        )
+        .log_context("user not found")?;
+
+        let password = proc.password_for_user(username)?;
+        let client = proc.ssh_client_key_auth(
+            &proc.node_address,
+            username,
+            &pub_path,
+            &priv_path,
+            &password,
+        )?;
+
+        chpasswd!()
+            .sudo_password(&"temporary_password")
+            .stdin_line(&format!("{username}:{password}"))
+            .ssh(&client)
+            .run()?;
 
         Ok(())
     }

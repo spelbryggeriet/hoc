@@ -13,40 +13,37 @@ use structopt::StructOpt;
 use hoclib::{attributes, DirState};
 use hoclog::{choose, info, prompt, status, LogErr, Result};
 
-use crate::command::util::{disk, image::Image};
+use crate::command::util::{cidr::Cidr, disk, os::OperatingSystem};
 
-use self::util::Cidr;
-use super::{CreateUser, DownloadOsImage};
-
-mod util;
+use super::{CreateUser, DownloadImage};
 
 procedure! {
     #[derive(StructOpt)]
     pub struct Flash {
-        /// The image to flash the SD card with.
+        /// The operating system to flash the SD card with.
         #[structopt(long)]
-        image: Image,
+        os: OperatingSystem,
 
         /// The name of the node, which will be used as the host name, for instance.
-        #[structopt(long, required_if("image", "ubuntu"))]
+        #[structopt(long, required_if("os", "ubuntu"))]
         node_name: Option<String>,
 
         /// The username of the administrator.
-        #[structopt(long, required_if("image", "ubuntu"))]
+        #[structopt(long, required_if("os", "ubuntu"))]
         username: Option<String>,
 
         /// List of CIDR addresses to attach to the network interface.
-        #[structopt(long, required_if("image", "ubuntu"))]
+        #[structopt(long, required_if("os", "ubuntu"))]
         address: Option<Cidr>,
 
         /// The default gateway for the network interface.
-        #[structopt(long, required_if("image", "ubuntu"))]
+        #[structopt(long, required_if("os", "ubuntu"))]
         gateway: Option<IpAddr>,
     }
 
     pub enum FlashState {
         #[procedure(transient)]
-        DetermineImage,
+        Prepare,
 
         #[procedure(transient)]
         ModifyUbuntuImage { image_path: PathBuf },
@@ -57,15 +54,15 @@ procedure! {
 }
 
 impl Run for FlashState {
-    fn determine_image(proc: &mut Flash, _work_dir_state: &DirState) -> Result<Self> {
-        let image_path = DirState::get_path::<DownloadOsImage>(
-            &attributes!("Image" => proc.image.to_string()),
+    fn prepare(proc: &mut Flash, _work_dir_state: &DirState) -> Result<Self> {
+        let image_path = DirState::get_path::<DownloadImage>(
+            &attributes!("Os" => proc.os.to_string()),
             Path::new("image"),
         )?;
 
-        let state = match proc.image {
-            Image::RaspberryPiOs { .. } => FlashImage { image_path },
-            Image::Ubuntu { .. } => ModifyUbuntuImage { image_path },
+        let state = match proc.os {
+            OperatingSystem::RaspberryPiOs { .. } => FlashImage { image_path },
+            OperatingSystem::Ubuntu { .. } => ModifyUbuntuImage { image_path },
         };
 
         Ok(state)
@@ -77,20 +74,25 @@ impl Run for FlashState {
         image_path: PathBuf,
     ) -> Result<Self> {
         let username = proc.username.as_ref().unwrap().as_str();
-        let pub_key_path = DirState::get_path::<CreateUser>(
-            &attributes!("Username" => username),
-            Path::new(&format!("ssh/id_{username}_ed25519.pub")),
-        )
-        .log_context("user not found")?;
-        let pub_key = fs::read_to_string(pub_key_path)?;
 
-        info!(
-            "SSH public key fingerprint randomart:\n{}",
-            PublicKey::from_keystr(&pub_key)
-                .log_err()?
-                .fingerprint_randomart(FingerprintHash::SHA256)
-                .log_err()?
-        );
+        let pub_key = status!("Read SSH keypair" => {
+            let pub_key_path = DirState::get_path::<CreateUser>(
+                &attributes!("Username" => username),
+                Path::new(&format!("ssh/id_{username}_ed25519.pub")),
+            )
+            .log_context("user not found")?;
+
+            let pub_key = fs::read_to_string(pub_key_path)?;
+            info!(
+                "SSH public key fingerprint randomart:\n{}",
+                PublicKey::from_keystr(&pub_key)
+                    .log_err()?
+                    .fingerprint_randomart(FingerprintHash::SHA256)
+                    .log_err()?
+            );
+
+            pub_key
+        });
 
         let image_temp_path = status!("Copy image to temporary location" => {
             let image_temp_path = DirState::create_temp_file("image")?;
@@ -106,7 +108,7 @@ impl Run for FlashState {
 
         let (mount_dir, dev_disk_id) = disk::attach_disk(&image_temp_path, "system-boot")?;
 
-        status!("Configure image" => {
+        status!("Prepare image initialization" => {
             use serde_yaml::{Mapping as Map, Value::Sequence as Seq};
 
             let user_data_path = mount_dir.join("user-data");
@@ -117,7 +119,6 @@ impl Run for FlashState {
             data_map.insert("manage_etc_hosts".into(), true.into());
             data_map.insert("package_update".into(), false.into());
             data_map.insert("package_upgrade".into(), false.into());
-            data_map.insert("packages".into(), ["whois"].into_iter().collect());
             data_map.insert(
                 "users".into(),
                 Seq(vec![{
@@ -143,9 +144,9 @@ impl Run for FlashState {
                 let mut chpasswd_map = Map::new();
                 chpasswd_map.insert(
                     "list".into(),
-                    [format!("{username}:temp_password")].into_iter().collect(),
+                    [format!("{username}:temporary_password")].into_iter().collect(),
                 );
-                chpasswd_map.insert("expire".into(), true.into());
+                chpasswd_map.insert("expire".into(), false.into());
                 chpasswd_map.into()
             });
 

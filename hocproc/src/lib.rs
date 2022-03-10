@@ -279,6 +279,7 @@ fn impl_procedure(types: &ProcedureTypes) -> TokenStream {
         #stripped_state
 
         impl ::hoclib::procedure::State for #state_name {
+            type Procedure = #command_name;
             type Id = #state_id_name;
 
             fn id(&self) -> Self::Id {
@@ -316,7 +317,7 @@ fn impl_procedure(types: &ProcedureTypes) -> TokenStream {
         &types.command,
         &state_variants,
     );
-    let impl_state = gen_impl_state(state_name, &state_id_name);
+    let impl_state = gen_impl_state(command_name, state_name, &state_id_name);
     let impl_id = gen_impl_id(&state_id_name, &state_variants);
     let impl_default = gen_impl_default(state_name, &state_variants);
 
@@ -381,9 +382,10 @@ fn gen_impl_procedure(
     }
 }
 
-fn gen_impl_state(state_name: &Ident, id_name: &Ident) -> TokenStream {
+fn gen_impl_state(command_name: &Ident, state_name: &Ident, id_name: &Ident) -> TokenStream {
     quote! {
         impl ::hoclib::procedure::State for #state_name {
+            type Procedure = #command_name;
             type Id = #id_name;
 
             fn id(&self) -> Self::Id {

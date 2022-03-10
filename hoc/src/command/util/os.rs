@@ -7,15 +7,15 @@ use structopt::StructOpt;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
-#[error("unknown image: {unknown_image}")]
-pub struct ParseImageError {
-    unknown_image: String,
+#[error("unknown operating system: {unknown_os}")]
+pub struct ParseOsError {
+    unknown_os: String,
 }
 
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, StructOpt, SmartDefault, Display, Serialize, Deserialize,
 )]
-pub enum Image {
+pub enum OperatingSystem {
     #[display(fmt = "Raspberry Pi OS ({version})")]
     RaspberryPiOs {
         #[structopt(skip)]
@@ -30,8 +30,8 @@ pub enum Image {
     },
 }
 
-impl FromStr for Image {
-    type Err = ParseImageError;
+impl FromStr for OperatingSystem {
+    type Err = ParseOsError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
@@ -41,15 +41,15 @@ impl FromStr for Image {
             "ubuntu" => Ok(Self::Ubuntu {
                 version: Default::default(),
             }),
-            _ => Err(ParseImageError {
-                unknown_image: s.to_string(),
+            _ => Err(ParseOsError {
+                unknown_os: s.to_string(),
             }),
         }
     }
 }
 
-impl Image {
-    pub fn url(&self) -> String {
+impl OperatingSystem {
+    pub fn image_url(&self) -> String {
         match self {
             Self::RaspberryPiOs { version } => format!("https://downloads.raspberrypi.org/raspios_lite_arm64/images/raspios_lite_arm64-{version}/{version}-raspios-bullseye-arm64-lite.zip"),
             Self::Ubuntu { version } => format!("https://cdimage.ubuntu.com/releases/{version}/release/ubuntu-{version}-preinstalled-server-arm64+raspi.img.xz"),
