@@ -22,7 +22,7 @@ fn to_title_lower_case<S: AsRef<str>>(s: S) -> String {
 
 struct CommandField<'a> {
     ident: &'a Ident,
-    attrs: Vec<CommandAttr>,
+    attrs: Vec<CommandFieldAttr>,
 }
 
 struct StateVariant<'a> {
@@ -40,26 +40,28 @@ struct StateVariantField<'a> {
 }
 
 #[derive(PartialOrd, Ord, Clone)]
-enum CommandAttr {
+enum CommandFieldAttr {
     Attribute,
+    TryDefault(Ident),
     Rewind(Ident),
 }
 
-impl PartialEq for CommandAttr {
+impl PartialEq for CommandFieldAttr {
     fn eq(&self, other: &Self) -> bool {
-        use CommandAttr::*;
+        use CommandFieldAttr::*;
 
         match (self, other) {
             (Attribute, Attribute) => true,
+            (TryDefault(_), TryDefault(_)) => true,
             (Rewind(_), Rewind(_)) => true,
             _ => false,
         }
     }
 }
 
-impl Eq for CommandAttr {}
+impl Eq for CommandFieldAttr {}
 
-impl Parse for CommandAttr {
+impl Parse for CommandFieldAttr {
     fn parse(input: ParseStream) -> syn::Result<Self> {
         let name: Ident = input.parse()?;
         let name_str = name.to_string();
@@ -70,6 +72,7 @@ impl Parse for CommandAttr {
             match input.parse::<Ident>() {
                 Ok(ident) => match &*name_str {
                     "rewind" => Ok(Self::Rewind(ident)),
+                    "try_default" => Ok(Self::TryDefault(ident)),
                     _ => abort!(name, "unexpected attribute: {}", name_str),
                 },
                 Err(_) => abort!(assign_token, "expected `identifier` after `=`"),
@@ -368,7 +371,7 @@ fn gen_impl_procedure(
 
     let get_attributes = gen_get_attributes(&command_fields);
     let rewind_state = gen_rewind_state(&state_id_name, &command_fields, state_variants);
-    let run = gen_run();
+    let run = gen_run(&command_fields);
 
     quote! {
         impl ::hoclib::procedure::Procedure for #struct_name {
@@ -448,7 +451,11 @@ fn gen_impl_default(state_name: &Ident, state_variants: &[StateVariant]) -> Toke
 fn gen_get_attributes(command_fields: &[CommandField]) -> TokenStream {
     let mut insertions = command_fields
         .iter()
-        .filter(|f| f.attrs.iter().any(|a| matches!(a, CommandAttr::Attribute)))
+        .filter(|f| {
+            f.attrs
+                .iter()
+                .any(|a| matches!(a, CommandFieldAttr::Attribute))
+        })
         .map(|f| {
             let title = to_title_lower_case(f.ident.to_string());
             let ident = f.ident;
@@ -482,7 +489,7 @@ fn gen_rewind_state(
         .iter()
         .filter_map(|f| {
             let rewind = f.attrs.iter().find_map(|a| {
-                if let CommandAttr::Rewind(rewind) = a {
+                if let CommandFieldAttr::Rewind(rewind) = a {
                     Some(rewind)
                 } else {
                     None
@@ -520,9 +527,29 @@ fn gen_rewind_state(
     }
 }
 
-fn gen_run() -> TokenStream {
+fn gen_run(command_fields: &[CommandField]) -> TokenStream {
+    let defaults = command_fields
+        .iter()
+        .filter_map(|field| {
+            field.attrs.iter().find_map(|attr| match attr {
+                CommandFieldAttr::TryDefault(func) => Some((field.ident, func)),
+                _ => None,
+            })
+        })
+        .map(|(field, func)| {
+            let prompt = format!(r#"Setting default "{}""#, field,);
+            quote! {
+                if self.#field.is_none() {
+                    ::hoclog::status!(#prompt => {
+                        self.#field = Some(#func()?);
+                    })
+                }
+            }
+        });
+
     quote! {
         fn run(&mut self, step: &mut ::hoclib::procedure::Step) -> ::hoclog::Result<::hoclib::procedure::Halt<Self::State>> {
+            #(#defaults)*
             __run_state(step.state::<Self::State>()?, self, step.work_dir_state_mut())
         }
     }

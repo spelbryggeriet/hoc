@@ -1,88 +1,46 @@
 use std::{
+    ffi::OsStr,
     fmt::{self, Display, Formatter},
     path::{Path, PathBuf},
 };
 
-use hoclib::DirState;
-use hoclog::{choose, status, LogErr, Result};
+use hoclog::{error, info, status, Result};
 use serde::Deserialize;
 
-pub fn get_attached_disks<I: IntoIterator<Item = Type>>(
-    disk_types: I,
-) -> Result<Vec<AttachedDiskInfo>> {
-    let mut attached_disks_info = Vec::new();
+pub fn get_attached_disks() -> Result<impl Iterator<Item = AttachedDiskInfo>> {
+    let (_, stdout) = diskutil!("list", "-plist", "external", Type::Physical)
+        .hide_output()
+        .run()?;
 
-    for disk_type in disk_types {
-        let (_, stdout) = diskutil!("list", "-plist", "external", disk_type.as_ref())
-            .hide_output()
-            .run()?;
+    let output: DiskutilOutput = plist::from_bytes(stdout.as_bytes()).unwrap();
 
-        let output: DiskutilOutput = plist::from_bytes(stdout.as_bytes()).unwrap();
-
-        attached_disks_info.extend(output.all_disks_and_partitions.into_iter().map(|mut d| {
-            d.disk_type = disk_type;
-            d
-        }))
-    }
-
-    Ok(attached_disks_info)
+    Ok(output
+        .all_disks_and_partitions
+        .into_iter()
+        .filter(|d| d.part_type == "FDisk_partition_scheme"))
 }
 
-pub fn attach_disk(image_path: &Path, partition_name: &str) -> Result<(PathBuf, String)> {
-    status!("Attach image as disk" => {
-        hdiutil!(
-            "attach",
-            "-imagekey",
-            "diskimage-class=CRawDiskImage",
-            "-nomount",
-            image_path
-        )
-        .run()?
-    });
-
-    let disk_id = status!("Find attached disk" => {
-        let mut attached_disks_info: Vec<_> =
-            get_attached_disks([Type::Virtual])
-                .log_context("Failed to get attached disks")?
-                .into_iter()
-                .filter(|adi| adi.partitions.iter().any(|p| p.name == partition_name))
-                .collect();
-
-        let index = choose!(
-            "Which disk do you want to use?",
-            items = &attached_disks_info,
-        )?;
-
-        attached_disks_info
-            .remove(index)
-            .partitions
-            .into_iter()
-            .find(|p| p.name == partition_name)
-            .unwrap()
-            .id
-    });
-
-    let dev_disk_id = format!("/dev/{}", disk_id);
-
-    let mount_dir = status!("Mount image disk" => {
-        let mount_dir = DirState::create_temp_dir("mounted_image")?;
-        diskutil!("mount", "-mountPoint", mount_dir, dev_disk_id).run()?;
-        mount_dir
-    });
-
-    Ok((mount_dir, dev_disk_id))
+pub fn get_attached_disk_partitions() -> Result<impl Iterator<Item = AttachedDiskPartitionInfo>> {
+    Ok(get_attached_disks()?.flat_map(|d| d.partitions))
 }
 
-pub fn detach_disk(dev_disk_id: String) -> Result<()> {
-    status!("Sync image disk writes" => sync!().run()?);
-    status!("Unmount image disk" => {
-        diskutil!("unmountDisk", dev_disk_id).run()?
+pub fn find_mount_dir(disk_id: &str) -> Result<PathBuf> {
+    let mount_dir = status!("Find mount directory image disk" => {
+        info!("Disk ID: {}", disk_id);
+        let (_, df_output) = df!().run()?;
+        let disk_line =
+            if let Some(disk_line) = df_output.lines().find(|line| line.contains(&disk_id)) {
+                disk_line
+            } else {
+                error!("{} not mounted", disk_id)?.into()
+            };
+        if let Some(mount_dir) = disk_line.split_terminator(' ').last() {
+            Path::new(mount_dir).to_path_buf()
+        } else {
+            error!("mount point not found for {}", disk_id)?.into()
+        }
     });
-    status!("Detach image disk" => {
-        hdiutil!("detach", dev_disk_id).run()?
-    });
-
-    Ok(())
+    Ok(mount_dir)
 }
 
 pub fn unnamed_if_empty<S: AsRef<str>>(name: S) -> String {
@@ -93,21 +51,15 @@ pub fn unnamed_if_empty<S: AsRef<str>>(name: S) -> String {
     }
 }
 
-pub const fn type_physical() -> Type {
-    Type::Physical
-}
-
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum Type {
     Physical,
-    Virtual,
 }
 
-impl AsRef<str> for Type {
-    fn as_ref(&self) -> &str {
+impl AsRef<OsStr> for Type {
+    fn as_ref(&self) -> &OsStr {
         match self {
-            Self::Physical => "physical",
-            Self::Virtual => "virtual",
+            Self::Physical => OsStr::new("physical"),
         }
     }
 }
@@ -129,9 +81,6 @@ pub struct AttachedDiskInfo {
 
     #[serde(rename = "VolumeName", default = "String::new")]
     pub name: String,
-
-    #[serde(skip_deserializing, default = "type_physical")]
-    pub disk_type: Type,
 
     pub size: usize,
 
@@ -178,4 +127,21 @@ pub struct AttachedDiskPartitionInfo {
 
     #[serde(rename = "VolumeName", default = "String::new")]
     pub name: String,
+}
+
+impl Display for AttachedDiskPartitionInfo {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        self.description().fmt(f)
+    }
+}
+
+impl AttachedDiskPartitionInfo {
+    pub fn description(&self) -> String {
+        format!(
+            "{}: {} ({:.2} GB)",
+            self.id,
+            unnamed_if_empty(&self.name),
+            self.size as f64 / 1e9,
+        )
+    }
 }

@@ -167,8 +167,8 @@ pub struct Process<'a> {
     program: &'a OsStr,
     args: Vec<Cow<'a, OsStr>>,
     ssh_client: Option<&'a ssh::SshClient>,
-    sudo: Option<Option<&'a [u8]>>,
-    pipe_input: Vec<&'a [u8]>,
+    sudo: Option<Option<Cow<'a, str>>>,
+    pipe_input: Vec<Cow<'a, str>>,
     stdout: Option<&'a OsStr>,
     secrets: Vec<&'a str>,
     success_codes: Option<Vec<i32>>,
@@ -212,23 +212,22 @@ where
         self
     }
 
-    pub fn sudo_password<B: AsRef<[u8]>>(mut self, password: &'process B) -> Self {
-        self.sudo = Some(Some(password.as_ref()));
+    pub fn sudo_password<S: Into<Cow<'process, str>>>(mut self, password: S) -> Self {
+        self.sudo = Some(Some(password.into()));
         self
     }
 
-    pub fn stdin_line<B: AsRef<[u8]>>(mut self, input: &'process B) -> Self {
-        self.pipe_input.push(input.as_ref());
+    pub fn stdin_line<S: Into<Cow<'process, str>>>(mut self, input: S) -> Self {
+        self.pipe_input.push(input.into());
         self
     }
 
-    pub fn stdin_lines<I, B>(mut self, input: I) -> Self
+    pub fn stdin_lines<I, S>(mut self, input: I) -> Self
     where
-        I: IntoIterator<Item = &'process B>,
-        B: 'process + AsRef<[u8]>,
+        I: IntoIterator<Item = S>,
+        S: Into<Cow<'process, str>>,
     {
-        self.pipe_input
-            .extend(input.into_iter().map(|b| b.as_ref()));
+        self.pipe_input.extend(input.into_iter().map(Into::into));
         self
     }
 
@@ -418,7 +417,7 @@ where
             if !self.pipe_input.is_empty() {
                 let mut stdin = child.stdin.take().unwrap();
                 for input in &self.pipe_input {
-                    stdin.write_all(input)?;
+                    stdin.write_all(input.as_bytes())?;
                     stdin.write_all(b"\n")?;
                 }
             }

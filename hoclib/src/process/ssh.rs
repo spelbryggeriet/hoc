@@ -156,14 +156,14 @@ impl SshClient {
     pub fn spawn<S, B>(&self, cmd: &S, pipe_input: &[B]) -> Result<ssh2::Channel, SshError>
     where
         S: AsRef<str>,
-        B: AsRef<[u8]>,
+        B: AsRef<str>,
     {
         let mut channel = self.session.channel_session()?;
 
         channel.exec(cmd.as_ref())?;
 
         for input in pipe_input {
-            channel.write_all(input.as_ref())?;
+            channel.write_all(input.as_ref().as_bytes())?;
             channel.write_all(b"\n")?;
         }
 

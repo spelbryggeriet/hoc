@@ -12,7 +12,7 @@ use zip::ZipArchive;
 use hoclib::{procedure::Procedure, DirState};
 use hoclog::{bail, error, info, status, LogErr, Result};
 
-use crate::command::util::{disk, os::OperatingSystem};
+use crate::command::util::os::OperatingSystem;
 
 procedure! {
     #[derive(StructOpt)]
@@ -30,18 +30,11 @@ procedure! {
     pub enum DownloadOsImageState {
         DownloadOperatingSystemImage,
 
-        #[procedure(maybe_finish)]
-        DecompressZipArchive {
-            os: OperatingSystem,
-        },
-
-        #[procedure(maybe_finish)]
-        DecompressXzFile {
-            os: OperatingSystem,
-        },
+        #[procedure(finish)]
+        DecompressZipArchive,
 
         #[procedure(finish)]
-        ModifyRaspberryPiOsImage,
+        DecompressXzFile,
     }
 }
 
@@ -69,12 +62,10 @@ impl Run for DownloadOsImageState {
             let output = cmd_file!(file_path).run()?.1.to_lowercase();
             if output.contains("zip archive") {
                 info!("Zip archive file type detected");
-                DecompressZipArchive {
-                    os: proc.os,
-                }
+                DecompressZipArchive
             } else if output.contains("xz compressed data") {
                 info!("XZ compressed data file type detected");
-                DecompressXzFile { os: proc.os }
+                DecompressXzFile
             } else {
                 error!("Unsupported file type")?.into()
             }
@@ -86,8 +77,7 @@ impl Run for DownloadOsImageState {
     fn decompress_zip_archive(
         proc: &mut DownloadImage,
         _work_dir_state: &mut DirState,
-        os: OperatingSystem,
-    ) -> Result<Option<Self>> {
+    ) -> Result<()> {
         let (image_data, mut image_file) = status!("Read ZIP archive" => {
             let archive_path = DirState::get_path::<DownloadImage>(&proc.get_attributes(), Path::new("image"))?;
             let file = File::options()
@@ -131,19 +121,10 @@ impl Run for DownloadOsImageState {
             image_file.write_all(&image_data)?;
         });
 
-        let state = match os {
-            OperatingSystem::RaspberryPiOs { .. } => Some(ModifyRaspberryPiOsImage),
-            OperatingSystem::Ubuntu { .. } => None,
-        };
-
-        Ok(state)
+        Ok(())
     }
 
-    fn decompress_xz_file(
-        proc: &mut DownloadImage,
-        _work_dir_state: &mut DirState,
-        os: OperatingSystem,
-    ) -> Result<Option<Self>> {
+    fn decompress_xz_file(proc: &mut DownloadImage, _work_dir_state: &mut DirState) -> Result<()> {
         let (image_data, mut image_file) = status!("Read XZ file" => {
             let file_path = DirState::get_path::<DownloadImage>(&proc.get_attributes(), Path::new("image"))?;
             let file = File::options()
@@ -168,30 +149,6 @@ impl Run for DownloadOsImageState {
             image_file.set_len(0)?;
             image_file.write_all(&image_data)?;
         });
-
-        let state = match os {
-            OperatingSystem::RaspberryPiOs { .. } => Some(ModifyRaspberryPiOsImage),
-            OperatingSystem::Ubuntu { .. } => None,
-        };
-
-        Ok(state)
-    }
-
-    fn modify_raspberry_pi_os_image(
-        proc: &mut DownloadImage,
-        _work_dir_state: &mut DirState,
-    ) -> Result<()> {
-        let image_path =
-            DirState::get_path::<DownloadImage>(&proc.get_attributes(), Path::new("image"))?;
-        let (mount_dir, dev_disk_id) = disk::attach_disk(&image_path, "boot")?;
-
-        status!("Configure image" => {
-            status!("Create SSH file"=> {
-                File::create(mount_dir.join("ssh"))?;
-            });
-        });
-
-        disk::detach_disk(dev_disk_id)?;
 
         Ok(())
     }

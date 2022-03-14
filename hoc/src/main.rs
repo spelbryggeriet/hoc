@@ -206,7 +206,7 @@ fn main() {
         match Command::from_args() {
             Command::CreateUser(proc) => run_procedure(&mut context, proc)?,
             Command::DownloadImage(proc) => run_procedure(&mut context, proc)?,
-            Command::Flash(proc) => run_procedure(&mut context, proc)?,
+            Command::PrepareSdCard(proc) => run_procedure(&mut context, proc)?,
             Command::Init(proc) => run_procedure(&mut context, proc)?,
         }
         Ok(())

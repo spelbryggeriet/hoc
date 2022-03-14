@@ -2,14 +2,17 @@ use hoclib::cmd_macros;
 
 cmd_macros!(
     adduser,
+    apt_key => "apt-key",
     cat,
     chmod,
     chpasswd,
     cmd_file => "file",
+    curl,
     dd,
+    df,
     deluser,
     diskutil,
-    hdiutil,
+    lsb_release,
     mkdir,
     pkill,
     rm,

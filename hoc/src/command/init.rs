@@ -250,13 +250,25 @@ impl Run for InitState {
         .log_context("user not found")?;
 
         let password = proc.password_for_user(&username)?;
-        let _client = proc.ssh_client_key_auth(
+        let client = proc.ssh_client_key_auth(
             &proc.node_address,
             &username,
             &pub_path,
             &priv_path,
             &password,
         )?;
+
+        let (_, hashicorp_gpg) = curl!("-fsSL", "https://apt.releases.hashicorp.com/gpg")
+            .ssh(&client)
+            .run()?;
+        apt_key!("add", "-")
+            .sudo_password(&*password)
+            .stdin_lines(hashicorp_gpg.lines())
+            .hide_stderr()
+            .ssh(&client)
+            .run()?;
+
+        let (_, _code_name) = lsb_release!("-cs").ssh(&client).run()?;
 
         hoclog::error!("not implemented")?;
 
@@ -287,8 +299,8 @@ impl Run for InitState {
         )?;
 
         chpasswd!()
-            .sudo_password(&"temporary_password")
-            .stdin_line(&format!("{username}:{password}"))
+            .sudo_password("temporary_password")
+            .stdin_line(format!("{username}:{password}"))
             .ssh(&client)
             .run()?;
 

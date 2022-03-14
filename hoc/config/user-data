@@ -1,0 +1,43 @@
+preserve_hostname: false
+hostname: {hostname}
+manage_etc_hosts: true
+
+apt:
+  preserve_sources_list: true
+
+package_update: true
+package_upgrade: false
+packages:
+  - unzip
+
+users:
+  - name: {admin_username}
+    groups:
+      - adm
+      - dialout
+      - cdrom
+      - sudo
+      - audio
+      - video
+      - plugdev
+      - games
+      - users
+      - input
+      - netdev
+      - gpio
+      - i2c
+      - spi
+    lock_passwd: true
+    ssh_authorized_keys:
+      - {ssh_pub_key}
+    sudo: 'ALL=(ALL) PASSWD:ALL'
+
+chpasswd:
+  list:
+    - "{admin_username}:temporary_password"
+  expire: false
+
+runcmd:
+  - [ mkdir, /run/nomad ]
+  - [ wget, "https://releases.hashicorp.com/nomad/1.2.6/nomad_1.2.6_linux_arm64.zip", -O, /run/nomad/1.2.6.zip ]
+  - [ unzip, -o, /run/nomad/1.2.6.zip, -d, usr/local/bin ]
