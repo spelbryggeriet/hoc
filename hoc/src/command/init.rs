@@ -1,19 +1,20 @@
 use std::{
     cell::{Ref, RefCell},
     fs,
-    path::Path,
+    path::{Path, PathBuf},
 };
 
 use osshkeys::{keys::FingerprintHash, KeyPair, PublicKey, PublicParts};
 use structopt::StructOpt;
 
-use hoclib::{attributes, ssh::SshClient, DirState};
+use hoclib::{
+    kv::{ReadStore, WriteStore},
+    ssh::SshClient,
+};
 use hoclog::{hidden_input, info, status, LogErr, Result};
 use hocproc::procedure;
 
 use crate::command::util::os::OperatingSystem;
-
-use super::CreateUser;
 
 procedure! {
     #[derive(StructOpt)]
@@ -52,7 +53,11 @@ procedure! {
 }
 
 impl Run for InitState {
-    fn prepare(proc: &mut Init, _work_dir_state: &mut DirState) -> Result<Self> {
+    fn prepare(
+        proc: &mut Init,
+        _proc_registry: &impl WriteStore,
+        _global_registry: &impl ReadStore,
+    ) -> Result<Self> {
         let state = match proc.node_os {
             OperatingSystem::RaspberryPiOs { .. } => AddNewUser,
             OperatingSystem::Ubuntu { .. } => ChangePassword,
@@ -61,16 +66,18 @@ impl Run for InitState {
         Ok(state)
     }
 
-    fn add_new_user(proc: &mut Init, _work_dir_state: &mut DirState) -> Result<Self> {
+    fn add_new_user(
+        proc: &mut Init,
+        _proc_registry: &impl WriteStore,
+        global_registry: &impl ReadStore,
+    ) -> Result<Self> {
         let username = &proc.username;
         let password = proc.password_for_user(username)?;
         let client = proc.ssh_client_password_auth(&proc.node_address, "pi", "raspberry")?;
 
-        let priv_path = DirState::get_path::<CreateUser>(
-            &attributes!("Username" => username),
-            Path::new(&format!("ssh/id_{username}_ed25519")),
-        )
-        .log_context("user not found")?;
+        let priv_path: PathBuf = global_registry
+            .get(format!("create-user/{username}/ssh/id_ed25519"))?
+            .try_into()?;
         let priv_key = fs::read_to_string(priv_path)?;
 
         KeyPair::from_keystr(&priv_key, Some(&password))
@@ -86,7 +93,11 @@ impl Run for InitState {
         Ok(AssignSudoPrivileges)
     }
 
-    fn assign_sudo_privileges(proc: &mut Init, _work_dir_state: &mut DirState) -> Result<Self> {
+    fn assign_sudo_privileges(
+        proc: &mut Init,
+        _proc_registry: &impl WriteStore,
+        _global_registry: &impl ReadStore,
+    ) -> Result<Self> {
         let username = &proc.username;
         let client = proc.ssh_client_password_auth(&proc.node_address, "pi", "raspberry")?;
 
@@ -114,7 +125,11 @@ impl Run for InitState {
         Ok(DeletePiUser)
     }
 
-    fn delete_pi_user(proc: &mut Init, _work_dir_state: &mut DirState) -> Result<Self> {
+    fn delete_pi_user(
+        proc: &mut Init,
+        _proc_registry: &impl WriteStore,
+        _global_registry: &impl ReadStore,
+    ) -> Result<Self> {
         let username = &proc.username;
         let password = proc.password_for_user(&username)?;
         let client = proc.ssh_client_password_auth(&proc.node_address, &username, &password)?;
@@ -135,21 +150,21 @@ impl Run for InitState {
         Ok(SetUpSshAccess)
     }
 
-    fn set_up_ssh_access(proc: &mut Init, _work_dir_state: &mut DirState) -> Result<Self> {
+    fn set_up_ssh_access(
+        proc: &mut Init,
+        _proc_registry: &impl WriteStore,
+        global_registry: &impl ReadStore,
+    ) -> Result<Self> {
         let username = &proc.username;
         let password = proc.password_for_user(username)?;
 
         let (pub_key, pub_path, priv_path) = status!("Read SSH keypair" => {
-            let pub_path = DirState::get_path::<CreateUser>(
-                &attributes!("Username" => username),
-                Path::new(&format!("ssh/id_{username}_ed25519.pub")),
-            )
-            .log_context("user not found")?;
-            let priv_path = DirState::get_path::<CreateUser>(
-                &attributes!("Username" => username),
-                Path::new(&format!("ssh/id_{username}_ed25519")),
-            )
-            .log_context("user not found")?;
+            let pub_path: PathBuf = global_registry
+                .get(format!("create-user/{username}/ssh/id_ed25519.pub"))?
+                .try_into()?;
+            let priv_path: PathBuf = global_registry
+                .get(format!("create-user/{username}/ssh/id_ed25519"))?
+                .try_into()?;
 
             let pub_key = fs::read_to_string(&pub_path)?;
             info!(
@@ -236,18 +251,18 @@ impl Run for InitState {
         Ok(InstallDependencies)
     }
 
-    fn install_dependencies(proc: &mut Init, _work_dir_state: &mut DirState) -> Result<()> {
+    fn install_dependencies(
+        proc: &mut Init,
+        _proc_registry: &impl WriteStore,
+        global_registry: &impl ReadStore,
+    ) -> Result<()> {
         let username = &proc.username;
-        let pub_path = DirState::get_path::<CreateUser>(
-            &attributes!("Username" => username),
-            Path::new(&format!("ssh/id_{username}_ed25519.pub")),
-        )
-        .log_context("user not found")?;
-        let priv_path = DirState::get_path::<CreateUser>(
-            &attributes!("Username" => username),
-            Path::new(&format!("ssh/id_{username}_ed25519")),
-        )
-        .log_context("user not found")?;
+        let pub_path: PathBuf = global_registry
+            .get(format!("create-user/{username}/ssh/id_ed25519.pub"))?
+            .try_into()?;
+        let priv_path: PathBuf = global_registry
+            .get(format!("create-user/{username}/ssh/id_ed25519"))?
+            .try_into()?;
 
         let password = proc.password_for_user(&username)?;
         let client = proc.ssh_client_key_auth(
@@ -275,19 +290,19 @@ impl Run for InitState {
         Ok(())
     }
 
-    fn change_password(proc: &mut Init, _work_dir_state: &mut DirState) -> Result<()> {
+    fn change_password(
+        proc: &mut Init,
+        _proc_registry: &impl WriteStore,
+        global_registry: &impl ReadStore,
+    ) -> Result<()> {
         let username = &proc.username;
 
-        let pub_path = DirState::get_path::<CreateUser>(
-            &attributes!("Username" => username),
-            Path::new(&format!("ssh/id_{username}_ed25519.pub")),
-        )
-        .log_context("user not found")?;
-        let priv_path = DirState::get_path::<CreateUser>(
-            &attributes!("Username" => username),
-            Path::new(&format!("ssh/id_{username}_ed25519")),
-        )
-        .log_context("user not found")?;
+        let pub_path: PathBuf = global_registry
+            .get(format!("create-user/{username}/ssh/id_ed25519.pub"))?
+            .try_into()?;
+        let priv_path: PathBuf = global_registry
+            .get(format!("create-user/{username}/ssh/id_ed25519"))?
+            .try_into()?;
 
         let password = proc.password_for_user(username)?;
         let client = proc.ssh_client_key_auth(

@@ -1,7 +1,7 @@
 use std::{
     fs::File,
     io::{Read, Seek, SeekFrom, Write},
-    path::Path,
+    path::PathBuf,
 };
 
 use hocproc::procedure;
@@ -9,7 +9,7 @@ use structopt::StructOpt;
 use xz2::read::XzDecoder;
 use zip::ZipArchive;
 
-use hoclib::{procedure::Procedure, DirState};
+use hoclib::kv::{ReadStore, WriteStore};
 use hoclog::{bail, error, info, status, LogErr, Result};
 
 use crate::command::util::os::OperatingSystem;
@@ -41,25 +41,26 @@ procedure! {
 impl Run for DownloadOsImageState {
     fn download_operating_system_image(
         proc: &mut DownloadImage,
-        work_dir_state: &mut DirState,
+        proc_registry: &impl WriteStore,
+        _global_registry: &impl ReadStore,
     ) -> Result<Self> {
-        let file_path = status!("Download image" => {
+        let file_ref = status!("Download image" => {
             let image_url = proc.os.image_url();
             info!("URL: {}", image_url);
 
-            let file_path = work_dir_state.track_file("image");
+            let file_ref = proc_registry.create_file("image")?;
             let mut file = File::options()
                 .read(false)
                 .write(true)
                 .create(true)
-                .open(&file_path)?;
+                .open(file_ref.path())?;
 
             reqwest::blocking::get(image_url).log_err()?.copy_to(&mut file).log_err()?;
-            file_path
+            file_ref
         });
 
         let state = status!("Determine file type" => {
-            let output = cmd_file!(file_path).run()?.1.to_lowercase();
+            let output = cmd_file!(file_ref.path()).run()?.1.to_lowercase();
             if output.contains("zip archive") {
                 info!("Zip archive file type detected");
                 DecompressZipArchive
@@ -75,11 +76,12 @@ impl Run for DownloadOsImageState {
     }
 
     fn decompress_zip_archive(
-        proc: &mut DownloadImage,
-        _work_dir_state: &mut DirState,
+        _proc: &mut DownloadImage,
+        proc_registry: &impl WriteStore,
+        _global_registry: &impl ReadStore,
     ) -> Result<()> {
         let (image_data, mut image_file) = status!("Read ZIP archive" => {
-            let archive_path = DirState::get_path::<DownloadImage>(&proc.get_attributes(), Path::new("image"))?;
+            let archive_path: PathBuf = proc_registry.get("image")?.try_into()?;
             let file = File::options()
                 .read(true)
                 .write(true)
@@ -124,9 +126,13 @@ impl Run for DownloadOsImageState {
         Ok(())
     }
 
-    fn decompress_xz_file(proc: &mut DownloadImage, _work_dir_state: &mut DirState) -> Result<()> {
+    fn decompress_xz_file(
+        _proc: &mut DownloadImage,
+        proc_registry: &impl WriteStore,
+        _global_registry: &impl ReadStore,
+    ) -> Result<()> {
         let (image_data, mut image_file) = status!("Read XZ file" => {
-            let file_path = DirState::get_path::<DownloadImage>(&proc.get_attributes(), Path::new("image"))?;
+            let file_path: PathBuf = proc_registry.get("image")?.try_into()?;
             let file = File::options()
                 .read(true)
                 .write(true)

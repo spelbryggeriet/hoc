@@ -271,7 +271,12 @@ fn impl_procedure(types: &ProcedureTypes) -> TokenStream {
             type State = #state_name;
             const NAME: &'static str = #procedure_desc;
 
-            fn run(&mut self, _step: &mut ::hoclib::procedure::Step) -> ::hoclog::Result<::hoclib::procedure::Halt<Self::State>> {
+            fn run(
+                &mut self,
+                _state: Self::State,
+                _proc_registry: &impl ::hoclib::kv::WriteStore,
+                _global_registry: &impl ::hoclib::kv::ReadStore,
+            ) -> ::hoclog::Result<::hoclib::procedure::Halt<Self::State>> {
                 unreachable!()
             }
         }
@@ -548,9 +553,14 @@ fn gen_run(command_fields: &[CommandField]) -> TokenStream {
         });
 
     quote! {
-        fn run(&mut self, step: &mut ::hoclib::procedure::Step) -> ::hoclog::Result<::hoclib::procedure::Halt<Self::State>> {
+        fn run(
+            &mut self,
+            state: Self::State,
+            proc_registry: &impl ::hoclib::kv::WriteStore,
+            global_registry: &impl ::hoclib::kv::ReadStore,
+        ) -> ::hoclog::Result<::hoclib::procedure::Halt<Self::State>> {
             #(#defaults)*
-            __run_state(step.state::<Self::State>()?, self, step.work_dir_state_mut())
+            __run_state(state, self, proc_registry, global_registry)
         }
     }
 }
@@ -568,27 +578,28 @@ fn gen_run_trait(
             quote!(#field_name: #field_type)
         });
 
-        let work_dir_ref_type = v
-            .attrs
-            .contains(&StateVariantAttr::Transient)
-            .then(|| quote!(&))
-            .unwrap_or_else(|| quote!(&mut));
+        let proc_registry_type = if v.attrs.contains(&StateVariantAttr::Transient) {
+            quote!(ReadStore)
+        } else {
+            quote!(WriteStore)
+        };
 
-        let return_type = if v
-            .attrs
-            .contains(&StateVariantAttr::Finish)
-        {
+        let return_type = if v.attrs.contains(&StateVariantAttr::Finish) {
             quote!(())
-        } else if v
-            .attrs
-            .contains(&StateVariantAttr::MaybeFinish)
-        {
+        } else if v.attrs.contains(&StateVariantAttr::MaybeFinish) {
             quote!(Option<Self>)
         } else {
             quote!(Self)
         };
 
-        quote!(fn #name(procedure: &mut #command_name, work_dir_state: #work_dir_ref_type ::hoclib::DirState #(, #args)*) -> ::hoclog::Result<#return_type>;)
+        quote! {
+            fn #name(
+                procedure: &mut #command_name,
+                proc_registry: &impl #proc_registry_type,
+                global_registry: &impl ::hoclib::kv::ReadStore
+                #(, #args)*
+            ) -> ::hoclog::Result<#return_type>;
+        }
     });
 
     let maybe_impl_run = state_variants
@@ -613,7 +624,7 @@ fn gen_run_trait(
 
         if v.attrs.contains(&StateVariantAttr::Finish) {
             quote!({
-                #state_name::#name(procedure, work_dir_state #(, #args)*)?;
+                #state_name::#name(procedure, proc_registry, global_registry #(, #args)*)?;
                 ::hoclib::procedure::Halt {
                     persist: #persist,
                     state: ::hoclib::procedure::HaltState::Finish,
@@ -621,7 +632,7 @@ fn gen_run_trait(
             })
         } else if v.attrs.contains(&StateVariantAttr::MaybeFinish) {
             quote!({
-                let new_state = #state_name::#name(procedure, work_dir_state #(, #args)*)?;
+                let new_state = #state_name::#name(procedure, proc_registry, global_registry #(, #args)*)?;
                 ::hoclib::procedure::Halt {
                     persist: #persist,
                     state: new_state
@@ -631,7 +642,7 @@ fn gen_run_trait(
             })
         } else {
             quote!({
-                let new_state = #state_name::#name(procedure, work_dir_state #(, #args)*)?;
+                let new_state = #state_name::#name(procedure, proc_registry, global_registry #(, #args)*)?;
                 ::hoclib::procedure::Halt {
                     persist: #persist,
                     state: ::hoclib::procedure::HaltState::Halt(new_state),
@@ -651,7 +662,12 @@ fn gen_run_trait(
         impl RunImplRequired for #state_name {}
         #maybe_impl_run
 
-        fn __run_state(state: #state_name, procedure: &mut #command_name, work_dir_state: &mut ::hoclib::DirState) -> ::hoclog::Result<::hoclib::procedure::Halt<#state_name>> {
+        fn __run_state(
+            state: #state_name,
+            procedure: &mut #command_name,
+            proc_registry: &impl ::hoclib::kv::WriteStore,
+            global_registry: &impl ::hoclib::kv::ReadStore,
+        ) -> ::hoclog::Result<::hoclib::procedure::Halt<#state_name>> {
             let halt = #match_switch;
             Ok(halt)
         }

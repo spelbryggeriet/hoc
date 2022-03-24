@@ -1,10 +1,13 @@
-use std::{error::Error as StdError, hash::Hash, str::FromStr};
+use std::{error::Error as StdError, str::FromStr};
 
 use hoclog::error;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::{dir_state, process, Context, DirState};
+use crate::{
+    kv::{ReadStore, WriteStore},
+    process,
+};
 
 #[macro_export]
 macro_rules! attributes {
@@ -15,7 +18,7 @@ macro_rules! attributes {
     }};
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Hash, Deserialize, Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Deserialize, Serialize)]
 pub struct Attribute {
     pub key: String,
     pub value: String,
@@ -44,7 +47,12 @@ pub trait Procedure: Sized {
         None
     }
 
-    fn run(&mut self, step: &mut Step) -> hoclog::Result<Halt<Self::State>>;
+    fn run(
+        &mut self,
+        state: Self::State,
+        proc_registry: &impl WriteStore,
+        global_registry: &impl ReadStore,
+    ) -> hoclog::Result<Halt<Self::State>>;
 }
 
 pub trait Id:
@@ -85,9 +93,6 @@ pub enum Error {
 
     #[error("process: {0}")]
     Process(#[from] process::Error),
-
-    #[error("directory state: {0}")]
-    DirState(#[from] dir_state::Error),
 }
 
 impl From<Error> for hoclog::Error {
@@ -100,26 +105,21 @@ impl From<Error> for hoclog::Error {
 pub struct Step {
     state: String,
     id: String,
-    work_dir_state: DirState,
 }
 
 impl Step {
-    pub fn from_procedure<P: Procedure>(procedure: &P) -> Result<Self, Error> {
+    pub fn new<P: Procedure>() -> Result<Self, Error> {
         let state = P::State::default();
         Ok(Self {
             id: state.id().as_str().to_string(),
             state: serde_json::to_string(&state)?,
-            work_dir_state: DirState::empty(Context::get_work_dir::<P>(
-                &procedure.get_attributes(),
-            ))?,
         })
     }
 
-    pub fn from_states<S: State>(state: &S, work_dir_state: DirState) -> Result<Self, Error> {
+    pub fn from_state<S: State>(state: &S) -> Result<Self, Error> {
         Ok(Self {
             id: state.id().as_str().to_string(),
             state: serde_json::to_string(state)?,
-            work_dir_state,
         })
     }
 
@@ -129,13 +129,5 @@ impl Step {
 
     pub fn state<S: State>(&self) -> Result<S, Error> {
         serde_json::from_str(&self.state).map_err(|e| Error::Id(Box::new(e)))
-    }
-
-    pub fn work_dir_state(&self) -> &DirState {
-        &self.work_dir_state
-    }
-
-    pub fn work_dir_state_mut(&mut self) -> &mut DirState {
-        &mut self.work_dir_state
     }
 }

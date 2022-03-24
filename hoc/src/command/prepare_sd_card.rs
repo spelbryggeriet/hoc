@@ -1,7 +1,7 @@
 use std::{
     fs::{self, File},
     net::IpAddr,
-    path::Path,
+    path::PathBuf,
 };
 
 use colored::Colorize;
@@ -9,12 +9,10 @@ use hocproc::procedure;
 use osshkeys::{keys::FingerprintHash, PublicKey, PublicParts};
 use structopt::StructOpt;
 
-use hoclib::{attributes, DirState};
+use hoclib::kv::{ReadStore, WriteStore};
 use hoclog::{choose, error, info, prompt, status, LogErr, Result};
 
 use crate::command::util::{cidr::Cidr, disk, os::OperatingSystem};
-
-use super::{CreateUser, DownloadImage};
 
 procedure! {
     #[derive(StructOpt)]
@@ -65,7 +63,11 @@ procedure! {
 }
 
 impl Run for PrepareSdCardState {
-    fn flash_image(proc: &mut PrepareSdCard, _work_dir_state: &mut DirState) -> Result<Self> {
+    fn flash_image(
+        proc: &mut PrepareSdCard,
+        _proc_registry: &impl WriteStore,
+        global_registry: &impl ReadStore,
+    ) -> Result<Self> {
         let mut disks: Vec<_> = disk::get_attached_disks()
             .log_context("Failed to get attached disks")?
             .collect();
@@ -80,10 +82,9 @@ impl Run for PrepareSdCardState {
         status!("Unmount SD card" => diskutil!("unmountDisk", disk.id).run()?);
 
         status!("Flash SD card" => {
-            let image_path = DirState::get_path::<DownloadImage>(
-                &attributes!("Os" => proc.os.to_string()),
-                Path::new("image"),
-            )?;
+            let image_path: PathBuf = global_registry
+                .get(format!("download-image/{}/image", proc.os))?
+                .try_into()?;
 
             prompt!(
                 "Do you want to flash target disk '{}' with operating system '{}'?",
@@ -103,7 +104,11 @@ impl Run for PrepareSdCardState {
         Ok(Mount)
     }
 
-    fn mount(proc: &mut PrepareSdCard, _work_dir_state: &DirState) -> Result<Self> {
+    fn mount(
+        proc: &mut PrepareSdCard,
+        _proc_registry: &impl ReadStore,
+        _global_registry: &impl ReadStore,
+    ) -> Result<Self> {
         let boot_partition_name = match proc.os {
             OperatingSystem::RaspberryPiOs { .. } => "boot",
             OperatingSystem::Ubuntu { .. } => "system-boot",
@@ -146,7 +151,8 @@ impl Run for PrepareSdCardState {
 
     fn modify_raspberry_pi_os_image(
         _proc: &mut PrepareSdCard,
-        _work_dir_state: &DirState,
+        _proc_registry: &impl ReadStore,
+        _global_registry: &impl ReadStore,
         disk_partition_id: String,
     ) -> Result<Self> {
         let mount_dir = disk::find_mount_dir(&disk_partition_id)?;
@@ -162,17 +168,16 @@ impl Run for PrepareSdCardState {
 
     fn modify_ubuntu_image(
         proc: &mut PrepareSdCard,
-        _work_dir_state: &DirState,
+        _proc_registry: &impl ReadStore,
+        global_registry: &impl ReadStore,
         disk_partition_id: String,
     ) -> Result<Self> {
         let username = proc.username.as_ref().unwrap().as_str();
 
         let pub_key = status!("Read SSH keypair" => {
-            let pub_key_path = DirState::get_path::<CreateUser>(
-                &attributes!("Username" => username),
-                Path::new(&format!("ssh/id_{username}_ed25519.pub")),
-            )
-            .log_context("user not found")?;
+            let pub_key_path: PathBuf = global_registry
+                .get(format!("create-user/{username}/ssh/id_ed25519.pub"))?
+                .try_into()?;
 
             let pub_key = fs::read_to_string(pub_key_path)?;
             info!(
@@ -243,7 +248,8 @@ impl Run for PrepareSdCardState {
 
     fn unmount(
         _proc: &mut PrepareSdCard,
-        _work_dir_state: &DirState,
+        _proc_registry: &impl ReadStore,
+        _global_registry: &impl ReadStore,
         disk_partition_id: String,
     ) -> Result<()> {
         status!("Sync image disk writes" => sync!().run()?);

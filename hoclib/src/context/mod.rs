@@ -1,24 +1,18 @@
 use std::{
-    collections::hash_map::DefaultHasher,
     env,
     fs::{self, File, OpenOptions},
-    hash::{Hash, Hasher},
     io::{self, Seek, SeekFrom},
-    ops::{Index, IndexMut},
     path::PathBuf,
 };
 
 use hoclog::error;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use self::{
-    step_history::{StepHistory, StepHistoryIndex, StepHistoryMap},
-    temp_path::TempPath,
-};
-use crate::procedure::{Attribute, Procedure};
+use self::{history::History, temp_path::TempPath};
 
-pub mod step_history;
+pub mod history;
+pub mod kv;
 pub mod temp_path;
 
 const ENV_HOME: &str = "HOME";
@@ -34,17 +28,11 @@ pub enum Error {
     #[error("serde yaml: {0}")]
     SerdeYaml(#[from] serde_yaml::Error),
 
-    #[error("step history: {0}")]
-    StepHistory(#[from] step_history::Error),
+    #[error("history: {0}")]
+    History(#[from] history::Error),
 
-    #[error("step history already exist: {} with attributes {{{}}}",
-        _0.name(),
-        _0.attributes()
-            .iter()
-            .map(|Attribute { key, value }| format!("{key:?}: {value}"))
-            .collect::<Vec<_>>()
-            .join(", "))]
-    StepHistoryAlreadyExist(StepHistoryIndex),
+    #[error("key/value registry: {0}")]
+    KvStore(#[from] kv::Error),
 }
 
 impl From<Error> for hoclog::Error {
@@ -53,44 +41,31 @@ impl From<Error> for hoclog::Error {
     }
 }
 
-#[derive(Debug, Serialize)]
 pub struct Context {
-    #[serde(flatten)]
-    step_history_map: StepHistoryMap,
-
-    #[serde(skip_serializing)]
+    state: State,
     file: File,
-
-    #[serde(skip_serializing)]
     _temp_dir: TempPath,
 }
 
-impl Index<&StepHistoryIndex> for Context {
-    type Output = StepHistory;
-
-    fn index(&self, index: &StepHistoryIndex) -> &Self::Output {
-        &self.step_history_map.0[index]
-    }
-}
-
-impl IndexMut<&StepHistoryIndex> for Context {
-    fn index_mut(&mut self, index: &StepHistoryIndex) -> &mut Self::Output {
-        self.step_history_map.0.get_mut(index).unwrap()
-    }
+#[derive(Debug, Serialize, Deserialize)]
+struct State {
+    history: History,
+    registry: kv::Store,
 }
 
 impl Context {
-    pub const CONTEXT_FILE_NAME: &'static str = "context.yaml";
+    pub const CONTEXT_STATE_FILE_NAME: &'static str = "context.yaml";
     pub const CONTEXT_DIR: &'static str = ".hoc";
     pub const WORK_DIR_PARENT: &'static str = "work";
     pub const TEMP_DIR_PARENT: &'static str = "temp";
+    pub const REGISTRY_FILES_DIR: &'static str = "files";
 
     pub fn load() -> Result<Self, Error> {
         let context_dir_path = Self::get_context_dir();
         fs::create_dir_all(&context_dir_path)?;
 
-        let work_dir_parent_path = Self::get_work_dir_parent();
-        fs::create_dir_all(work_dir_parent_path)?;
+        let registry_files_dir = Self::get_registry_files_dir();
+        fs::create_dir_all(registry_files_dir)?;
 
         let temp_dir_path = Self::get_temp_dir();
         match temp_dir_path.metadata() {
@@ -101,16 +76,16 @@ impl Context {
         fs::create_dir_all(&temp_dir_path)?;
         let _temp_dir = TempPath::from_path(temp_dir_path);
 
-        let context_file_path = context_dir_path.join(Self::CONTEXT_FILE_NAME);
+        let context_file_path = context_dir_path.join(Self::CONTEXT_STATE_FILE_NAME);
         let context = match OpenOptions::new()
             .read(true)
             .write(true)
             .open(&context_file_path)
         {
             Ok(file) => {
-                let step_history_map: StepHistoryMap = serde_yaml::from_reader(&file)?;
+                let state: State = serde_yaml::from_reader(&file)?;
                 Self {
-                    step_history_map,
+                    state,
                     file,
                     _temp_dir,
                 }
@@ -118,17 +93,26 @@ impl Context {
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
                 let file = File::create(&context_file_path)?;
                 let context = Self {
-                    step_history_map: Default::default(),
+                    state: State {
+                        history: Default::default(),
+                        registry: kv::Store::new(Self::get_registry_files_dir()),
+                    },
                     file,
                     _temp_dir,
                 };
-                serde_yaml::to_writer(&context.file, &context)?;
+                serde_yaml::to_writer(&context.file, &context.state)?;
                 context
             }
             Err(error) => return Err(error.into()),
         };
 
         Ok(context)
+    }
+
+    pub fn get_temp_dir() -> PathBuf {
+        let mut path = Self::get_context_dir();
+        path.push(Self::TEMP_DIR_PARENT);
+        path
     }
 
     fn get_context_dir() -> PathBuf {
@@ -139,58 +123,32 @@ impl Context {
         context_path
     }
 
-    fn get_work_dir_parent() -> PathBuf {
+    fn get_registry_files_dir() -> PathBuf {
         let mut path = Self::get_context_dir();
-        path.push(Self::WORK_DIR_PARENT);
+        path.push(Self::REGISTRY_FILES_DIR);
         path
     }
 
-    pub fn get_temp_dir() -> PathBuf {
-        let mut path = Self::get_context_dir();
-        path.push(Self::TEMP_DIR_PARENT);
-        path
+    pub fn history(&self) -> &History {
+        &self.state.history
     }
 
-    pub fn get_work_dir<P: Procedure>(attributes: &[Attribute]) -> PathBuf {
-        let mut path = Self::get_work_dir_parent();
-
-        let mut hasher = DefaultHasher::new();
-        P::NAME.hash(&mut hasher);
-        attributes.hash(&mut hasher);
-        let hash = hasher.finish();
-
-        path.push(format!("{}_{hash:016x}", P::NAME));
-        path
+    pub fn history_mut(&mut self) -> &mut History {
+        &mut self.state.history
     }
 
-    pub fn get_step_history_index<P: Procedure>(&self, procedure: &P) -> Option<StepHistoryIndex> {
-        let cache_index = StepHistoryIndex(P::NAME.to_string(), procedure.get_attributes());
-        self.step_history_map
-            .0
-            .contains_key(&cache_index)
-            .then(|| cache_index)
+    pub fn registry(&self) -> &kv::Store {
+        &self.state.registry
     }
 
-    pub fn add_step_history<P: Procedure>(
-        &mut self,
-        procedure: &P,
-    ) -> Result<StepHistoryIndex, Error> {
-        fs::create_dir(Self::get_work_dir::<P>(&procedure.get_attributes()))?;
-
-        let cache = StepHistory::new::<P>(procedure)?;
-        let cache_index = StepHistoryIndex(P::NAME.to_string(), procedure.get_attributes());
-
-        if self.step_history_map.0.contains_key(&cache_index) {
-            return Err(Error::StepHistoryAlreadyExist(cache_index));
-        }
-
-        self.step_history_map.0.insert(cache_index.clone(), cache);
-        Ok(cache_index)
+    pub fn registry_mut(&mut self) -> &mut kv::Store {
+        &mut self.state.registry
     }
 
     pub fn persist(&mut self) -> Result<(), Error> {
+        self.state.registry.register_file_changes()?;
         self.file.set_len(0)?;
         self.file.seek(SeekFrom::Start(0))?;
-        Ok(serde_yaml::to_writer(&self.file, self)?)
+        Ok(serde_yaml::to_writer(&self.file, &self.state)?)
     }
 }
