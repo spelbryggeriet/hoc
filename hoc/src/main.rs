@@ -30,19 +30,6 @@ lazy_static! {
     static ref INTERRUPT: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
 }
 
-fn index_to_key(index: &history::Index) -> PathBuf {
-    format!(
-        "{}{}",
-        index.name(),
-        index
-            .attributes()
-            .iter()
-            .map(|attr| format!("/{}", attr.value))
-            .collect::<String>()
-    )
-    .into()
-}
-
 fn list_string<T>(list: &[T], to_string: impl Fn(&T) -> String) -> Option<String> {
     let padded_to_string = |e, c| {
         let s = to_string(e);
@@ -84,8 +71,7 @@ fn validate_registry_state(context: &mut Context) -> hoclog::Result<()> {
             .filter_map(|key| {
                 history_keys
                     .iter()
-                    .copied()
-                    .find(|index| key.starts_with(index_to_key(index)))
+                    .find(|index| key.starts_with(PathBuf::from(**index)))
             })
             .collect();
         affected_procedures.sort();
@@ -107,7 +93,7 @@ fn validate_registry_state(context: &mut Context) -> hoclog::Result<()> {
                 procedures_list
             )?;
 
-            let indices: Vec<_> = affected_procedures.into_iter().cloned().collect();
+            let indices: Vec<_> = affected_procedures.into_iter().copied().cloned().collect();
             let history = context.history_mut();
 
             for index in indices {
@@ -203,7 +189,7 @@ fn run_step<P: Procedure>(
     state: P::State,
 ) -> hoclog::Result<()> {
     let global_registry = context.registry_mut();
-    let proc_registry = global_registry.split(index_to_key(history_index))?;
+    let proc_registry = global_registry.split(history_index)?;
 
     let halt = proc.run(state, &proc_registry, global_registry)?;
     let state = match halt.state {

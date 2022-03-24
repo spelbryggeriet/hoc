@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, path::PathBuf};
 
 use hoclog::error;
 use indexmap::IndexMap;
@@ -32,18 +32,33 @@ impl Index {
     }
 }
 
+impl From<Index> for PathBuf {
+    fn from(index: Index) -> Self {
+        PathBuf::from(&index)
+    }
+}
+
+impl From<&Index> for PathBuf {
+    fn from(index: &Index) -> Self {
+        let mut path = PathBuf::new();
+        path.push(index.name());
+        path.extend(index.attributes().iter().map(|a| &a.value));
+        path
+    }
+}
+
 #[derive(Debug, Error)]
 pub enum Error {
     #[error(
-        "item already exists: {} with attributes {{{}}}", 
-        _0.name(), 
+        "item already exists: {} with attributes {{{}}}",
+        _0.name(),
         attrs_string(_0.attributes()),
     )]
     ItemAlreadyExists(Index),
 
     #[error(
-        "item does not exist: {} with attributes {{{}}}", 
-        _0.name(), 
+        "item does not exist: {} with attributes {{{}}}",
+        _0.name(),
         attrs_string(_0.attributes()),
     )]
     ItemDoesNotExist(Index),
