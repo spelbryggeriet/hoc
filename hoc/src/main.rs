@@ -14,7 +14,7 @@ use structopt::StructOpt;
 use hoclib::{
     history,
     kv::WriteStore,
-    procedure::{Attribute, HaltState, Id, Procedure, Step},
+    procedure::{self, Id, Procedure},
     Context,
 };
 use hoclog::{error, info, status, warning, LogErr};
@@ -70,154 +70,86 @@ fn list_string<T>(list: &[T], to_string: impl Fn(&T) -> String) -> Option<String
     }
 }
 
-fn run_procedure<P: Procedure>(context: &mut Context, mut proc: P) -> hoclog::Result<()> {
-    status!("Validate registry state" => {
-        let changes = context.registry().validate()?;
-        let changes_list = list_string(changes.as_slice(), |(_, c)| format!("{}", c));
+fn validate_registry_state(context: &mut Context) -> hoclog::Result<()> {
+    let changes = context.registry().validate()?;
+    let changes_list = list_string(changes.as_slice(), |(_, c)| format!("{}", c));
 
-        if let Some(changes_list) = changes_list {
-            info!("The registry state has changed:\n{}", changes_list);
+    if let Some(changes_list) = changes_list {
+        info!("The registry state has changed:\n{}", changes_list);
 
-            let change_keys: Vec<_> = changes.into_iter().map(|(k, _)| k).collect();
-            let history_keys: Vec<_> = context.history().indices().collect();
-            let mut affected_procedures: Vec<_> = change_keys
-                .iter()
-                .filter_map(|key| {
-                    history_keys.iter().copied().find(|index| {
-                        key.starts_with(index_to_key(index))
-                    })
-                })
-                .collect();
-            affected_procedures.sort();
-            affected_procedures.dedup();
+        let change_keys: Vec<_> = changes.into_iter().map(|(k, _)| k).collect();
+        let history_keys: Vec<_> = context.history().indices().collect();
+        let mut affected_procedures: Vec<_> = change_keys
+            .iter()
+            .filter_map(|key| {
+                history_keys
+                    .iter()
+                    .copied()
+                    .find(|index| key.starts_with(index_to_key(index)))
+            })
+            .collect();
+        affected_procedures.sort();
+        affected_procedures.dedup();
 
-            let procedures_list = list_string(affected_procedures.as_slice(), |i| {
-                if let Some(attr_list) =
-                    list_string(i.attributes(), |a| format!("{}: {}", a.key, a.value))
-                {
-                    format!("{}\n{attr_list}", i.name())
-                } else {
-                    i.name().to_string()
-                }
-            });
-
-            if let Some(procedures_list) = procedures_list {
-                warning!(
-                    "The following procedure histories will be reset:\n{}",
-                    procedures_list
-                )?;
-
-                let indices: Vec<_> = affected_procedures
-                    .into_iter()
-                    .cloned()
-                    .collect();
-                let history = context.history_mut();
-
-                for index in indices {
-                    history.remove_item(&index)?;
-                }
-
-                let registry = context.registry_mut();
-                for key in change_keys {
-                    registry.remove(key)?;
-                }
-
-                context.persist()?;
-            }
-        }
-    });
-
-    let history_index = if let Some(history_index) = context.history().get_index(&proc) {
-        history_index
-    } else {
-        let history_index = context.history_mut().add_item(&proc)?;
-        context.persist().log_context(ERR_MSG_PERSIST_CONTEXT)?;
-        history_index
-    };
-
-    status!("Run procedure {}", history_index.name().blue() => {
-        let attrs = history_index.attributes();
-        if !attrs.is_empty() {
-            let mut proc_info = "Attributes:".to_string();
-            for (i, Attribute { key, value }) in attrs.iter().enumerate() {
-                if i < attrs.len() - 1 {
-                    proc_info += &format!("\n├╴{key}: {value}");
-                } else {
-                    proc_info += &format!("\n└╴{key}: {value}");
-                }
-            }
-            info!(proc_info);
-        }
-
-        rewind_dir_state(context, &proc, &history_index)?;
-
-        let steps = context.history().item(&history_index);
-        let mut index = 1;
-        for (i, step) in steps.completed().iter().enumerate() {
-            hoclog::LOG
-                .status(format!(
-                    "Skipping {}: {}",
-                    format!("Step {}", i + 1).yellow(),
-                    &step
-                        .id::<P::State>()
-                        .log_context(ERR_MSG_PARSE_ID)?
-                        .description(),
-                ))
-                .with_label("completed".blue());
-            index += 1;
-        }
-
-        loop {
-            if INTERRUPT.load(Ordering::Relaxed) {
-                error!("The program was interrupted.")?;
-            }
-
-            if let Some(step) = context.history().item(&history_index).current() {
-                let state_id = step.id::<P::State>().log_context(ERR_MSG_PARSE_ID)?;
-
-                status!("{}: {}", format!("Step {}", index).yellow(), state_id.description() => {
-                    let state = step.state::<P::State>()?;
-                    let global_registry = context.registry_mut();
-                    let proc_registry = global_registry.split(index_to_key(&history_index))?;
-
-                    let halt = proc.run(state, &proc_registry, global_registry)?;
-                    let state = match halt.state {
-                        HaltState::Halt(inner_state) => Some(inner_state),
-                        HaltState::Finish => None,
-                    };
-
-                    global_registry.merge(proc_registry)?;
-                    context.history_mut().item_mut(&history_index).next(&state)?;
-
-                    if halt.persist {
-                        status!("Persist context" => {
-                            context.persist().log_context(ERR_MSG_PERSIST_CONTEXT)?;
-                        });
-                    }
-
-                });
-
-                index += 1;
+        let procedures_list = list_string(affected_procedures.as_slice(), |i| {
+            if let Some(attr_list) =
+                list_string(i.attributes(), |a| format!("{}: {}", a.key, a.value))
+            {
+                format!("{}\n{attr_list}", i.name())
             } else {
-                break;
-            };
+                i.name().to_string()
+            }
+        });
+
+        if let Some(procedures_list) = procedures_list {
+            warning!(
+                "The following procedure histories will be reset:\n{}",
+                procedures_list
+            )?;
+
+            let indices: Vec<_> = affected_procedures.into_iter().cloned().collect();
+            let history = context.history_mut();
+
+            for index in indices {
+                history.remove_item(&index)?;
+            }
+
+            let registry = context.registry_mut();
+            for key in change_keys {
+                registry.remove(key)?;
+            }
+
+            context.persist()?;
         }
-    });
+    }
 
     Ok(())
 }
 
-fn rewind_dir_state<P: Procedure>(
+fn get_history_index<P: Procedure>(
+    context: &mut Context,
+    proc: &P,
+) -> hoclog::Result<history::Index> {
+    if let Some(history_index) = context.history().get_index(proc) {
+        Ok(history_index)
+    } else {
+        let history_index = context.history_mut().add_item(proc)?;
+        context.persist().log_context(ERR_MSG_PERSIST_CONTEXT)?;
+        Ok(history_index)
+    }
+}
+
+fn rewind_history<P: Procedure>(
     context: &mut Context,
     proc: &P,
     history_index: &history::Index,
 ) -> hoclog::Result<()> {
-    let history_item = context.history_mut().item_mut(&history_index);
+    let history_item = context.history_mut().item_mut(history_index);
     if let Some(state_id) = proc.rewind_state() {
         let mut iter = history_item
             .completed()
             .iter()
-            .map(Step::id::<P::State>)
+            .map(procedure::Step::id::<P::State>)
             .enumerate();
 
         while let Some((rewind_index, rewind_id)) = iter.next() {
@@ -237,6 +169,104 @@ fn rewind_dir_state<P: Procedure>(
             }
         }
     }
+
+    Ok(())
+}
+
+fn get_step_index<P: Procedure>(
+    context: &Context,
+    history_index: &history::Index,
+) -> hoclog::Result<usize> {
+    let steps = context.history().item(history_index);
+    let mut step_index = 1;
+    for (i, step) in steps.completed().iter().enumerate() {
+        hoclog::LOG
+            .status(format!(
+                "Skipping {}: {}",
+                format!("Step {}", i + 1).yellow(),
+                &step
+                    .id::<P::State>()
+                    .log_context(ERR_MSG_PARSE_ID)?
+                    .description(),
+            ))
+            .with_label("completed".blue());
+        step_index += 1;
+    }
+
+    Ok(step_index)
+}
+
+fn run_step<P: Procedure>(
+    context: &mut Context,
+    proc: &mut P,
+    history_index: &history::Index,
+    state: P::State,
+) -> hoclog::Result<()> {
+    let global_registry = context.registry_mut();
+    let proc_registry = global_registry.split(index_to_key(history_index))?;
+
+    let halt = proc.run(state, &proc_registry, global_registry)?;
+    let state = match halt.state {
+        procedure::HaltState::Halt(inner_state) => Some(inner_state),
+        procedure::HaltState::Finish => None,
+    };
+
+    global_registry.merge(proc_registry)?;
+    context
+        .history_mut()
+        .item_mut(&history_index)
+        .next(&state)?;
+
+    if halt.persist {
+        status!("Persist context" => {
+            context.persist().log_context(ERR_MSG_PERSIST_CONTEXT)?;
+        });
+    }
+
+    Ok(())
+}
+
+fn run_loop<P: Procedure>(
+    context: &mut Context,
+    proc: &mut P,
+    history_index: &history::Index,
+) -> hoclog::Result<()> {
+    let mut step_index = get_step_index::<P>(context, history_index)?;
+
+    loop {
+        if INTERRUPT.load(Ordering::Relaxed) {
+            error!("The program was interrupted.")?;
+        }
+
+        if let Some(step) = context.history().item(history_index).current() {
+            let state = step.state::<P::State>()?;
+            let state_id = step.id::<P::State>().log_context(ERR_MSG_PARSE_ID)?;
+
+            status!("{}: {}", format!("Step {step_index}").yellow(), state_id.description() => {
+                run_step(context, proc, &history_index, state)?;
+            });
+
+            step_index += 1;
+        } else {
+            break Ok(());
+        };
+    }
+}
+
+fn run_procedure<P: Procedure>(context: &mut Context, mut proc: P) -> hoclog::Result<()> {
+    status!("Validate registry state" => validate_registry_state(context)?);
+
+    let history_index = get_history_index(context, &proc)?;
+    status!("Run procedure {}", history_index.name().blue() => {
+        if let Some(attrs_list) = list_string(history_index.attributes(), |a| {
+            format!("{}: {}", a.key, a.value)
+        }) {
+            info!("Attributes:\n{}", attrs_list);
+        }
+
+        rewind_history(context, &proc, &history_index)?;
+        run_loop(context, &mut proc, &history_index)?;
+    });
 
     Ok(())
 }
