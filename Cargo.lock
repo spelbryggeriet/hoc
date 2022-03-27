@@ -603,6 +603,24 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7ebdb29d2ea9ed0083cd8cece49bbd968021bd99b0849edb4a9a7ee0fdf6a4e0"
 
 [[package]]
+name = "hoc-core"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "colored",
+ "ctrlc",
+ "hoc-log",
+ "indexmap",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "ssh2",
+ "strum",
+ "thiserror",
+]
+
+[[package]]
 name = "hoc-log"
 version = "0.1.0"
 dependencies = [
@@ -624,33 +642,15 @@ dependencies = [
 ]
 
 [[package]]
-name = "hoclib"
-version = "0.1.0"
-dependencies = [
- "blake3",
- "colored",
- "ctrlc",
- "hoc-log",
- "indexmap",
- "reqwest",
- "serde",
- "serde_json",
- "serde_yaml",
- "ssh2",
- "strum",
- "thiserror",
-]
-
-[[package]]
 name = "hosting-on-command"
 version = "0.1.0"
 dependencies = [
  "colored",
  "ctrlc",
  "derive_more",
+ "hoc-core",
  "hoc-log",
  "hoc-macros",
- "hoclib",
  "lazy-regex",
  "lazy_static",
  "osshkeys",

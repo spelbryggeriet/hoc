@@ -1,4 +1,4 @@
-use hoclib::cmd_macros;
+use hoc_core::cmd_macros;
 use structopt::StructOpt;
 
 pub use self::{

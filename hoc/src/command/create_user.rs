@@ -1,6 +1,6 @@
 use std::{fs::File, io::Write, os::unix::prelude::OpenOptionsExt};
 
-use hoclib::kv::{ReadStore, WriteStore};
+use hoc_core::kv::{ReadStore, WriteStore};
 use osshkeys::{cipher::Cipher, keys::FingerprintHash, KeyPair, KeyType, PublicParts};
 use structopt::StructOpt;
 

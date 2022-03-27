@@ -9,7 +9,7 @@ use macros::procedure;
 use osshkeys::{keys::FingerprintHash, PublicKey, PublicParts};
 use structopt::StructOpt;
 
-use hoclib::kv::{ReadStore, WriteStore};
+use hoc_core::kv::{ReadStore, WriteStore};
 use log::{choose, error, info, prompt, status, LogErr, Result};
 
 use crate::command::util::{cidr::Cidr, disk, os::OperatingSystem};

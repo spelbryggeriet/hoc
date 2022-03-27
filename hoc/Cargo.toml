@@ -30,4 +30,4 @@ xz2 = "0.1.6"
 
 log = { path = "../hoc-log", package = "hoc-log" }
 macros = { path = "../hoc-macros", package = "hoc-macros" }
-hoclib = { path = "../hoclib" }
+hoc-core = { path = "../hoc-core" }

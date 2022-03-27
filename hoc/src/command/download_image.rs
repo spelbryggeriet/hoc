@@ -9,7 +9,7 @@ use structopt::StructOpt;
 use xz2::read::XzDecoder;
 use zip::ZipArchive;
 
-use hoclib::kv::{ReadStore, WriteStore};
+use hoc_core::kv::{ReadStore, WriteStore};
 use log::{bail, error, info, status, LogErr, Result};
 
 use crate::command::util::os::OperatingSystem;

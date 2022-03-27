@@ -267,16 +267,16 @@ fn impl_procedure(types: &ProcedureTypes) -> TokenStream {
     set_dummy(quote! {
         #stripped_command
 
-        impl ::hoclib::procedure::Procedure for #command_name {
+        impl ::hoc_core::procedure::Procedure for #command_name {
             type State = #state_name;
             const NAME: &'static str = #procedure_desc;
 
             fn run(
                 &mut self,
                 _state: Self::State,
-                _proc_registry: &impl ::hoclib::kv::WriteStore,
-                _global_registry: &impl ::hoclib::kv::ReadStore,
-            ) -> ::log::Result<::hoclib::procedure::Halt<Self::State>> {
+                _proc_registry: &impl ::hoc_core::kv::WriteStore,
+                _global_registry: &impl ::hoc_core::kv::ReadStore,
+            ) -> ::log::Result<::hoc_core::procedure::Halt<Self::State>> {
                 unreachable!()
             }
         }
@@ -286,7 +286,7 @@ fn impl_procedure(types: &ProcedureTypes) -> TokenStream {
         #[strum_discriminants(name(#state_id_name))]
         #stripped_state
 
-        impl ::hoclib::procedure::State for #state_name {
+        impl ::hoc_core::procedure::State for #state_name {
             type Procedure = #command_name;
             type Id = #state_id_name;
 
@@ -295,7 +295,7 @@ fn impl_procedure(types: &ProcedureTypes) -> TokenStream {
             }
         }
 
-        impl ::hoclib::procedure::Id for #state_id_name {
+        impl ::hoc_core::procedure::Id for #state_id_name {
             type DeserializeError = ::strum::ParseError;
 
             fn description(&self) -> &'static str {
@@ -379,7 +379,7 @@ fn gen_impl_procedure(
     let run = gen_run(&command_fields);
 
     quote! {
-        impl ::hoclib::procedure::Procedure for #struct_name {
+        impl ::hoc_core::procedure::Procedure for #struct_name {
             type State = #state_name;
             const NAME: &'static str = #procedure_desc;
 
@@ -392,7 +392,7 @@ fn gen_impl_procedure(
 
 fn gen_impl_state(command_name: &Ident, state_name: &Ident, id_name: &Ident) -> TokenStream {
     quote! {
-        impl ::hoclib::procedure::State for #state_name {
+        impl ::hoc_core::procedure::State for #state_name {
             type Procedure = #command_name;
             type Id = #id_name;
 
@@ -416,7 +416,7 @@ fn gen_impl_id(id_name: &Ident, state_variants: &[StateVariant]) -> TokenStream 
         .or_else(|| Some(quote!(match self { #(#cases)* })));
 
     quote! {
-        impl ::hoclib::procedure::Id for #id_name {
+        impl ::hoc_core::procedure::Id for #id_name {
             type DeserializeError = ::strum::ParseError;
 
             fn description(&self) -> &'static str {
@@ -464,7 +464,7 @@ fn gen_get_attributes(command_fields: &[CommandField]) -> TokenStream {
         .map(|f| {
             let title = to_title_lower_case(f.ident.to_string());
             let ident = f.ident;
-            quote!(variant.push(::hoclib::procedure::Attribute {
+            quote!(variant.push(::hoc_core::procedure::Attribute {
                 key: #title.to_string(),
                 value: self.#ident.clone().to_string(),
             }))
@@ -477,7 +477,7 @@ fn gen_get_attributes(command_fields: &[CommandField]) -> TokenStream {
     };
 
     quote! {
-        fn get_attributes(&self) -> Vec<::hoclib::procedure::Attribute> {
+        fn get_attributes(&self) -> Vec<::hoc_core::procedure::Attribute> {
             let mut variant = Vec::new();
             #(#insertions;)*
             variant
@@ -525,7 +525,7 @@ fn gen_rewind_state(
     let first = rewinds.next().unwrap();
 
     quote! {
-        fn rewind_state(&self) -> Option<<Self::State as ::hoclib::procedure::State>::Id> {
+        fn rewind_state(&self) -> Option<<Self::State as ::hoc_core::procedure::State>::Id> {
             #first
                 #(.or(#rewinds))*
         }
@@ -556,9 +556,9 @@ fn gen_run(command_fields: &[CommandField]) -> TokenStream {
         fn run(
             &mut self,
             state: Self::State,
-            proc_registry: &impl ::hoclib::kv::WriteStore,
-            global_registry: &impl ::hoclib::kv::ReadStore,
-        ) -> ::log::Result<::hoclib::procedure::Halt<Self::State>> {
+            proc_registry: &impl ::hoc_core::kv::WriteStore,
+            global_registry: &impl ::hoc_core::kv::ReadStore,
+        ) -> ::log::Result<::hoc_core::procedure::Halt<Self::State>> {
             #(#defaults)*
             __run_state(state, self, proc_registry, global_registry)
         }
@@ -596,7 +596,7 @@ fn gen_run_trait(
             fn #name(
                 procedure: &mut #command_name,
                 proc_registry: &impl #proc_registry_type,
-                global_registry: &impl ::hoclib::kv::ReadStore
+                global_registry: &impl ::hoc_core::kv::ReadStore
                 #(, #args)*
             ) -> ::log::Result<#return_type>;
         }
@@ -625,27 +625,27 @@ fn gen_run_trait(
         if v.attrs.contains(&StateVariantAttr::Finish) {
             quote!({
                 #state_name::#name(procedure, proc_registry, global_registry #(, #args)*)?;
-                ::hoclib::procedure::Halt {
+                ::hoc_core::procedure::Halt {
                     persist: #persist,
-                    state: ::hoclib::procedure::HaltState::Finish,
+                    state: ::hoc_core::procedure::HaltState::Finish,
                 }
             })
         } else if v.attrs.contains(&StateVariantAttr::MaybeFinish) {
             quote!({
                 let new_state = #state_name::#name(procedure, proc_registry, global_registry #(, #args)*)?;
-                ::hoclib::procedure::Halt {
+                ::hoc_core::procedure::Halt {
                     persist: #persist,
                     state: new_state
-                        .map(::hoclib::procedure::HaltState::Halt)
-                        .unwrap_or(::hoclib::procedure::HaltState::Finish),
+                        .map(::hoc_core::procedure::HaltState::Halt)
+                        .unwrap_or(::hoc_core::procedure::HaltState::Finish),
                 }
             })
         } else {
             quote!({
                 let new_state = #state_name::#name(procedure, proc_registry, global_registry #(, #args)*)?;
-                ::hoclib::procedure::Halt {
+                ::hoc_core::procedure::Halt {
                     persist: #persist,
-                    state: ::hoclib::procedure::HaltState::Halt(new_state),
+                    state: ::hoc_core::procedure::HaltState::Halt(new_state),
                 }
             })
         }
@@ -665,9 +665,9 @@ fn gen_run_trait(
         fn __run_state(
             state: #state_name,
             procedure: &mut #command_name,
-            proc_registry: &impl ::hoclib::kv::WriteStore,
-            global_registry: &impl ::hoclib::kv::ReadStore,
-        ) -> ::log::Result<::hoclib::procedure::Halt<#state_name>> {
+            proc_registry: &impl ::hoc_core::kv::WriteStore,
+            global_registry: &impl ::hoc_core::kv::ReadStore,
+        ) -> ::log::Result<::hoc_core::procedure::Halt<#state_name>> {
             let halt = #match_switch;
             Ok(halt)
         }

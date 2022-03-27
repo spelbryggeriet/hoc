@@ -11,7 +11,7 @@ use colored::Colorize;
 use lazy_static::lazy_static;
 use structopt::StructOpt;
 
-use hoclib::{
+use hoc_core::{
     history,
     kv::WriteStore,
     procedure::{self, Id, Procedure},
@@ -276,7 +276,7 @@ fn main() {
         })
         .log_context("Setting interrupt handler")?;
 
-        hoclib::reset_sudo_privileges().log_context("Resetting sudo privileges")?;
+        hoc_core::reset_sudo_privileges().log_context("Resetting sudo privileges")?;
 
         let mut context = Context::load().log_context("Loading context")?;
 

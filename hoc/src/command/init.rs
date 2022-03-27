@@ -7,7 +7,7 @@ use std::{
 use osshkeys::{keys::FingerprintHash, KeyPair, PublicKey, PublicParts};
 use structopt::StructOpt;
 
-use hoclib::{
+use hoc_core::{
     kv::{ReadStore, WriteStore},
     ssh::SshClient,
 };

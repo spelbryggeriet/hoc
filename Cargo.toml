@@ -1,2 +1,2 @@
 [workspace]
-members = ["hoc", "hoc-log", "hoc-macros", "hoclib"]
+members = ["hoc", "hoc-log", "hoc-macros", "hoc-core"]
