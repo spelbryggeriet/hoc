@@ -4,8 +4,8 @@ use hoc_core::kv::{ReadStore, WriteStore};
 use osshkeys::{cipher::Cipher, keys::FingerprintHash, KeyPair, KeyType, PublicParts};
 use structopt::StructOpt;
 
-use log::{hidden_input, info, status, LogErr, Result};
-use macros::procedure;
+use hoc_log::{hidden_input, info, status, LogErr, Result};
+use hoc_macros::procedure;
 
 procedure! {
     #[derive(StructOpt)]

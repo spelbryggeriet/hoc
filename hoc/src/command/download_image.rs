@@ -4,13 +4,13 @@ use std::{
     path::PathBuf,
 };
 
-use macros::procedure;
 use structopt::StructOpt;
 use xz2::read::XzDecoder;
 use zip::ZipArchive;
 
 use hoc_core::kv::{ReadStore, WriteStore};
-use log::{bail, error, info, status, LogErr, Result};
+use hoc_log::{bail, error, info, status, LogErr, Result};
+use hoc_macros::procedure;
 
 use crate::command::util::os::OperatingSystem;
 

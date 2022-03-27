@@ -1,7 +1,7 @@
 use std::{collections::HashMap, path::PathBuf};
 
+use hoc_log::error;
 use indexmap::IndexMap;
-use log::error;
 use serde::{de::Visitor, ser::SerializeMap, Deserialize, Serialize};
 use thiserror::Error;
 
@@ -67,7 +67,7 @@ pub enum Error {
     Item(#[from] item::Error),
 }
 
-impl From<Error> for log::Error {
+impl From<Error> for hoc_log::Error {
     fn from(err: Error) -> Self {
         error!("{err}").unwrap_err()
     }

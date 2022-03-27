@@ -5,12 +5,12 @@ use std::{
 };
 
 use colored::Colorize;
-use macros::procedure;
 use osshkeys::{keys::FingerprintHash, PublicKey, PublicParts};
 use structopt::StructOpt;
 
 use hoc_core::kv::{ReadStore, WriteStore};
-use log::{choose, error, info, prompt, status, LogErr, Result};
+use hoc_log::{choose, error, info, prompt, status, LogErr, Result};
+use hoc_macros::procedure;
 
 use crate::command::util::{cidr::Cidr, disk, os::OperatingSystem};
 

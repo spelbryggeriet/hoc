@@ -17,7 +17,7 @@ use hoc_core::{
     procedure::{self, Id, Procedure},
     Context,
 };
-use log::{error, info, status, warning, LogErr};
+use hoc_log::{error, info, status, warning, LogErr};
 
 use crate::command::Command;
 
@@ -57,7 +57,7 @@ fn list_string<T>(list: &[T], to_string: impl Fn(&T) -> String) -> Option<String
     }
 }
 
-fn validate_registry_state(context: &mut Context) -> log::Result<()> {
+fn validate_registry_state(context: &mut Context) -> hoc_log::Result<()> {
     let changes = context.registry().validate()?;
     let changes_list = list_string(changes.as_slice(), |(_, c)| format!("{}", c));
 
@@ -112,7 +112,10 @@ fn validate_registry_state(context: &mut Context) -> log::Result<()> {
     Ok(())
 }
 
-fn get_history_index<P: Procedure>(context: &mut Context, proc: &P) -> log::Result<history::Index> {
+fn get_history_index<P: Procedure>(
+    context: &mut Context,
+    proc: &P,
+) -> hoc_log::Result<history::Index> {
     if let Some(history_index) = context.history().get_index(proc) {
         Ok(history_index)
     } else {
@@ -126,7 +129,7 @@ fn rewind_history<P: Procedure>(
     context: &mut Context,
     proc: &P,
     history_index: &history::Index,
-) -> log::Result<()> {
+) -> hoc_log::Result<()> {
     let history_item = context.history_mut().item_mut(history_index);
     if let Some(state_id) = proc.rewind_state() {
         let mut iter = history_item
@@ -159,11 +162,11 @@ fn rewind_history<P: Procedure>(
 fn get_step_index<P: Procedure>(
     context: &Context,
     history_index: &history::Index,
-) -> log::Result<usize> {
+) -> hoc_log::Result<usize> {
     let steps = context.history().item(history_index);
     let mut step_index = 1;
     for (i, step) in steps.completed().iter().enumerate() {
-        log::LOG
+        hoc_log::LOG
             .status(format!(
                 "Skipping {}: {}",
                 format!("Step {}", i + 1).yellow(),
@@ -184,7 +187,7 @@ fn run_step<P: Procedure>(
     proc: &mut P,
     history_index: &history::Index,
     state: P::State,
-) -> log::Result<()> {
+) -> hoc_log::Result<()> {
     let global_registry = context.registry_mut();
     let proc_registry = global_registry.split(history_index)?;
 
@@ -214,7 +217,7 @@ fn run_loop<P: Procedure>(
     context: &mut Context,
     proc: &mut P,
     history_index: &history::Index,
-) -> log::Result<()> {
+) -> hoc_log::Result<()> {
     let mut step_index = get_step_index::<P>(context, history_index)?;
 
     loop {
@@ -242,7 +245,7 @@ fn run_loop<P: Procedure>(
     }
 }
 
-fn run_procedure<P: Procedure>(context: &mut Context, mut proc: P) -> log::Result<()> {
+fn run_procedure<P: Procedure>(context: &mut Context, mut proc: P) -> hoc_log::Result<()> {
     {
         status!("Validate registry state");
         validate_registry_state(context)?;
@@ -266,7 +269,7 @@ fn run_procedure<P: Procedure>(context: &mut Context, mut proc: P) -> log::Resul
 }
 
 fn main() {
-    let wrapper = || -> log::Result<()> {
+    let wrapper = || -> hoc_log::Result<()> {
         ctrlc::set_handler(|| {
             if INTERRUPT.load(Ordering::Relaxed) {
                 process::exit(1);

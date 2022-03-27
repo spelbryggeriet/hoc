@@ -5,7 +5,7 @@ use std::{
     path::PathBuf,
 };
 
-use log::error;
+use hoc_log::error;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -35,7 +35,7 @@ pub enum Error {
     KvStore(#[from] kv::Error),
 }
 
-impl From<Error> for log::Error {
+impl From<Error> for hoc_log::Error {
     fn from(err: Error) -> Self {
         error!("{err}").unwrap_err()
     }

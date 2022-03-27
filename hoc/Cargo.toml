@@ -28,6 +28,6 @@ thiserror = "1.0.29"
 zip = "0.5.13"
 xz2 = "0.1.6"
 
-log = { path = "../hoc-log", package = "hoc-log" }
-macros = { path = "../hoc-macros", package = "hoc-macros" }
 hoc-core = { path = "../hoc-core" }
+hoc-log = { path = "../hoc-log" }
+hoc-macros = { path = "../hoc-macros" }

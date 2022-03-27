@@ -1,6 +1,6 @@
 use std::{error::Error as StdError, str::FromStr};
 
-use log::error;
+use hoc_log::error;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use thiserror::Error;
 
@@ -52,7 +52,7 @@ pub trait Procedure: Sized {
         state: Self::State,
         proc_registry: &impl WriteStore,
         global_registry: &impl ReadStore,
-    ) -> log::Result<Halt<Self::State>>;
+    ) -> hoc_log::Result<Halt<Self::State>>;
 }
 
 pub trait Id:
@@ -95,7 +95,7 @@ pub enum Error {
     Process(#[from] process::Error),
 }
 
-impl From<Error> for log::Error {
+impl From<Error> for hoc_log::Error {
     fn from(err: Error) -> Self {
         error!("{err}").unwrap_err()
     }

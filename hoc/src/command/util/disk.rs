@@ -4,7 +4,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use log::{error, info, status, Result};
+use hoc_log::{error, info, status, Result};
 use serde::Deserialize;
 
 pub fn get_attached_disks() -> Result<impl Iterator<Item = AttachedDiskInfo>> {

@@ -16,4 +16,4 @@ ssh2 = "0.9.3"
 strum = { version = "0.21.0", features = ["derive"] }
 thiserror = "1.0.29"
 
-log = { path = "../hoc-log", package = "hoc-log" }
+hoc-log = { path = "../hoc-log" }

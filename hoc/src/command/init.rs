@@ -11,8 +11,8 @@ use hoc_core::{
     kv::{ReadStore, WriteStore},
     ssh::SshClient,
 };
-use log::{error, hidden_input, info, status, LogErr, Result};
-use macros::procedure;
+use hoc_log::{error, hidden_input, info, status, LogErr, Result};
+use hoc_macros::procedure;
 
 use crate::command::util::os::OperatingSystem;
 
