@@ -6,60 +6,65 @@ use std::{
 
 use colored::Colorize;
 use osshkeys::{keys::FingerprintHash, PublicKey, PublicParts};
+use serde::{Deserialize, Serialize};
 use structopt::StructOpt;
 
 use hoc_core::kv::{ReadStore, WriteStore};
 use hoc_log::{choose, error, info, prompt, status, LogErr, Result};
-use hoc_macros::procedure;
+use hoc_macros::{Procedure, ProcedureState};
 
 use crate::command::util::{cidr::Cidr, disk, os::OperatingSystem};
 
-procedure! {
-    #[derive(StructOpt)]
-    pub struct PrepareSdCard {
-        /// Re-flash the image.
-        #[structopt(long)]
-        #[procedure(rewind = FlashImage)]
-        reflash: bool,
+#[derive(Procedure, StructOpt)]
+pub struct PrepareSdCard {
+    /// Re-flash the image.
+    #[structopt(long)]
+    #[procedure(rewind = FlashImage)]
+    reflash: bool,
 
-        /// The operating system to flash the SD card with.
-        #[structopt(long)]
-        os: OperatingSystem,
+    /// The operating system to flash the SD card with.
+    #[structopt(long)]
+    os: OperatingSystem,
 
-        /// The name of the node.
-        #[structopt(long)]
-        #[procedure(attribute)]
-        node_name: String,
+    /// The name of the node.
+    #[structopt(long)]
+    #[procedure(attribute)]
+    node_name: String,
 
-        /// The username of the administrator.
-        #[structopt(long, required_if("os", "ubuntu"))]
-        username: Option<String>,
+    /// The username of the administrator.
+    #[structopt(long, required_if("os", "ubuntu"))]
+    username: Option<String>,
 
-        /// List of CIDR addresses to attach to the network interface.
-        #[structopt(long, required_if("os", "ubuntu"))]
-        address: Option<Cidr>,
+    /// List of CIDR addresses to attach to the network interface.
+    #[structopt(long, required_if("os", "ubuntu"))]
+    address: Option<Cidr>,
 
-        /// The default gateway for the network interface.
-        #[structopt(long, required_if("os", "ubuntu"))]
-        gateway: Option<IpAddr>,
+    /// The default gateway for the network interface.
+    #[structopt(long, required_if("os", "ubuntu"))]
+    gateway: Option<IpAddr>,
+}
 
-    }
+#[derive(ProcedureState, Serialize, Deserialize)]
+pub enum PrepareSdCardState {
+    FlashImage,
 
-    pub enum PrepareSdCardState {
-        FlashImage,
+    #[state(transient)]
+    Mount,
 
-        #[procedure(transient)]
-        Mount,
+    #[state(transient)]
+    ModifyRaspberryPiOsImage {
+        disk_partition_id: String,
+    },
 
-        #[procedure(transient)]
-        ModifyRaspberryPiOsImage { disk_partition_id: String },
+    #[state(transient)]
+    ModifyUbuntuImage {
+        disk_partition_id: String,
+    },
 
-        #[procedure(transient)]
-        ModifyUbuntuImage { disk_partition_id: String },
-
-        #[procedure(transient, finish)]
-        Unmount { disk_partition_id: String },
-    }
+    #[state(transient, finish)]
+    Unmount {
+        disk_partition_id: String,
+    },
 }
 
 impl Run for PrepareSdCardState {

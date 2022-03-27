@@ -4,42 +4,42 @@ use std::{
     path::PathBuf,
 };
 
+use serde::{Deserialize, Serialize};
 use structopt::StructOpt;
 use xz2::read::XzDecoder;
 use zip::ZipArchive;
 
 use hoc_core::kv::{ReadStore, WriteStore};
 use hoc_log::{bail, error, info, status, LogErr, Result};
-use hoc_macros::procedure;
+use hoc_macros::{Procedure, ProcedureState};
 
 use crate::command::util::os::OperatingSystem;
 
-procedure! {
-    #[derive(StructOpt)]
-    pub struct DownloadImage {
-        #[procedure(rewind = DownloadOperatingSystemImage)]
-        #[structopt(long)]
-        redownload: bool,
+#[derive(Procedure, StructOpt)]
+pub struct DownloadImage {
+    #[procedure(rewind = DownloadOperatingSystemImage)]
+    #[structopt(long)]
+    redownload: bool,
 
-        /// The operaring system to use.
-        #[procedure(attribute)]
-        #[structopt(long)]
-        os: OperatingSystem,
-    }
-
-    pub enum DownloadOsImageState {
-        DownloadOperatingSystemImage,
-
-        #[procedure(finish)]
-        DecompressZipArchive,
-
-        #[procedure(finish)]
-        DecompressXzFile,
-    }
+    /// The operaring system to use.
+    #[procedure(attribute)]
+    #[structopt(long)]
+    os: OperatingSystem,
 }
 
-impl Run for DownloadOsImageState {
-    fn download_operating_system_image(
+#[derive(ProcedureState, Serialize, Deserialize)]
+pub enum DownloadImageState {
+    Download,
+
+    #[state(finish)]
+    DecompressZipArchive,
+
+    #[state(finish)]
+    DecompressXzFile,
+}
+
+impl Run for DownloadImageState {
+    fn download(
         proc: &mut DownloadImage,
         proc_registry: &impl WriteStore,
         _global_registry: &impl ReadStore,

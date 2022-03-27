@@ -5,6 +5,7 @@ use std::{
 };
 
 use osshkeys::{keys::FingerprintHash, KeyPair, PublicKey, PublicParts};
+use serde::{Deserialize, Serialize};
 use structopt::StructOpt;
 
 use hoc_core::{
@@ -12,44 +13,43 @@ use hoc_core::{
     ssh::SshClient,
 };
 use hoc_log::{error, hidden_input, info, status, LogErr, Result};
-use hoc_macros::procedure;
+use hoc_macros::{Procedure, ProcedureState};
 
 use crate::command::util::os::OperatingSystem;
 
-procedure! {
-    #[derive(StructOpt)]
-    pub struct Init {
-        #[procedure(attribute)]
-        #[structopt(long)]
-        node_os: OperatingSystem,
+#[derive(Procedure, StructOpt)]
+pub struct Init {
+    #[procedure(attribute)]
+    #[structopt(long)]
+    node_os: OperatingSystem,
 
-        #[procedure(attribute)]
-        #[structopt(long)]
-        node_address: String,
+    #[procedure(attribute)]
+    #[structopt(long)]
+    node_address: String,
 
-        #[structopt(long)]
-        username: String,
+    #[structopt(long)]
+    username: String,
 
-        #[structopt(skip)]
-        password:  RefCell<Option<String>>,
+    #[structopt(skip)]
+    password: RefCell<Option<String>>,
 
-        #[structopt(skip)]
-        ssh_client: RefCell<Option<SshClient>>,
-    }
+    #[structopt(skip)]
+    ssh_client: RefCell<Option<SshClient>>,
+}
 
-    pub enum InitState {
-        Prepare,
+#[derive(ProcedureState, Serialize, Deserialize)]
+pub enum InitState {
+    Prepare,
 
-        AddNewUser,
-        AssignSudoPrivileges,
-        DeletePiUser,
-        SetUpSshAccess,
-        #[procedure(finish)]
-        InstallDependencies,
+    AddNewUser,
+    AssignSudoPrivileges,
+    DeletePiUser,
+    SetUpSshAccess,
+    #[state(finish)]
+    InstallDependencies,
 
-        #[procedure(finish)]
-        ChangePassword,
-    }
+    #[state(finish)]
+    ChangePassword,
 }
 
 impl Run for InitState {

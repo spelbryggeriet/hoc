@@ -2,28 +2,28 @@ use std::{fs::File, io::Write, os::unix::prelude::OpenOptionsExt};
 
 use hoc_core::kv::{ReadStore, WriteStore};
 use osshkeys::{cipher::Cipher, keys::FingerprintHash, KeyPair, KeyType, PublicParts};
+use serde::{Deserialize, Serialize};
 use structopt::StructOpt;
 
 use hoc_log::{hidden_input, info, status, LogErr, Result};
-use hoc_macros::procedure;
+use hoc_macros::{Procedure, ProcedureState};
 
-procedure! {
-    #[derive(StructOpt)]
-    pub struct CreateUser {
-        #[procedure(attribute)]
-        username: String,
+#[derive(Procedure, StructOpt)]
+pub struct CreateUser {
+    #[procedure(attribute)]
+    username: String,
 
-        #[structopt(skip)]
-        password: Option<String>,
-    }
+    #[structopt(skip)]
+    password: Option<String>,
+}
 
-    pub enum CreateUserState {
-        #[procedure(transient)]
-        ChoosePassword,
+#[derive(ProcedureState, Serialize, Deserialize)]
+pub enum CreateUserState {
+    #[state(transient)]
+    ChoosePassword,
 
-        #[procedure(finish)]
-        GenerateSshKeyPair,
-    }
+    #[state(finish)]
+    GenerateSshKeyPair,
 }
 
 impl Run for CreateUserState {

@@ -77,7 +77,6 @@ where
 }
 
 pub trait State: Serialize + DeserializeOwned + Default {
-    type Procedure: Procedure;
     type Id: Id;
 
     fn id(&self) -> Self::Id;
