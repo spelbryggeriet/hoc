@@ -11,7 +11,6 @@ struct StateVariant<'a> {
     attrs: Vec<StateVariantAttr>,
     ident: &'a Ident,
     fields: Vec<StateVariantField<'a>>,
-    unit: bool,
 }
 
 struct StateVariantField<'a> {
@@ -236,15 +235,11 @@ fn gen_impl_default(state_name: &Ident, state_variants: &[StateVariant]) -> Toke
         || quote!(unreachable!()),
         |v| {
             let name = v.ident;
-            if v.unit {
-                quote!(Self::#name)
-            } else {
-                let fields = v.fields.iter().map(|f| {
-                    let field_name = &f.ident;
-                    quote!(#field_name: Default::default())
-                });
-                quote!({ #(#fields),* })
-            }
+            let fields = v.fields.iter().map(|f| {
+                let field_name = &f.ident;
+                quote!(#field_name: Default::default())
+            });
+            quote!(Self::#name { #(#fields),* })
         },
     );
 
@@ -302,11 +297,7 @@ fn gen_run_trait(
         let variant_name = v.ident;
         let field_names = v.fields.iter().map(|f| &f.ident);
 
-        if v.unit {
-            quote!(#variant_name)
-        } else {
-            quote!(#variant_name { #(#field_names),* })
-        }
+        quote!(#variant_name { #(#field_names),* })
     });
 
     let variant_exprs = state_variants.iter().map(|v| {
@@ -346,7 +337,11 @@ fn gen_run_trait(
     let match_switch = state_variants
         .is_empty()
         .then(|| quote!(unreachable!()))
-        .or_else(|| Some(quote!(match state { #(#variant_patterns => #variant_exprs,)* })));
+        .or_else(|| {
+            Some(quote!(match state {
+                #(#variant_patterns => #variant_exprs,)*
+            }))
+        });
 
     quote! {
         trait RunImplRequired: Run {}
@@ -354,17 +349,17 @@ fn gen_run_trait(
         impl RunImplRequired for #state_name {}
         #maybe_impl_run
 
-        fn __run_state(
-            state: #state_name,
-            procedure: &mut #command_name,
-            proc_registry: &impl ::hoc_core::kv::WriteStore,
-            global_registry: &impl ::hoc_core::kv::ReadStore,
-        ) -> ::hoc_log::Result<::hoc_core::procedure::Halt<#state_name>> {
-            let halt = #match_switch;
-            Ok(halt)
-        }
-
         trait Run: Sized {
+            fn run(
+                state: #state_name,
+                procedure: &mut #command_name,
+                proc_registry: &impl ::hoc_core::kv::WriteStore,
+                global_registry: &impl ::hoc_core::kv::ReadStore,
+            ) -> ::hoc_log::Result<::hoc_core::procedure::Halt<#state_name>> {
+                let halt = #match_switch;
+                Ok(halt)
+            }
+
             #(#run_fns)*
         }
     }
@@ -392,7 +387,6 @@ fn parse_state_variant(variant: &Variant) -> StateVariant {
                     }
                 })
                 .collect(),
-            unit: false,
         },
         Variant {
             attrs,
@@ -403,7 +397,6 @@ fn parse_state_variant(variant: &Variant) -> StateVariant {
             attrs: crate::parse_attributes("state", attrs, ident),
             ident,
             fields: Vec::new(),
-            unit: true,
         },
         Variant {
             discriminant: Some((_eq, ref dis)),

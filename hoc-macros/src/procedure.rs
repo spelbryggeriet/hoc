@@ -131,7 +131,7 @@ fn gen_run(command_fields: &[CommandField]) -> TokenStream {
             global_registry: &impl ::hoc_core::kv::ReadStore,
         ) -> ::hoc_log::Result<::hoc_core::procedure::Halt<Self::State>> {
             #(#defaults)*
-            __run_state(state, self, proc_registry, global_registry)
+            <Self::State as Run>::run(state, self, proc_registry, global_registry)
         }
     }
 }

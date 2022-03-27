@@ -17,13 +17,13 @@ use crate::command::util::os::OperatingSystem;
 
 #[derive(Procedure, StructOpt)]
 pub struct DownloadImage {
-    #[procedure(rewind = DownloadOperatingSystemImage)]
     #[structopt(long)]
+    #[procedure(rewind = DownloadOperatingSystemImage)]
     redownload: bool,
 
     /// The operaring system to use.
-    #[procedure(attribute)]
     #[structopt(long)]
+    #[procedure(attribute)]
     os: OperatingSystem,
 }
 
