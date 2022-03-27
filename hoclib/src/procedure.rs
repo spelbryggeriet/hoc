@@ -97,7 +97,7 @@ pub enum Error {
 
 impl From<Error> for hoclog::Error {
     fn from(err: Error) -> Self {
-        error!(err.to_string()).unwrap_err()
+        error!("{err}").unwrap_err()
     }
 }
 

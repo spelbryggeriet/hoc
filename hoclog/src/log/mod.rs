@@ -241,8 +241,8 @@ impl Log {
         input
     }
 
-    pub fn hidden_input<'a>(&self, message: Cow<'a, str>) -> HiddenInput<'a> {
-        HiddenInput::new(Arc::clone(&self.print_context), message)
+    pub fn hidden_input<'a, C: Into<Cow<'a, str>>>(&self, message: C) -> HiddenInput<'a> {
+        HiddenInput::new(Arc::clone(&self.print_context), message.into())
     }
 
     pub fn choose<T>(

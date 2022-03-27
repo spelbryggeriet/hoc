@@ -25,10 +25,6 @@ lazy_static! {
 
 #[macro_export]
 macro_rules! info {
-    ($fmt:expr $(,)?) => {
-        $crate::LOG.info($fmt)
-    };
-
     ($($fmt:tt)*) => {
         $crate::LOG.info(format!($($fmt)*))
     };
@@ -39,18 +35,10 @@ macro_rules! choose {
     (($($fmt:tt)*), items=$items:expr $(, default_index=$default_index:expr)? $(,)?) => {
         $crate::LOG.choose(format!($($fmt)*), $items, $( if true { $default_index } else )? { 0 })
     };
-
-    ($fmt:expr, items=$items:expr $(, default_index=$default_index:expr)? $(,)?) => {
-        $crate::LOG.choose($fmt, $items, $( if true { $default_index } else )? { 0 })
-    };
 }
 
 #[macro_export]
 macro_rules! prompt {
-    ($fmt:expr) => {
-        $crate::LOG.prompt($fmt)
-    };
-
     ($($fmt:tt)*) => {
         $crate::LOG.prompt(format!($($fmt)*))
     };
@@ -58,10 +46,6 @@ macro_rules! prompt {
 
 #[macro_export]
 macro_rules! input {
-    ($fmt:expr) => {
-        $crate::LOG.input($fmt)
-    };
-
     ($($fmt:tt)*) => {
         $crate::LOG.input(format!($($fmt)*))
     };
@@ -69,38 +53,20 @@ macro_rules! input {
 
 #[macro_export]
 macro_rules! hidden_input {
-    ($fmt:expr) => {
-        $crate::LOG.hidden_input(::std::borrow::Cow::from($fmt))
-    };
-
     ($($fmt:tt)*) => {
-        $crate::LOG.hidden_input(::std::borrow::Cow::Owned(format!($($fmt)*)))
+        $crate::LOG.hidden_input(format!($($fmt)*))
     };
 }
 
 #[macro_export]
 macro_rules! status {
-    ($fmt:expr $(, $arg:expr)+ $(=> $code:expr)?) => {{
-        let __status = $crate::LOG.status(format!($fmt $(, $arg)+));
-        $($code)?
-    }};
-
-    ($fmt:expr $(=> $code:expr)?) => {{
-        let __status = $crate::LOG.status($fmt);
-        let mut __wrapper = || -> $crate::Result<_> {
-            let __output = { $($code)? };
-            Ok(__output)
-        };
-        __wrapper()?
-    }};
+    ($($fmt:tt)*) => {
+        let __status = $crate::LOG.status(format!($($fmt)*));
+    };
 }
 
 #[macro_export]
 macro_rules! warning {
-    ($fmt:expr $(,)?) => {
-        $crate::LOG.warning($fmt)
-    };
-
     ($($fmt:tt)*) => {
         $crate::LOG.warning(format!($($fmt)*))
     };
@@ -108,10 +74,6 @@ macro_rules! warning {
 
 #[macro_export]
 macro_rules! error {
-    ($fmt:expr $(,)?) => {
-        $crate::LOG.error($fmt)
-    };
-
     ($($fmt:tt)*) => {
         $crate::LOG.error(format!($($fmt)*))
     };
@@ -119,10 +81,6 @@ macro_rules! error {
 
 #[macro_export]
 macro_rules! bail {
-    ($fmt:expr $(,)?) => {
-        return Err($crate::LOG.error($fmt).unwrap_err().into());
-    };
-
     ($($fmt:tt)*) => {
         return Err($crate::LOG.error(format!($($fmt)*)).unwrap_err().into());
     };

@@ -42,33 +42,47 @@ impl Run for CreateUserState {
         proc_registry: &impl WriteStore,
         _global_registry: &impl ReadStore,
     ) -> Result<()> {
-        let (pub_key, priv_key) = status!("Generate SSH keypair" => {
+        let (pub_key, priv_key) = {
+            status!("Generate SSH keypair");
+
             let mut key_pair = KeyPair::generate(KeyType::ED25519, 256).log_err()?;
             *key_pair.comment_mut() = proc.username.clone();
 
             let password = proc.password.clone().unwrap();
             let pub_key = key_pair.serialize_publickey().log_err()?;
-            let priv_key = key_pair.serialize_openssh(Some(&password), Cipher::Aes256_Ctr).log_err()?;
+            let priv_key = key_pair
+                .serialize_openssh(Some(&password), Cipher::Aes256_Ctr)
+                .log_err()?;
 
-            let randomart = key_pair.fingerprint_randomart(
-                FingerprintHash::SHA256,
-            ).log_err()?;
+            let randomart = key_pair
+                .fingerprint_randomart(FingerprintHash::SHA256)
+                .log_err()?;
 
             info!("Fingerprint randomart:\n{}", randomart);
 
             (pub_key, priv_key)
-        });
+        };
 
-        status!("Store SSH keypair" => {
+        {
+            status!("Store SSH keypair");
+
             let pub_ref = proc_registry.create_file(format!("ssh/id_ed25519.pub"))?;
             let priv_ref = proc_registry.create_file(format!("ssh/id_ed25519"))?;
-            let mut pub_file = File::options().write(true).create(true).mode(0o600).open(pub_ref.path())?;
-            let mut priv_file = File::options().write(true).create(true).mode(0o600).open(priv_ref.path())?;
+            let mut pub_file = File::options()
+                .write(true)
+                .create(true)
+                .mode(0o600)
+                .open(pub_ref.path())?;
+            let mut priv_file = File::options()
+                .write(true)
+                .create(true)
+                .mode(0o600)
+                .open(priv_ref.path())?;
             pub_file.write_all(pub_key.as_bytes())?;
             priv_file.write_all(priv_key.as_bytes())?;
 
             info!("Key stored in {}", priv_ref.path().to_string_lossy());
-        });
+        }
 
         Ok(())
     }

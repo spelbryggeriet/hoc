@@ -159,7 +159,7 @@ pub enum Error {
 
 impl From<Error> for hoclog::Error {
     fn from(err: Error) -> Self {
-        error!(err.to_string()).unwrap_err()
+        error!("{err}").unwrap_err()
     }
 }
 
@@ -434,11 +434,11 @@ where
             if success_codes.contains(&status) {
                 if !self.silent {
                     if !show_stdout && !show_stderr {
-                        info!("<output hidden>".blue().to_string());
+                        info!("{}", "<output hidden>".blue());
                     } else if !show_stdout {
-                        info!("<stdout hidden>".blue().to_string());
+                        info!("{}", "<stdout hidden>".blue());
                     } else if !show_stderr {
-                        info!("<stderr hidden>".blue().to_string());
+                        info!("{}", "<stderr hidden>".blue());
                     }
                 }
 
@@ -490,7 +490,7 @@ trait ProcessOutput {
             let line = line?;
 
             if show_output {
-                info!(line.as_str().obfuscate(secrets));
+                info!("{}", line.as_str().obfuscate(secrets));
             }
 
             let is_empty = output.is_empty();

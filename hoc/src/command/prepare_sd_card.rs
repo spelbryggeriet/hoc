@@ -75,13 +75,18 @@ impl Run for PrepareSdCardState {
         let index = if disks.len() == 1 {
             0
         } else {
-            choose!("Which disk is your SD card?", items = &disks)?
+            choose!(("Which disk is your SD card?"), items = &disks)?
         };
 
         let disk = disks.remove(index);
-        status!("Unmount SD card" => diskutil!("unmountDisk", disk.id).run()?);
+        {
+            status!("Unmount SD card");
+            diskutil!("unmountDisk", disk.id).run()?;
+        }
 
-        status!("Flash SD card" => {
+        {
+            status!("Flash SD card");
+
             let image_path: PathBuf = global_registry
                 .get(format!("download-image/{}/image", proc.os))?
                 .try_into()?;
@@ -99,7 +104,7 @@ impl Run for PrepareSdCardState {
             )
             .sudo()
             .run()?;
-        });
+        }
 
         Ok(Mount)
     }
@@ -114,7 +119,9 @@ impl Run for PrepareSdCardState {
             OperatingSystem::Ubuntu { .. } => "system-boot",
         };
 
-        let disk_partition_id = status!("Mount boot partition" => {
+        let disk_partition_id = {
+            status!("Mount boot partition");
+
             let mut partitions: Vec<_> = disk::get_attached_disk_partitions()
                 .log_context("Failed to get attached disks")?
                 .filter(|p| p.name == boot_partition_name)
@@ -124,7 +131,7 @@ impl Run for PrepareSdCardState {
                 0
             } else {
                 choose!(
-                    "Which refers to the boot partition of the disk?",
+                    ("Which refers to the boot partition of the disk?"),
                     items = &partitions
                 )?
             };
@@ -139,7 +146,7 @@ impl Run for PrepareSdCardState {
             diskutil!("mount", disk_partition.id).run()?;
 
             disk_partition.id
-        });
+        };
 
         let state = match proc.os {
             OperatingSystem::RaspberryPiOs { .. } => ModifyRaspberryPiOsImage { disk_partition_id },
@@ -157,11 +164,13 @@ impl Run for PrepareSdCardState {
     ) -> Result<Self> {
         let mount_dir = disk::find_mount_dir(&disk_partition_id)?;
 
-        status!("Configure image" => {
-            status!("Create SSH file"=> {
+        {
+            status!("Configure image");
+            {
+                status!("Create SSH file");
                 File::create(mount_dir.join("ssh"))?;
-            });
-        });
+            }
+        }
 
         Ok(Unmount { disk_partition_id })
     }
@@ -174,7 +183,9 @@ impl Run for PrepareSdCardState {
     ) -> Result<Self> {
         let username = proc.username.as_ref().unwrap().as_str();
 
-        let pub_key = status!("Read SSH keypair" => {
+        let pub_key = {
+            status!("Read SSH keypair");
+
             let pub_key_path: PathBuf = global_registry
                 .get(format!("create-user/{username}/ssh/id_ed25519.pub"))?
                 .try_into()?;
@@ -189,11 +200,13 @@ impl Run for PrepareSdCardState {
             );
 
             pub_key
-        });
+        };
 
         let mount_dir = disk::find_mount_dir(&disk_partition_id)?;
 
-        status!("Prepare image initialization" => {
+        {
+            status!("Prepare image initialization");
+
             let data_map: serde_yaml::Value = serde_yaml::from_str(&format!(
                 include_str!("../../config/user-data"),
                 admin_username = username,
@@ -241,7 +254,7 @@ impl Run for PrepareSdCardState {
 
             let network_config_path = mount_dir.join("network-config");
             fs::write(&network_config_path, &data)?;
-        });
+        }
 
         Ok(Unmount { disk_partition_id })
     }
@@ -252,10 +265,14 @@ impl Run for PrepareSdCardState {
         _global_registry: &impl ReadStore,
         disk_partition_id: String,
     ) -> Result<()> {
-        status!("Sync image disk writes" => sync!().run()?);
-        status!("Unmount image disk" => {
-            diskutil!("unmount", disk_partition_id).run()?
-        });
+        {
+            status!("Sync image disk writes");
+            sync!().run()?;
+        }
+        {
+            status!("Unmount image disk");
+            diskutil!("unmount", disk_partition_id).run()?;
+        }
 
         Ok(())
     }

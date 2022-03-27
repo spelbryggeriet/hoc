@@ -21,7 +21,7 @@ pub enum SshError {
 
 impl From<SshError> for hoclog::Error {
     fn from(err: SshError) -> Self {
-        error!(err.to_string()).unwrap_err()
+        error!("{err}").unwrap_err()
     }
 }
 
@@ -128,7 +128,9 @@ impl SshClient {
         username: &str,
         auth: &Authentication,
     ) -> Result<ssh2::Session, SshError> {
-        let session = status!("Connecting to host {}", host.blue() => {
+        let session = {
+            status!("Connecting to host {}", host.blue());
+
             let port = 22;
             let stream = TcpStream::connect(format!("{}:{}", host, port))?;
 
@@ -137,14 +139,23 @@ impl SshClient {
             session.handshake()?;
 
             match auth {
-                Authentication::Key { pub_key, priv_key, passphrase } => {
-                    session.userauth_pubkey_file(username, Some(&pub_key), &priv_key, Some(&passphrase))?
+                Authentication::Key {
+                    pub_key,
+                    priv_key,
+                    passphrase,
+                } => session.userauth_pubkey_file(
+                    username,
+                    Some(&pub_key),
+                    &priv_key,
+                    Some(&passphrase),
+                )?,
+                Authentication::Password(password) => {
+                    session.userauth_password(username, &password)?
                 }
-                Authentication::Password(password) => session.userauth_password(username, &password)?,
             }
 
             session
-        });
+        };
 
         Ok(session)
     }

@@ -44,7 +44,9 @@ impl Run for DownloadOsImageState {
         proc_registry: &impl WriteStore,
         _global_registry: &impl ReadStore,
     ) -> Result<Self> {
-        let file_ref = status!("Download image" => {
+        let file_ref = {
+            status!("Download image");
+
             let image_url = proc.os.image_url();
             info!("URL: {}", image_url);
 
@@ -55,11 +57,16 @@ impl Run for DownloadOsImageState {
                 .create(true)
                 .open(file_ref.path())?;
 
-            reqwest::blocking::get(image_url).log_err()?.copy_to(&mut file).log_err()?;
+            reqwest::blocking::get(image_url)
+                .log_err()?
+                .copy_to(&mut file)
+                .log_err()?;
             file_ref
-        });
+        };
 
-        let state = status!("Determine file type" => {
+        let state = {
+            status!("Determine file type");
+
             let output = cmd_file!(file_ref.path()).run()?.1.to_lowercase();
             if output.contains("zip archive") {
                 info!("Zip archive file type detected");
@@ -70,7 +77,7 @@ impl Run for DownloadOsImageState {
             } else {
                 error!("Unsupported file type")?.into()
             }
-        });
+        };
 
         Ok(state)
     }
@@ -80,12 +87,11 @@ impl Run for DownloadOsImageState {
         proc_registry: &impl WriteStore,
         _global_registry: &impl ReadStore,
     ) -> Result<()> {
-        let (image_data, mut image_file) = status!("Read ZIP archive" => {
+        let (image_data, mut image_file) = {
+            status!("Read ZIP archive");
+
             let archive_path: PathBuf = proc_registry.get("image")?.try_into()?;
-            let file = File::options()
-                .read(true)
-                .write(true)
-                .open(&archive_path)?;
+            let file = File::options().read(true).write(true).open(&archive_path)?;
 
             let mut archive = ZipArchive::new(&file).log_err()?;
 
@@ -100,12 +106,14 @@ impl Run for DownloadOsImageState {
                     info!("Found image at index {} among {} items.", i, archive_len);
 
                     let mut data = Vec::new();
-                    status!("Decompress image" => {
+                    {
+                        status!("Decompress image");
+
                         archive_file
                             .read_to_end(&mut data)
                             .log_context("Failed to read image in ZIP archive")?;
                         buf.replace(data);
-                    });
+                    }
                     break;
                 }
             }
@@ -115,13 +123,15 @@ impl Run for DownloadOsImageState {
             } else {
                 bail!("Image not found within ZIP archive");
             }
-        });
+        };
 
-        status!("Save decompressed image to file" => {
+        {
+            status!("Save decompressed image to file");
+
             image_file.seek(SeekFrom::Start(0))?;
             image_file.set_len(0)?;
             image_file.write_all(&image_data)?;
-        });
+        }
 
         Ok(())
     }
@@ -131,30 +141,33 @@ impl Run for DownloadOsImageState {
         proc_registry: &impl WriteStore,
         _global_registry: &impl ReadStore,
     ) -> Result<()> {
-        let (image_data, mut image_file) = status!("Read XZ file" => {
+        let (image_data, mut image_file) = {
+            status!("Read XZ file");
+
             let file_path: PathBuf = proc_registry.get("image")?.try_into()?;
-            let file = File::options()
-                .read(true)
-                .write(true)
-                .open(&file_path)?;
+            let file = File::options().read(true).write(true).open(&file_path)?;
 
             let mut decompressor = XzDecoder::new(&file);
 
             let mut buf = Vec::new();
-            status!("Decompress image" => {
+            {
+                status!("Decompress image");
+
                 decompressor
                     .read_to_end(&mut buf)
                     .log_context("Failed to read image in XZ file")?;
-            });
+            }
 
             (buf, file)
-        });
+        };
 
-        status!("Save decompressed image to file" => {
+        {
+            status!("Save decompressed image to file");
+
             image_file.seek(SeekFrom::Start(0))?;
             image_file.set_len(0)?;
             image_file.write_all(&image_data)?;
-        });
+        }
 
         Ok(())
     }

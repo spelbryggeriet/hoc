@@ -204,9 +204,10 @@ fn run_step<P: Procedure>(
         .next(&state)?;
 
     if halt.persist {
-        status!("Persist context" => {
+        {
+            status!("Persist context");
             context.persist().log_context(ERR_MSG_PERSIST_CONTEXT)?;
-        });
+        }
     }
 
     Ok(())
@@ -228,9 +229,14 @@ fn run_loop<P: Procedure>(
             let state = step.state::<P::State>()?;
             let state_id = step.id::<P::State>().log_context(ERR_MSG_PARSE_ID)?;
 
-            status!("{}: {}", format!("Step {step_index}").yellow(), state_id.description() => {
+            {
+                status!(
+                    "{}: {}",
+                    format!("Step {step_index}").yellow(),
+                    state_id.description()
+                );
                 run_step(context, proc, &history_index, state)?;
-            });
+            }
 
             step_index += 1;
         } else {
@@ -240,10 +246,15 @@ fn run_loop<P: Procedure>(
 }
 
 fn run_procedure<P: Procedure>(context: &mut Context, mut proc: P) -> hoclog::Result<()> {
-    status!("Validate registry state" => validate_registry_state(context)?);
+    {
+        status!("Validate registry state");
+        validate_registry_state(context)?;
+    }
 
     let history_index = get_history_index(context, &proc)?;
-    status!("Run procedure {}", history_index.name().blue() => {
+    {
+        status!("Run procedure {}", history_index.name().blue());
+
         if let Some(attrs_list) = list_string(history_index.attributes(), |a| {
             format!("{}: {}", a.key, a.value)
         }) {
@@ -252,7 +263,7 @@ fn run_procedure<P: Procedure>(context: &mut Context, mut proc: P) -> hoclog::Re
 
         rewind_history(context, &proc, &history_index)?;
         run_loop(context, &mut proc, &history_index)?;
-    });
+    };
 
     Ok(())
 }

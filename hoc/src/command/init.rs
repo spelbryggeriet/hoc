@@ -158,7 +158,9 @@ impl Run for InitState {
         let username = &proc.username;
         let password = proc.password_for_user(username)?;
 
-        let (pub_key, pub_path, priv_path) = status!("Read SSH keypair" => {
+        let (pub_key, pub_path, priv_path) = {
+            status!("Read SSH keypair");
+
             let pub_path: PathBuf = global_registry
                 .get(format!("create-user/{username}/ssh/id_ed25519.pub"))?
                 .try_into()?;
@@ -176,11 +178,13 @@ impl Run for InitState {
             );
 
             (pub_key, pub_path, priv_path)
-        });
+        };
 
         let client = proc.ssh_client_password_auth(&proc.node_address, username, &password)?;
 
-        status!("Send SSH public key" => {
+        {
+            status!("Send SSH public key");
+
             // Create the `.ssh` directory.
             mkdir!("-p", "-m", "700", format!("/home/{username}/.ssh"))
                 .ssh(&client)
@@ -193,14 +197,20 @@ impl Run for InitState {
             let (status_code, _) = test!("-s", dest).success_codes([0, 1]).ssh(&client).run()?;
             if status_code == 1 {
                 // Create the authorized keys file.
-                cat!().stdin_line(username).stdout(&dest).ssh(&client).run()?;
+                cat!()
+                    .stdin_line(username)
+                    .stdout(&dest)
+                    .ssh(&client)
+                    .run()?;
                 chmod!("644", dest).ssh(&client).run()?;
             }
 
             // Copy the public key to the authorized keys file.
             let key = pub_key.replace("/", r"\/");
             sed!(
-                format!("0,/{username}$/{{h;s/^.*{username}$/{key}/}};${{x;/^$/{{s//{key}/;H}};x}}"),
+                format!(
+                    "0,/{username}$/{{h;s/^.*{username}$/{key}/}};${{x;/^$/{{s//{key}/;H}};x}}"
+                ),
                 dest,
             )
             .stdout(&src)
@@ -209,11 +219,15 @@ impl Run for InitState {
             .run()?;
 
             // Move the updated config contents.
-            dd!(format!("if={src}"), format!("of={dest}")).ssh(&client).run()?;
+            dd!(format!("if={src}"), format!("of={dest}"))
+                .ssh(&client)
+                .run()?;
             rm!(src).ssh(&client).run()?;
-        });
+        }
 
-        status!("Init SSH server" => {
+        {
+            status!("Init SSH server");
+
             let dest = "/etc/ssh/sshd_config";
             let src = format!("/home/{username}/sshd_config_updated");
 
@@ -242,11 +256,16 @@ impl Run for InitState {
                 .run()?;
 
             // Verify again after SSH server restart.
-            let client =
-                proc.ssh_client_key_auth(&proc.node_address, username, &pub_path, &priv_path, &password)?;
+            let client = proc.ssh_client_key_auth(
+                &proc.node_address,
+                username,
+                &pub_path,
+                &priv_path,
+                &password,
+            )?;
 
             sshd!("-t").sudo_password(&*password).ssh(&client).run()?;
-        });
+        }
 
         Ok(InstallDependencies)
     }
