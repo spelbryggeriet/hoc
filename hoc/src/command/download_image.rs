@@ -4,7 +4,7 @@ use std::{
     path::PathBuf,
 };
 
-use hocproc::procedure;
+use macros::procedure;
 use structopt::StructOpt;
 use xz2::read::XzDecoder;
 use zip::ZipArchive;

@@ -29,5 +29,5 @@ zip = "0.5.13"
 xz2 = "0.1.6"
 
 log = { path = "../hoc-log", package = "hoc-log" }
-hocproc = { path = "../hocproc" }
+macros = { path = "../hoc-macros", package = "hoc-macros" }
 hoclib = { path = "../hoclib" }

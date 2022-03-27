@@ -5,7 +5,7 @@ use std::{
 };
 
 use colored::Colorize;
-use hocproc::procedure;
+use macros::procedure;
 use osshkeys::{keys::FingerprintHash, PublicKey, PublicParts};
 use structopt::StructOpt;
 

@@ -613,6 +613,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "hoc-macros"
+version = "0.1.0"
+dependencies = [
+ "heck 0.4.0",
+ "proc-macro-error",
+ "proc-macro2",
+ "quote",
+ "syn",
+]
+
+[[package]]
 name = "hoclib"
 version = "0.1.0"
 dependencies = [
@@ -631,17 +642,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "hocproc"
-version = "0.1.0"
-dependencies = [
- "heck 0.4.0",
- "proc-macro-error",
- "proc-macro2",
- "quote",
- "syn",
-]
-
-[[package]]
 name = "hosting-on-command"
 version = "0.1.0"
 dependencies = [
@@ -649,8 +649,8 @@ dependencies = [
  "ctrlc",
  "derive_more",
  "hoc-log",
+ "hoc-macros",
  "hoclib",
- "hocproc",
  "lazy-regex",
  "lazy_static",
  "osshkeys",
