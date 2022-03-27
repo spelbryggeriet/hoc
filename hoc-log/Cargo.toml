@@ -1,5 +1,5 @@
 [package]
-name = "hoclog"
+name = "hoc-log"
 version = "0.1.0"
 authors = ["Hampus Lidin <hampuslidin@gmail.com>"]
 edition = "2021"

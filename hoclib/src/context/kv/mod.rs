@@ -7,8 +7,8 @@ use std::{
     rc::Rc,
 };
 
-use hoclog::error;
 use indexmap::IndexMap;
+use log::error;
 use serde::{de::Visitor, ser::SerializeMap, Deserialize, Deserializer, Serialize, Serializer};
 use thiserror::Error;
 
@@ -49,7 +49,7 @@ pub enum Error {
     Io(#[from] io::Error),
 }
 
-impl From<Error> for hoclog::Error {
+impl From<Error> for log::Error {
     fn from(err: Error) -> Self {
         error!("{err}").unwrap_err()
     }

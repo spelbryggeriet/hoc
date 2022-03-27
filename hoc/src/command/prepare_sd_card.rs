@@ -10,7 +10,7 @@ use osshkeys::{keys::FingerprintHash, PublicKey, PublicParts};
 use structopt::StructOpt;
 
 use hoclib::kv::{ReadStore, WriteStore};
-use hoclog::{choose, error, info, prompt, status, LogErr, Result};
+use log::{choose, error, info, prompt, status, LogErr, Result};
 
 use crate::command::util::{cidr::Cidr, disk, os::OperatingSystem};
 

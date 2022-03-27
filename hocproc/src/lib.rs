@@ -276,7 +276,7 @@ fn impl_procedure(types: &ProcedureTypes) -> TokenStream {
                 _state: Self::State,
                 _proc_registry: &impl ::hoclib::kv::WriteStore,
                 _global_registry: &impl ::hoclib::kv::ReadStore,
-            ) -> ::hoclog::Result<::hoclib::procedure::Halt<Self::State>> {
+            ) -> ::log::Result<::hoclib::procedure::Halt<Self::State>> {
                 unreachable!()
             }
         }
@@ -545,7 +545,7 @@ fn gen_run(command_fields: &[CommandField]) -> TokenStream {
             let prompt = format!(r#"Setting default "{}""#, field,);
             quote! {
                 if self.#field.is_none() {
-                    ::hoclog::status!(#prompt => {
+                    ::log::status!(#prompt => {
                         self.#field = Some(#func()?);
                     })
                 }
@@ -558,7 +558,7 @@ fn gen_run(command_fields: &[CommandField]) -> TokenStream {
             state: Self::State,
             proc_registry: &impl ::hoclib::kv::WriteStore,
             global_registry: &impl ::hoclib::kv::ReadStore,
-        ) -> ::hoclog::Result<::hoclib::procedure::Halt<Self::State>> {
+        ) -> ::log::Result<::hoclib::procedure::Halt<Self::State>> {
             #(#defaults)*
             __run_state(state, self, proc_registry, global_registry)
         }
@@ -598,7 +598,7 @@ fn gen_run_trait(
                 proc_registry: &impl #proc_registry_type,
                 global_registry: &impl ::hoclib::kv::ReadStore
                 #(, #args)*
-            ) -> ::hoclog::Result<#return_type>;
+            ) -> ::log::Result<#return_type>;
         }
     });
 
@@ -667,7 +667,7 @@ fn gen_run_trait(
             procedure: &mut #command_name,
             proc_registry: &impl ::hoclib::kv::WriteStore,
             global_registry: &impl ::hoclib::kv::ReadStore,
-        ) -> ::hoclog::Result<::hoclib::procedure::Halt<#state_name>> {
+        ) -> ::log::Result<::hoclib::procedure::Halt<#state_name>> {
             let halt = #match_switch;
             Ok(halt)
         }

@@ -1,3 +1,4 @@
+use hoclib::cmd_macros;
 use structopt::StructOpt;
 
 pub use self::{
@@ -5,13 +6,36 @@ pub use self::{
     prepare_sd_card::PrepareSdCard,
 };
 
-#[macro_use]
-mod util;
+cmd_macros!(
+    adduser,
+    apt_key => "apt-key",
+    cat,
+    chmod,
+    chpasswd,
+    cmd_file => "file",
+    curl,
+    dd,
+    df,
+    deluser,
+    diskutil,
+    lsb_release,
+    mkdir,
+    pkill,
+    rm,
+    sed,
+    sshd,
+    sync,
+    systemctl,
+    tee,
+    test,
+    usermod,
+);
 
 mod create_user;
 mod download_image;
 mod init;
 mod prepare_sd_card;
+mod util;
 
 #[derive(StructOpt)]
 pub enum Command {

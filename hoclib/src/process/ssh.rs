@@ -5,7 +5,7 @@ use std::{
 };
 
 use colored::Colorize;
-use hoclog::{error, status};
+use log::{error, status};
 use thiserror::Error;
 
 use crate::process::{self, ProcessOutput};
@@ -19,7 +19,7 @@ pub enum SshError {
     Ssh(#[from] ssh2::Error),
 }
 
-impl From<SshError> for hoclog::Error {
+impl From<SshError> for log::Error {
     fn from(err: SshError) -> Self {
         error!("{err}").unwrap_err()
     }

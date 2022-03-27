@@ -603,13 +603,23 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7ebdb29d2ea9ed0083cd8cece49bbd968021bd99b0849edb4a9a7ee0fdf6a4e0"
 
 [[package]]
+name = "hoc-log"
+version = "0.1.0"
+dependencies = [
+ "console",
+ "dialoguer",
+ "lazy_static",
+ "thiserror",
+]
+
+[[package]]
 name = "hoclib"
 version = "0.1.0"
 dependencies = [
  "blake3",
  "colored",
  "ctrlc",
- "hoclog",
+ "hoc-log",
  "indexmap",
  "reqwest",
  "serde",
@@ -617,16 +627,6 @@ dependencies = [
  "serde_yaml",
  "ssh2",
  "strum",
- "thiserror",
-]
-
-[[package]]
-name = "hoclog"
-version = "0.1.0"
-dependencies = [
- "console",
- "dialoguer",
- "lazy_static",
  "thiserror",
 ]
 
@@ -648,8 +648,8 @@ dependencies = [
  "colored",
  "ctrlc",
  "derive_more",
+ "hoc-log",
  "hoclib",
- "hoclog",
  "hocproc",
  "lazy-regex",
  "lazy_static",

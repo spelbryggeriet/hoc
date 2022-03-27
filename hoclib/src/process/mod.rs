@@ -8,7 +8,7 @@ use std::{
 };
 
 use colored::Colorize;
-use hoclog::{error, info};
+use log::{error, info};
 use thiserror::Error;
 
 #[doc(hidden)]
@@ -157,7 +157,7 @@ pub enum Error {
     Aborted { program: String },
 }
 
-impl From<Error> for hoclog::Error {
+impl From<Error> for log::Error {
     fn from(err: Error) -> Self {
         error!("{err}").unwrap_err()
     }
@@ -314,7 +314,7 @@ where
                 "this computer".blue()
             };
 
-            let cmd_status = hoclog::LOG.status(format!(
+            let cmd_status = log::LOG.status(format!(
                 "Run command on {client}: {sudo_str}{command_str}{redirect_output_str}{redirect_input_str}",
             ));
 
@@ -367,8 +367,7 @@ where
                 pipe_input.extend(self.pipe_input);
                 self.pipe_input = pipe_input;
             } else {
-                let line_prefix =
-                    OsString::from(hoclog::LOG.create_line_prefix("[sudo] Password:"));
+                let line_prefix = OsString::from(log::LOG.create_line_prefix("[sudo] Password:"));
                 self.args.insert(0, Cow::Borrowed(OsStr::new("-p")));
                 self.args.insert(1, Cow::Owned(line_prefix));
             }

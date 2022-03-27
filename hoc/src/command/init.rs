@@ -11,8 +11,8 @@ use hoclib::{
     kv::{ReadStore, WriteStore},
     ssh::SshClient,
 };
-use hoclog::{hidden_input, info, status, LogErr, Result};
 use hocproc::procedure;
+use log::{error, hidden_input, info, status, LogErr, Result};
 
 use crate::command::util::os::OperatingSystem;
 
@@ -304,7 +304,7 @@ impl Run for InitState {
 
         let (_, _code_name) = lsb_release!("-cs").ssh(&client).run()?;
 
-        hoclog::error!("not implemented")?;
+        error!("not implemented")?;
 
         Ok(())
     }
