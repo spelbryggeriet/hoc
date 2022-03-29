@@ -175,8 +175,7 @@ fn gen_impl_id(
         .then(|| quote!(unreachable!()))
         .or_else(|| Some(quote!(match self { #(#cases)* })));
 
-    let id_name_str = id_name.to_string();
-    let err_name = Ident::new(&format!("{id_name_str}FromStrErr"), Span::call_site());
+    let err_name = Ident::new(&format!("{id_name}FromStrErr"), Span::call_site());
 
     quote! {
         #[derive(Clone, Copy, Hash, PartialEq, Eq, PartialOrd, Ord)]
@@ -197,7 +196,9 @@ fn gen_impl_id(
 
         impl From<#id_name> for &'static str {
             fn from(id: #id_name) -> &'static str {
-                #id_name_str
+                match id {
+                    #(#id_name::#names => #names_str,)*
+                }
             }
         }
 
