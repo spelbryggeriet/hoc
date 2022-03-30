@@ -164,22 +164,22 @@ fn get_step_index<P: Procedure>(
     history_index: &history::Index,
 ) -> hoc_log::Result<usize> {
     let steps = context.history().item(history_index);
-    let mut step_index = 1;
-    for (i, step) in steps.completed().iter().enumerate() {
-        hoc_log::LOG
-            .status(format!(
-                "Skipping {}: {}",
-                format!("Step {}", i + 1).yellow(),
-                &step
-                    .id::<P::State>()
-                    .log_context(ERR_MSG_PARSE_ID)?
-                    .description(),
-            ))
-            .with_label("completed".blue());
-        step_index += 1;
+    let mut index = 1;
+    for step in steps.completed().iter() {
+        let step_str = format!("Step {index}").yellow();
+        let step_id_str = step
+            .id::<P::State>()
+            .log_context(ERR_MSG_PARSE_ID)?
+            .description();
+
+        status!("Skipping {step_str}: {step_id_str}")
+            .with_label("completed".blue())
+            .finish();
+
+        index += 1;
     }
 
-    Ok(step_index)
+    Ok(index)
 }
 
 fn run_step<P: Procedure>(
@@ -204,10 +204,7 @@ fn run_step<P: Procedure>(
         .next(&state)?;
 
     if halt.persist {
-        {
-            status!("Persist context");
-            context.persist().log_context(ERR_MSG_PERSIST_CONTEXT)?;
-        }
+        status!("Persist context").on(|| context.persist().log_context(ERR_MSG_PERSIST_CONTEXT))?;
     }
 
     Ok(())
@@ -228,15 +225,11 @@ fn run_loop<P: Procedure>(
         if let Some(step) = context.history().item(history_index).current() {
             let state = step.state::<P::State>()?;
             let state_id = step.id::<P::State>().log_context(ERR_MSG_PARSE_ID)?;
+            let step_str = format!("Step {step_index}").yellow();
+            let state_str = state_id.description();
 
-            {
-                status!(
-                    "{}: {}",
-                    format!("Step {step_index}").yellow(),
-                    state_id.description()
-                );
-                run_step(context, proc, &history_index, state)?;
-            }
+            status!("{step_str}: {state_str}")
+                .on(|| run_step(context, proc, &history_index, state))?;
 
             step_index += 1;
         } else {
@@ -246,15 +239,11 @@ fn run_loop<P: Procedure>(
 }
 
 fn run_procedure<P: Procedure>(context: &mut Context, mut proc: P) -> hoc_log::Result<()> {
-    {
-        status!("Validate registry state");
-        validate_registry_state(context)?;
-    }
+    status!("Validate registry state").on(|| validate_registry_state(context))?;
 
     let history_index = get_history_index(context, &proc)?;
-    {
-        status!("Run procedure {}", history_index.name().blue());
-
+    let proc_name = history_index.name().blue();
+    status!("Run procedure {proc_name}").on(|| {
         if let Some(attrs_list) = list_string(history_index.attributes(), |a| {
             format!("{}: {}", a.key, a.value)
         }) {
@@ -262,10 +251,8 @@ fn run_procedure<P: Procedure>(context: &mut Context, mut proc: P) -> hoc_log::R
         }
 
         rewind_history(context, &proc, &history_index)?;
-        run_loop(context, &mut proc, &history_index)?;
-    };
-
-    Ok(())
+        run_loop(context, &mut proc, &history_index)
+    })
 }
 
 fn main() {

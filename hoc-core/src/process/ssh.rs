@@ -128,9 +128,8 @@ impl SshClient {
         username: &str,
         auth: &Authentication,
     ) -> Result<ssh2::Session, SshError> {
-        let session = {
-            status!("Connecting to host {}", host.blue());
-
+        let host_str = host.blue();
+        status!("Connecting to host {host_str}").on(|| {
             let port = 22;
             let stream = TcpStream::connect(format!("{}:{}", host, port))?;
 
@@ -154,10 +153,8 @@ impl SshClient {
                 }
             }
 
-            session
-        };
-
-        Ok(session)
+            Ok(session)
+        })
     }
 
     pub fn host(&self) -> &str {

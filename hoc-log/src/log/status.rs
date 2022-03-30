@@ -1,12 +1,15 @@
 use std::{
+    any,
+    fmt::Display,
     sync::{Arc, Mutex},
     time::SystemTime,
 };
 
 use console::Style;
 
-use crate::{context::PrintContext, log::LogType, prefix::PrefixPrefs};
+use crate::{context::PrintContext, log::LogType, prefix::PrefixPrefs, Error, LOG};
 
+#[must_use]
 pub struct Status {
     print_context: Arc<Mutex<PrintContext>>,
     custom_label: Option<String>,
@@ -26,7 +29,21 @@ impl Status {
         self.custom_label.replace(label.to_string());
         self
     }
+
+    pub fn on<T, E: Display>(self, handler: impl FnOnce() -> Result<T, E>) -> Result<T, E> {
+        match handler() {
+            Ok(res) => Ok(res),
+            Err(err) if any::type_name::<E>() != any::type_name::<Error>() => {
+                LOG.error(err.to_string()).unwrap_err();
+                Err(err)
+            }
+            err @ Err(_) => err,
+        }
+    }
+
+    pub fn finish(self) {}
 }
+
 impl Drop for Status {
     fn drop(&mut self) {
         let blue = Style::new().blue();

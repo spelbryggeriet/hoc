@@ -158,9 +158,7 @@ impl Run for InitState {
         let username = &proc.username;
         let password = proc.password_for_user(username)?;
 
-        let (pub_key, pub_path, priv_path) = {
-            status!("Read SSH keypair");
-
+        let (pub_key, pub_path, priv_path) = status!("Read SSH keypair").on(|| {
             let pub_path: PathBuf = global_registry
                 .get(format!("create-user/{username}/ssh/id_ed25519.pub"))?
                 .try_into()?;
@@ -177,14 +175,12 @@ impl Run for InitState {
                     .log_err()?
             );
 
-            (pub_key, pub_path, priv_path)
-        };
+            hoc_log::Result::Ok((pub_key, pub_path, priv_path))
+        })?;
 
         let client = proc.ssh_client_password_auth(&proc.node_address, username, &password)?;
 
-        {
-            status!("Send SSH public key");
-
+        status!("Send SSH public key").on(|| {
             // Create the `.ssh` directory.
             mkdir!("-p", "-m", "700", format!("/home/{username}/.ssh"))
                 .ssh(&client)
@@ -223,11 +219,11 @@ impl Run for InitState {
                 .ssh(&client)
                 .run()?;
             rm!(src).ssh(&client).run()?;
-        }
 
-        {
-            status!("Init SSH server");
+            hoc_log::Result::Ok(())
+        })?;
 
+        status!("Initialize SSH server").on(|| {
             let dest = "/etc/ssh/sshd_config";
             let src = format!("/home/{username}/sshd_config_updated");
 
@@ -265,7 +261,9 @@ impl Run for InitState {
             )?;
 
             sshd!("-t").sudo_password(&*password).ssh(&client).run()?;
-        }
+
+            hoc_log::Result::Ok(())
+        })?;
 
         Ok(InstallDependencies)
     }

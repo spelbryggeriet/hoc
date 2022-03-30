@@ -25,9 +25,7 @@ pub fn get_attached_disk_partitions() -> Result<impl Iterator<Item = AttachedDis
 }
 
 pub fn find_mount_dir(disk_id: &str) -> Result<PathBuf> {
-    let mount_dir = {
-        status!("Find mount directory image disk");
-
+    status!("Find mount directory image disk").on(|| {
         info!("Disk ID: {}", disk_id);
         let (_, df_output) = df!().run()?;
         let disk_line =
@@ -36,14 +34,13 @@ pub fn find_mount_dir(disk_id: &str) -> Result<PathBuf> {
             } else {
                 error!("{} not mounted", disk_id)?.into()
             };
+
         if let Some(mount_dir) = disk_line.split_terminator(' ').last() {
-            Path::new(mount_dir).to_path_buf()
+            Ok(Path::new(mount_dir).to_path_buf())
         } else {
             error!("mount point not found for {}", disk_id)?.into()
         }
-    };
-
-    Ok(mount_dir)
+    })
 }
 
 pub fn unnamed_if_empty<S: AsRef<str>>(name: S) -> String {

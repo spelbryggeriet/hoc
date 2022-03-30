@@ -61,7 +61,7 @@ macro_rules! hidden_input {
 #[macro_export]
 macro_rules! status {
     ($($fmt:tt)*) => {
-        let __status = $crate::LOG.status(format!($($fmt)*));
+        $crate::LOG.status(format!($($fmt)*))
     };
 }
 

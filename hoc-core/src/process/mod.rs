@@ -8,7 +8,7 @@ use std::{
 };
 
 use colored::Colorize;
-use hoc_log::{error, info};
+use hoc_log::{error, info, status};
 use thiserror::Error;
 
 #[doc(hidden)]
@@ -314,13 +314,15 @@ where
                 "this computer".blue()
             };
 
-            let cmd_status = hoc_log::LOG.status(format!(
+            let cmd_status = status!(
                 "Run command on {client}: {sudo_str}{command_str}{redirect_output_str}{redirect_input_str}",
-            ));
+            );
 
             match Process::exec(self, show_stdout, show_stderr) {
                 Ok((status, output)) => {
-                    cmd_status.with_label(format!("exit: {status}").green());
+                    cmd_status
+                        .with_label(format!("exit: {status}").green())
+                        .finish();
                     Ok((status, output))
                 }
 
@@ -330,7 +332,9 @@ where
                     stdout,
                     stderr,
                 }) => {
-                    cmd_status.with_label(format!("exit: {status}").red());
+                    cmd_status
+                        .with_label(format!("exit: {status}").red())
+                        .finish();
                     Err(Error::Exit {
                         program,
                         status,
@@ -340,7 +344,7 @@ where
                 }
 
                 Err(Error::Aborted { program }) => {
-                    cmd_status.with_label(format!("aborted").red());
+                    cmd_status.with_label(format!("aborted").red()).finish();
                     Err(Error::Aborted { program })
                 }
 

@@ -84,14 +84,9 @@ impl Run for PrepareSdCardState {
         };
 
         let disk = disks.remove(index);
-        {
-            status!("Unmount SD card");
-            diskutil!("unmountDisk", disk.id).run()?;
-        }
+        status!("Unmount SD card").on(|| diskutil!("unmountDisk", disk.id).run())?;
 
-        {
-            status!("Flash SD card");
-
+        status!("Flash SD card").on(|| {
             let image_path: PathBuf = global_registry
                 .get(format!("download-image/{}/image", proc.os))?
                 .try_into()?;
@@ -109,7 +104,9 @@ impl Run for PrepareSdCardState {
             )
             .sudo()
             .run()?;
-        }
+
+            hoc_log::Result::Ok(())
+        })?;
 
         Ok(Mount)
     }
@@ -124,9 +121,7 @@ impl Run for PrepareSdCardState {
             OperatingSystem::Ubuntu { .. } => "system-boot",
         };
 
-        let disk_partition_id = {
-            status!("Mount boot partition");
-
+        let disk_partition_id = status!("Mount boot partition").on(|| {
             let mut partitions: Vec<_> = disk::get_attached_disk_partitions()
                 .log_context("Failed to get attached disks")?
                 .filter(|p| p.name == boot_partition_name)
@@ -150,8 +145,8 @@ impl Run for PrepareSdCardState {
 
             diskutil!("mount", disk_partition.id).run()?;
 
-            disk_partition.id
-        };
+            hoc_log::Result::Ok(disk_partition.id)
+        })?;
 
         let state = match proc.os {
             OperatingSystem::RaspberryPiOs { .. } => ModifyRaspberryPiOsImage { disk_partition_id },
@@ -169,13 +164,8 @@ impl Run for PrepareSdCardState {
     ) -> Result<Self> {
         let mount_dir = disk::find_mount_dir(&disk_partition_id)?;
 
-        {
-            status!("Configure image");
-            {
-                status!("Create SSH file");
-                File::create(mount_dir.join("ssh"))?;
-            }
-        }
+        status!("Configure image")
+            .on(|| status!("Create SSH file").on(|| File::create(mount_dir.join("ssh"))))?;
 
         Ok(Unmount { disk_partition_id })
     }
@@ -188,9 +178,7 @@ impl Run for PrepareSdCardState {
     ) -> Result<Self> {
         let username = proc.username.as_ref().unwrap().as_str();
 
-        let pub_key = {
-            status!("Read SSH keypair");
-
+        let pub_key = status!("Read SSH keypair").on(|| {
             let pub_key_path: PathBuf = global_registry
                 .get(format!("create-user/{username}/ssh/id_ed25519.pub"))?
                 .try_into()?;
@@ -204,14 +192,12 @@ impl Run for PrepareSdCardState {
                     .log_err()?
             );
 
-            pub_key
-        };
+            hoc_log::Result::Ok(pub_key)
+        })?;
 
         let mount_dir = disk::find_mount_dir(&disk_partition_id)?;
 
-        {
-            status!("Prepare image initialization");
-
+        status!("Prepare image initialization").on(|| {
             let data_map: serde_yaml::Value = serde_yaml::from_str(&format!(
                 include_str!("../../config/user-data"),
                 admin_username = username,
@@ -259,7 +245,9 @@ impl Run for PrepareSdCardState {
 
             let network_config_path = mount_dir.join("network-config");
             fs::write(&network_config_path, &data)?;
-        }
+
+            hoc_log::Result::Ok(())
+        })?;
 
         Ok(Unmount { disk_partition_id })
     }
@@ -270,14 +258,8 @@ impl Run for PrepareSdCardState {
         _global_registry: &impl ReadStore,
         disk_partition_id: String,
     ) -> Result<()> {
-        {
-            status!("Sync image disk writes");
-            sync!().run()?;
-        }
-        {
-            status!("Unmount image disk");
-            diskutil!("unmount", disk_partition_id).run()?;
-        }
+        status!("Sync image disk writes").on(|| sync!().run())?;
+        status!("Unmount image disk").on(|| diskutil!("unmount", disk_partition_id).run())?;
 
         Ok(())
     }
