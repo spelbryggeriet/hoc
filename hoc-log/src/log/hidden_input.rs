@@ -7,7 +7,7 @@ use console::Style;
 use dialoguer::Password;
 use thiserror::Error;
 
-use crate::{context::PrintContext, prefix::PrefixPrefs, Result};
+use crate::{context::PrintContext, prefix::PrefixPrefs};
 
 use super::LogType;
 
@@ -23,8 +23,8 @@ pub struct HiddenInput<'a> {
     verify: bool,
 }
 
-impl<'a> HiddenInput<'a> {
-    pub(super) fn new(print_context: Arc<Mutex<PrintContext>>, message: Cow<'a, str>) -> Self {
+impl<'input> HiddenInput<'input> {
+    pub(super) fn new(print_context: Arc<Mutex<PrintContext>>, message: Cow<'input, str>) -> Self {
         Self {
             print_context,
             message,
@@ -37,7 +37,7 @@ impl<'a> HiddenInput<'a> {
         self
     }
 
-    pub fn get(self) -> Result<String> {
+    pub fn get(self) -> Result<String, Error> {
         let mut print_context = self.print_context.lock().unwrap();
 
         print_context.print_spacing_if_needed(LogType::Input);
@@ -59,7 +59,7 @@ impl<'a> HiddenInput<'a> {
 
             if password != password_verify {
                 print_context.failure = true;
-                return Err(Error::MismatchedPasswords.into());
+                return Err(Error::MismatchedPasswords);
             }
         }
 

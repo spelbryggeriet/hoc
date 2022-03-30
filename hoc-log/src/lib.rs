@@ -32,8 +32,8 @@ macro_rules! info {
 
 #[macro_export]
 macro_rules! choose {
-    (($($fmt:tt)*), items=$items:expr $(, default_index=$default_index:expr)? $(,)?) => {
-        $crate::LOG.choose(format!($($fmt)*), $items, $( if true { $default_index } else )? { 0 })
+    ($($fmt:tt)*) => {
+        $crate::LOG.choose(format!($($fmt)*))
     };
 }
 

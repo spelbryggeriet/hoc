@@ -177,10 +177,7 @@ pub struct Process<'a> {
     hide_stderr: bool,
 }
 
-impl<'process> Process<'process>
-where
-    Self: 'process,
-{
+impl<'process> Process<'process> {
     pub fn cmd<S: AsRef<OsStr>>(program: &'process S) -> Self {
         Self {
             program: program.as_ref(),

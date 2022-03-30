@@ -80,7 +80,7 @@ impl Run for PrepareSdCardState {
         let index = if disks.len() == 1 {
             0
         } else {
-            choose!(("Which disk is your SD card?"), items = &disks)?
+            choose!("Which disk is your SD card?").items(&disks).get()?
         };
 
         let disk = disks.remove(index);
@@ -130,10 +130,9 @@ impl Run for PrepareSdCardState {
             let index = if partitions.len() == 1 {
                 0
             } else {
-                choose!(
-                    ("Which refers to the boot partition of the disk?"),
-                    items = &partitions
-                )?
+                choose!("Which refers to the boot partition of the disk?")
+                    .items(&partitions)
+                    .get()?
             };
 
             let disk_partition = partitions.remove(index);

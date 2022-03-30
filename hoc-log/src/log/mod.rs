@@ -1,21 +1,22 @@
 use std::{
     borrow::Cow,
     error::Error as StdError,
-    fmt, io,
+    io,
     result::Result as StdResult,
     sync::{Arc, Mutex},
 };
 
 use console::Style;
-use dialoguer::{theme::Theme, Confirm, Input, Select};
+use dialoguer::{Confirm, Input};
 use thiserror::Error;
 
 use crate::{context::PrintContext, prefix::PrefixPrefs, Never, Result, LOG};
 pub use status::Status;
 pub use stream::Stream;
 
-use self::hidden_input::HiddenInput;
+use self::{choose::Choose, hidden_input::HiddenInput};
 
+mod choose;
 mod hidden_input;
 mod status;
 mod stream;
@@ -31,8 +32,8 @@ pub enum Error {
     #[error("The operation was aborted.")]
     UserAborted,
 
-    #[error("An empty list of items was sent to `choose`.")]
-    ChooseNoItems,
+    #[error("choose: {0}")]
+    Choose(#[from] choose::Error),
 
     #[error("hidden input: {0}")]
     HiddenInput(#[from] hidden_input::Error),
@@ -245,60 +246,7 @@ impl Log {
         HiddenInput::new(Arc::clone(&self.print_context), message.into())
     }
 
-    pub fn choose<T>(
-        &self,
-        message: impl AsRef<str>,
-        items: &[T],
-        default_index: usize,
-    ) -> Result<usize>
-    where
-        T: ToString,
-    {
-        let mut print_context = self.print_context.lock().unwrap();
-
-        if items.len() == 0 {
-            print_context.failure = true;
-            return Err(Error::ChooseNoItems);
-        }
-
-        print_context.print_spacing_if_needed(LogType::Choose);
-
-        let mut prompt = print_context.create_line_prefix(PrefixPrefs::in_status().flag("#"));
-        prompt += message.as_ref();
-
-        struct ChooseTheme<'a> {
-            print_context: &'a PrintContext,
-        }
-
-        impl Theme for ChooseTheme<'_> {
-            fn format_select_prompt_item(
-                &self,
-                f: &mut dyn fmt::Write,
-                text: &str,
-                active: bool,
-            ) -> fmt::Result {
-                let prefix = self.print_context.create_line_prefix(
-                    PrefixPrefs::in_status_overflow().flag(if active { ">" } else { " " }),
-                );
-                write!(f, "{}{}", prefix, text)
-            }
-        }
-
-        let cyan = Style::new().cyan();
-        let index = Select::with_theme(&ChooseTheme {
-            print_context: &print_context,
-        })
-        .with_prompt(cyan.apply_to(prompt).to_string())
-        .items(items)
-        .default(default_index)
-        .interact_on_opt(&print_context.stdout)
-        .unwrap_or_else(|e| panic!("failed printing to stdout: {}", e));
-
-        if let Some(index) = index {
-            Ok(index)
-        } else {
-            print_context.failure = true;
-            Err(Error::UserAborted)
-        }
+    pub fn choose<'a, T, C: Into<Cow<'a, str>>>(&self, message: C) -> Choose<'a, T> {
+        Choose::new(Arc::clone(&self.print_context), message.into())
     }
 }
