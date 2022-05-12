@@ -45,7 +45,7 @@ impl Run for DownloadImageState {
             info!("URL: {}", image_url);
 
             let os = &proc.os;
-            let file_ref = registry.create_file("images/{os}")?;
+            let file_ref = registry.create_file(format!("images/{os}"))?;
             let mut file = File::options()
                 .read(false)
                 .write(true)

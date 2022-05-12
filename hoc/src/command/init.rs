@@ -16,16 +16,16 @@ use crate::command::util::os::OperatingSystem;
 
 #[derive(Procedure, StructOpt)]
 pub struct Init {
+    #[procedure(attribute)]
+    #[structopt(long)]
+    cluster: String,
+
     #[structopt(long)]
     node_os: OperatingSystem,
 
     #[procedure(attribute)]
     #[structopt(long)]
     node_address: String,
-
-    #[procedure(attribute)]
-    #[structopt(long)]
-    cluster_name: String,
 
     #[structopt(long)]
     username: String,
@@ -332,9 +332,9 @@ impl Run for InitState {
             &password,
         )?;
 
-        let cluster_name = &proc.cluster_name;
+        let cluster = &proc.cluster;
         let (_, key) = cmd!("consul", "keygen").ssh(&client).run()?;
-        registry.put(format!("clusters/{cluster_name}/key"), key)?;
+        registry.put(format!("clusters/{cluster}/key"), key)?;
 
         Ok(())
     }

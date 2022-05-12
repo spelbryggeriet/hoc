@@ -13,6 +13,10 @@ pub struct CreateUser {
     #[procedure(attribute)]
     username: String,
 
+    #[procedure(attribute)]
+    #[structopt(long)]
+    cluster: String,
+
     #[structopt(skip)]
     password: Option<String>,
 }
@@ -55,10 +59,11 @@ impl Run for CreateUserState {
 
         status!("Store SSH keypair").on(|| {
             let username = &proc.username;
+            let cluster = &proc.cluster;
             let pub_ref =
-                registry.create_file(format!("create-user/{username}/ssh/id_ed25519.pub"))?;
+                registry.create_file(format!("clusters/{cluster}/users/{username}/ssh/pub"))?;
             let priv_ref =
-                registry.create_file(format!("create-user/{username}/ssh/id_ed25519"))?;
+                registry.create_file(format!("clusters/{cluster}/users/{username}/ssh/priv"))?;
             let mut pub_file = File::options()
                 .write(true)
                 .create(true)
