@@ -119,21 +119,21 @@ impl<'a> Quotify<'a> for Cow<'a, str> {
 
 impl<'a> Quotify<'a> for String {
     fn needs_quotes(&self) -> bool {
-        Cow::<str>::Borrowed(self).needs_quotes()
+        Cow::needs_quotes(&Cow::Borrowed(self))
     }
 
     fn quotify(self) -> Cow<'a, str> {
-        Cow::<str>::Owned(self).quotify()
+        Cow::quotify(Cow::Owned(self))
     }
 }
 
 impl<'a> Quotify<'a> for &'a str {
     fn needs_quotes(&self) -> bool {
-        Cow::Borrowed(self).needs_quotes()
+        Cow::needs_quotes(&Cow::Borrowed(self))
     }
 
     fn quotify(self) -> Cow<'a, str> {
-        Cow::Borrowed(self).quotify()
+        Cow::quotify(Cow::Borrowed(self))
     }
 }
 
