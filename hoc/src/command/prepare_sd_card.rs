@@ -68,11 +68,7 @@ pub enum PrepareSdCardState {
 }
 
 impl Run for PrepareSdCardState {
-    fn flash_image(
-        proc: &mut PrepareSdCard,
-        _proc_registry: &impl WriteStore,
-        global_registry: &impl ReadStore,
-    ) -> Result<Self> {
+    fn flash_image(proc: &mut PrepareSdCard, registry: &impl WriteStore) -> Result<Self> {
         let mut disks: Vec<_> = disk::get_attached_disks()
             .log_context("Failed to get attached disks")?
             .collect();
@@ -87,7 +83,7 @@ impl Run for PrepareSdCardState {
         status!("Unmount SD card").on(|| diskutil!("unmountDisk", disk.id).run())?;
 
         status!("Flash SD card").on(|| {
-            let image_path: PathBuf = global_registry
+            let image_path: PathBuf = registry
                 .get(format!("download-image/{}/image", proc.os))?
                 .try_into()?;
 
@@ -111,11 +107,7 @@ impl Run for PrepareSdCardState {
         Ok(Mount)
     }
 
-    fn mount(
-        proc: &mut PrepareSdCard,
-        _proc_registry: &impl ReadStore,
-        _global_registry: &impl ReadStore,
-    ) -> Result<Self> {
+    fn mount(proc: &mut PrepareSdCard, _registry: &impl ReadStore) -> Result<Self> {
         let boot_partition_name = match proc.os {
             OperatingSystem::RaspberryPiOs { .. } => "boot",
             OperatingSystem::Ubuntu { .. } => "system-boot",
@@ -157,8 +149,7 @@ impl Run for PrepareSdCardState {
 
     fn modify_raspberry_pi_os_image(
         _proc: &mut PrepareSdCard,
-        _proc_registry: &impl ReadStore,
-        _global_registry: &impl ReadStore,
+        _registry: &impl ReadStore,
         disk_partition_id: String,
     ) -> Result<Self> {
         let mount_dir = disk::find_mount_dir(&disk_partition_id)?;
@@ -171,14 +162,13 @@ impl Run for PrepareSdCardState {
 
     fn modify_ubuntu_image(
         proc: &mut PrepareSdCard,
-        _proc_registry: &impl ReadStore,
-        global_registry: &impl ReadStore,
+        registry: &impl ReadStore,
         disk_partition_id: String,
     ) -> Result<Self> {
         let username = proc.username.as_ref().unwrap().as_str();
 
         let pub_key = status!("Read SSH keypair").on(|| {
-            let pub_key_path: PathBuf = global_registry
+            let pub_key_path: PathBuf = registry
                 .get(format!("create-user/{username}/ssh/id_ed25519.pub"))?
                 .try_into()?;
 
@@ -253,8 +243,7 @@ impl Run for PrepareSdCardState {
 
     fn unmount(
         _proc: &mut PrepareSdCard,
-        _proc_registry: &impl ReadStore,
-        _global_registry: &impl ReadStore,
+        _registry: &impl ReadStore,
         disk_partition_id: String,
     ) -> Result<()> {
         status!("Sync image disk writes").on(|| sync!().run())?;

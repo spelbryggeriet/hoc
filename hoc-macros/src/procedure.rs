@@ -35,8 +35,7 @@ pub fn impl_procedure(input: DeriveInput) -> TokenStream {
             fn run(
                 &mut self,
                 _state: Self::State,
-                _proc_registry: &impl ::hoc_core::kv::WriteStore,
-                _global_registry: &impl ::hoc_core::kv::ReadStore,
+                _registry: &impl ::hoc_core::kv::WriteStore,
             ) -> ::hoc_log::Result<::hoc_core::procedure::Halt<Self::State>> {
                 unreachable!()
             }
@@ -127,11 +126,10 @@ fn gen_run(command_fields: &[CommandField]) -> TokenStream {
         fn run(
             &mut self,
             state: Self::State,
-            proc_registry: &impl ::hoc_core::kv::WriteStore,
-            global_registry: &impl ::hoc_core::kv::ReadStore,
+            registry: &impl ::hoc_core::kv::WriteStore,
         ) -> ::hoc_log::Result<::hoc_core::procedure::Halt<Self::State>> {
             #(#defaults)*
-            <Self::State as Run>::run(state, self, proc_registry, global_registry)
+            <Self::State as Run>::run(state, self, registry)
         }
     }
 }

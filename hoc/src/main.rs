@@ -188,16 +188,14 @@ fn run_step<P: Procedure>(
     history_index: &history::Index,
     state: P::State,
 ) -> hoc_log::Result<()> {
-    let global_registry = context.registry_mut();
-    let proc_registry = global_registry.split(history_index)?;
+    let registry = context.registry_mut();
 
-    let halt = proc.run(state, &proc_registry, global_registry)?;
+    let halt = proc.run(state, registry)?;
     let state = match halt.state {
         procedure::HaltState::Halt(inner_state) => Some(inner_state),
         procedure::HaltState::Finish => None,
     };
 
-    global_registry.merge(proc_registry)?;
     context
         .history_mut()
         .item_mut(&history_index)

@@ -266,7 +266,7 @@ fn gen_run_trait(
             quote!(#field_name: #field_type)
         });
 
-        let proc_registry_type = if v.attrs.contains(&StateVariantAttr::Transient) {
+        let registry_type = if v.attrs.contains(&StateVariantAttr::Transient) {
             quote!(ReadStore)
         } else {
             quote!(WriteStore)
@@ -283,8 +283,7 @@ fn gen_run_trait(
         quote! {
             fn #name(
                 procedure: &mut #command_name,
-                proc_registry: &impl #proc_registry_type,
-                global_registry: &impl ::hoc_core::kv::ReadStore
+                registry: &impl #registry_type
                 #(, #args)*
             ) -> ::hoc_log::Result<#return_type>;
         }
@@ -308,7 +307,7 @@ fn gen_run_trait(
 
         if v.attrs.contains(&StateVariantAttr::Finish) {
             quote!({
-                #state_name::#name(procedure, proc_registry, global_registry #(, #args)*)?;
+                #state_name::#name(procedure, registry #(, #args)*)?;
                 ::hoc_core::procedure::Halt {
                     persist: #persist,
                     state: ::hoc_core::procedure::HaltState::Finish,
@@ -316,7 +315,7 @@ fn gen_run_trait(
             })
         } else if v.attrs.contains(&StateVariantAttr::MaybeFinish) {
             quote!({
-                let new_state = #state_name::#name(procedure, proc_registry, global_registry #(, #args)*)?;
+                let new_state = #state_name::#name(procedure, registry #(, #args)*)?;
                 ::hoc_core::procedure::Halt {
                     persist: #persist,
                     state: new_state
@@ -326,7 +325,7 @@ fn gen_run_trait(
             })
         } else {
             quote!({
-                let new_state = #state_name::#name(procedure, proc_registry, global_registry #(, #args)*)?;
+                let new_state = #state_name::#name(procedure, registry #(, #args)*)?;
                 ::hoc_core::procedure::Halt {
                     persist: #persist,
                     state: ::hoc_core::procedure::HaltState::Halt(new_state),
@@ -354,8 +353,7 @@ fn gen_run_trait(
             fn run(
                 state: #state_name,
                 procedure: &mut #command_name,
-                proc_registry: &impl ::hoc_core::kv::WriteStore,
-                global_registry: &impl ::hoc_core::kv::ReadStore,
+                registry: &impl ::hoc_core::kv::WriteStore,
             ) -> ::hoc_log::Result<::hoc_core::procedure::Halt<#state_name>> {
                 let halt = #match_switch;
                 Ok(halt)

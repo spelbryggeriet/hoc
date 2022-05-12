@@ -8,10 +8,7 @@ use osshkeys::{keys::FingerprintHash, KeyPair, PublicKey, PublicParts};
 use serde::{Deserialize, Serialize};
 use structopt::StructOpt;
 
-use hoc_core::{
-    kv::{ReadStore, WriteStore},
-    ssh::SshClient,
-};
+use hoc_core::{cmd, kv::WriteStore, ssh::SshClient};
 use hoc_log::{error, hidden_input, info, status, LogErr, Result};
 use hoc_macros::{Procedure, ProcedureState};
 
@@ -19,13 +16,16 @@ use crate::command::util::os::OperatingSystem;
 
 #[derive(Procedure, StructOpt)]
 pub struct Init {
-    #[procedure(attribute)]
     #[structopt(long)]
     node_os: OperatingSystem,
 
     #[procedure(attribute)]
     #[structopt(long)]
     node_address: String,
+
+    #[procedure(attribute)]
+    #[structopt(long)]
+    cluster_name: String,
 
     #[structopt(long)]
     username: String,
@@ -48,16 +48,14 @@ pub enum InitState {
     #[state(finish)]
     InstallDependencies,
 
-    #[state(finish)]
     ChangePassword,
+
+    #[state(finish)]
+    InitializeConsul,
 }
 
 impl Run for InitState {
-    fn prepare(
-        proc: &mut Init,
-        _proc_registry: &impl WriteStore,
-        _global_registry: &impl ReadStore,
-    ) -> Result<Self> {
+    fn prepare(proc: &mut Init, _registry: &impl WriteStore) -> Result<Self> {
         let state = match proc.node_os {
             OperatingSystem::RaspberryPiOs { .. } => AddNewUser,
             OperatingSystem::Ubuntu { .. } => ChangePassword,
@@ -66,16 +64,12 @@ impl Run for InitState {
         Ok(state)
     }
 
-    fn add_new_user(
-        proc: &mut Init,
-        _proc_registry: &impl WriteStore,
-        global_registry: &impl ReadStore,
-    ) -> Result<Self> {
+    fn add_new_user(proc: &mut Init, registry: &impl WriteStore) -> Result<Self> {
         let username = &proc.username;
         let password = proc.password_for_user(username)?;
         let client = proc.ssh_client_password_auth(&proc.node_address, "pi", "raspberry")?;
 
-        let priv_path: PathBuf = global_registry
+        let priv_path: PathBuf = registry
             .get(format!("create-user/{username}/ssh/id_ed25519"))?
             .try_into()?;
         let priv_key = fs::read_to_string(priv_path)?;
@@ -93,11 +87,7 @@ impl Run for InitState {
         Ok(AssignSudoPrivileges)
     }
 
-    fn assign_sudo_privileges(
-        proc: &mut Init,
-        _proc_registry: &impl WriteStore,
-        _global_registry: &impl ReadStore,
-    ) -> Result<Self> {
+    fn assign_sudo_privileges(proc: &mut Init, _registry: &impl WriteStore) -> Result<Self> {
         let username = &proc.username;
         let client = proc.ssh_client_password_auth(&proc.node_address, "pi", "raspberry")?;
 
@@ -125,11 +115,7 @@ impl Run for InitState {
         Ok(DeletePiUser)
     }
 
-    fn delete_pi_user(
-        proc: &mut Init,
-        _proc_registry: &impl WriteStore,
-        _global_registry: &impl ReadStore,
-    ) -> Result<Self> {
+    fn delete_pi_user(proc: &mut Init, _registry: &impl WriteStore) -> Result<Self> {
         let username = &proc.username;
         let password = proc.password_for_user(&username)?;
         let client = proc.ssh_client_password_auth(&proc.node_address, &username, &password)?;
@@ -150,19 +136,15 @@ impl Run for InitState {
         Ok(SetUpSshAccess)
     }
 
-    fn set_up_ssh_access(
-        proc: &mut Init,
-        _proc_registry: &impl WriteStore,
-        global_registry: &impl ReadStore,
-    ) -> Result<Self> {
+    fn set_up_ssh_access(proc: &mut Init, registry: &impl WriteStore) -> Result<Self> {
         let username = &proc.username;
         let password = proc.password_for_user(username)?;
 
         let (pub_key, pub_path, priv_path) = status!("Read SSH keypair").on(|| {
-            let pub_path: PathBuf = global_registry
+            let pub_path: PathBuf = registry
                 .get(format!("create-user/{username}/ssh/id_ed25519.pub"))?
                 .try_into()?;
-            let priv_path: PathBuf = global_registry
+            let priv_path: PathBuf = registry
                 .get(format!("create-user/{username}/ssh/id_ed25519"))?
                 .try_into()?;
 
@@ -268,16 +250,12 @@ impl Run for InitState {
         Ok(InstallDependencies)
     }
 
-    fn install_dependencies(
-        proc: &mut Init,
-        _proc_registry: &impl WriteStore,
-        global_registry: &impl ReadStore,
-    ) -> Result<()> {
+    fn install_dependencies(proc: &mut Init, registry: &impl WriteStore) -> Result<()> {
         let username = &proc.username;
-        let pub_path: PathBuf = global_registry
+        let pub_path: PathBuf = registry
             .get(format!("create-user/{username}/ssh/id_ed25519.pub"))?
             .try_into()?;
-        let priv_path: PathBuf = global_registry
+        let priv_path: PathBuf = registry
             .get(format!("create-user/{username}/ssh/id_ed25519"))?
             .try_into()?;
 
@@ -307,17 +285,13 @@ impl Run for InitState {
         Ok(())
     }
 
-    fn change_password(
-        proc: &mut Init,
-        _proc_registry: &impl WriteStore,
-        global_registry: &impl ReadStore,
-    ) -> Result<()> {
+    fn change_password(proc: &mut Init, registry: &impl WriteStore) -> Result<InitState> {
         let username = &proc.username;
 
-        let pub_path: PathBuf = global_registry
+        let pub_path: PathBuf = registry
             .get(format!("create-user/{username}/ssh/id_ed25519.pub"))?
             .try_into()?;
-        let priv_path: PathBuf = global_registry
+        let priv_path: PathBuf = registry
             .get(format!("create-user/{username}/ssh/id_ed25519"))?
             .try_into()?;
 
@@ -335,6 +309,32 @@ impl Run for InitState {
             .stdin_line(format!("{username}:{password}"))
             .ssh(&client)
             .run()?;
+
+        Ok(InitializeConsul)
+    }
+
+    fn initialize_consul(proc: &mut Init, registry: &impl WriteStore) -> Result<()> {
+        let username = &proc.username;
+
+        let pub_path: PathBuf = registry
+            .get(format!("create-user/{username}/ssh/id_ed25519.pub"))?
+            .try_into()?;
+        let priv_path: PathBuf = registry
+            .get(format!("create-user/{username}/ssh/id_ed25519"))?
+            .try_into()?;
+
+        let password = proc.password_for_user(username)?;
+        let client = proc.ssh_client_key_auth(
+            &proc.node_address,
+            username,
+            &pub_path,
+            &priv_path,
+            &password,
+        )?;
+
+        let cluster_name = &proc.cluster_name;
+        let (_, key) = cmd!("consul", "keygen").ssh(&client).run()?;
+        registry.put(format!("clusters/{cluster_name}/key"), key)?;
 
         Ok(())
     }

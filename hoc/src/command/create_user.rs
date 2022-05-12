@@ -27,21 +27,13 @@ pub enum CreateUserState {
 }
 
 impl Run for CreateUserState {
-    fn choose_password(
-        proc: &mut CreateUser,
-        _proc_registry: &impl ReadStore,
-        _global_registry: &impl ReadStore,
-    ) -> Result<Self> {
+    fn choose_password(proc: &mut CreateUser, _registry: &impl ReadStore) -> Result<Self> {
         proc.password = Some(hidden_input!("Choose a password").verify().get()?);
 
         Ok(GenerateSshKeyPair)
     }
 
-    fn generate_ssh_key_pair(
-        proc: &mut CreateUser,
-        proc_registry: &impl WriteStore,
-        _global_registry: &impl ReadStore,
-    ) -> Result<()> {
+    fn generate_ssh_key_pair(proc: &mut CreateUser, registry: &impl WriteStore) -> Result<()> {
         let (pub_key, priv_key) = status!("Generate SSH keypair").on(|| {
             let mut key_pair = KeyPair::generate(KeyType::ED25519, 256).log_err()?;
             *key_pair.comment_mut() = proc.username.clone();
@@ -62,8 +54,11 @@ impl Run for CreateUserState {
         })?;
 
         status!("Store SSH keypair").on(|| {
-            let pub_ref = proc_registry.create_file(format!("ssh/id_ed25519.pub"))?;
-            let priv_ref = proc_registry.create_file(format!("ssh/id_ed25519"))?;
+            let username = &proc.username;
+            let pub_ref =
+                registry.create_file(format!("create-user/{username}/ssh/id_ed25519.pub"))?;
+            let priv_ref =
+                registry.create_file(format!("create-user/{username}/ssh/id_ed25519"))?;
             let mut pub_file = File::options()
                 .write(true)
                 .create(true)

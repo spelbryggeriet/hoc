@@ -4,10 +4,7 @@ use hoc_log::error;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::{
-    kv::{ReadStore, WriteStore},
-    process,
-};
+use crate::{kv::WriteStore, process};
 
 #[macro_export]
 macro_rules! attributes {
@@ -50,8 +47,7 @@ pub trait Procedure: Sized {
     fn run(
         &mut self,
         state: Self::State,
-        proc_registry: &impl WriteStore,
-        global_registry: &impl ReadStore,
+        registry: &impl WriteStore,
     ) -> hoc_log::Result<Halt<Self::State>>;
 }
 

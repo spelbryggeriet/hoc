@@ -9,7 +9,7 @@ use structopt::StructOpt;
 use xz2::read::XzDecoder;
 use zip::ZipArchive;
 
-use hoc_core::kv::{ReadStore, WriteStore};
+use hoc_core::kv::WriteStore;
 use hoc_log::{bail, error, info, status, LogErr, Result};
 use hoc_macros::{Procedure, ProcedureState};
 
@@ -39,16 +39,13 @@ pub enum DownloadImageState {
 }
 
 impl Run for DownloadImageState {
-    fn download(
-        proc: &mut DownloadImage,
-        proc_registry: &impl WriteStore,
-        _global_registry: &impl ReadStore,
-    ) -> Result<Self> {
+    fn download(proc: &mut DownloadImage, registry: &impl WriteStore) -> Result<Self> {
         let file_ref = status!("Download image").on(|| {
             let image_url = proc.os.image_url();
             info!("URL: {}", image_url);
 
-            let file_ref = proc_registry.create_file("image")?;
+            let os = &proc.os;
+            let file_ref = registry.create_file("images/{os}")?;
             let mut file = File::options()
                 .read(false)
                 .write(true)
@@ -77,13 +74,10 @@ impl Run for DownloadImageState {
         })
     }
 
-    fn decompress_zip_archive(
-        _proc: &mut DownloadImage,
-        proc_registry: &impl WriteStore,
-        _global_registry: &impl ReadStore,
-    ) -> Result<()> {
+    fn decompress_zip_archive(proc: &mut DownloadImage, registry: &impl WriteStore) -> Result<()> {
         let (image_data, mut image_file) = status!("Read ZIP archive").on(|| {
-            let archive_path: PathBuf = proc_registry.get("image")?.try_into()?;
+            let os = &proc.os;
+            let archive_path: PathBuf = registry.get(format!("images/{os}"))?.try_into()?;
             let file = File::options().read(true).write(true).open(&archive_path)?;
 
             let mut archive = ZipArchive::new(&file).log_err()?;
@@ -129,13 +123,10 @@ impl Run for DownloadImageState {
         Ok(())
     }
 
-    fn decompress_xz_file(
-        _proc: &mut DownloadImage,
-        proc_registry: &impl WriteStore,
-        _global_registry: &impl ReadStore,
-    ) -> Result<()> {
+    fn decompress_xz_file(proc: &mut DownloadImage, registry: &impl WriteStore) -> Result<()> {
         let (image_data, mut image_file) = status!("Read XZ file").on(|| {
-            let file_path: PathBuf = proc_registry.get("image")?.try_into()?;
+            let os = &proc.os;
+            let file_path: PathBuf = registry.get(format!("images/{os}"))?.try_into()?;
             let file = File::options().read(true).write(true).open(&file_path)?;
 
             let mut decompressor = XzDecoder::new(&file);
