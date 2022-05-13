@@ -310,7 +310,7 @@ impl Serialize for Store {
     where
         S: Serializer,
     {
-        let mut map = serializer.serialize_map(Some(3))?;
+        let mut map = serializer.serialize_map(Some(2))?;
         map.serialize_entry("map", &*self.map)?;
         map.serialize_entry("file_dir", &self.file_dir)?;
         map.end()

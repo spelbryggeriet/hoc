@@ -42,10 +42,10 @@ impl Run for CreateUserState {
             let mut key_pair = KeyPair::generate(KeyType::ED25519, 256).log_err()?;
             *key_pair.comment_mut() = proc.username.clone();
 
-            let password = proc.password.clone().unwrap();
+            let password = proc.password.as_ref().unwrap();
             let pub_key = key_pair.serialize_publickey().log_err()?;
             let priv_key = key_pair
-                .serialize_openssh(Some(&password), Cipher::Aes256_Ctr)
+                .serialize_openssh(Some(password), Cipher::Aes256_Ctr)
                 .log_err()?;
 
             let randomart = key_pair

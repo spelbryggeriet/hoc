@@ -17,10 +17,6 @@ use crate::command::util::os::OperatingSystem;
 
 #[derive(Procedure, StructOpt)]
 pub struct DownloadImage {
-    #[structopt(long)]
-    #[procedure(rewind = DownloadOperatingSystemImage)]
-    redownload: bool,
-
     /// The operaring system to use.
     #[structopt(long)]
     #[procedure(attribute)]

@@ -13,31 +13,31 @@ use hoc_core::kv::{ReadStore, WriteStore};
 use hoc_log::{choose, error, info, prompt, status, LogErr, Result};
 use hoc_macros::{Procedure, ProcedureState};
 
-use crate::command::util::{cidr::Cidr, disk, os::OperatingSystem};
+use crate::command::util::{disk, os::OperatingSystem};
 
 #[derive(Procedure, StructOpt)]
 pub struct PrepareSdCard {
-    /// Re-flash the image.
+    /// The cluster of the user to prepare.
+    #[procedure(attribute)]
     #[structopt(long)]
-    #[procedure(rewind = FlashImage)]
-    reflash: bool,
-
-    /// The operating system to flash the SD card with.
-    #[structopt(long)]
-    os: OperatingSystem,
+    cluster: String,
 
     /// The name of the node.
     #[structopt(long)]
     #[procedure(attribute)]
     node_name: String,
 
+    /// The operating system to flash the SD card with.
+    #[structopt(long)]
+    os: OperatingSystem,
+
     /// The username of the administrator.
     #[structopt(long, required_if("os", "ubuntu"))]
     username: Option<String>,
 
-    /// List of CIDR addresses to attach to the network interface.
+    /// The IP address to attach to the network interface.
     #[structopt(long, required_if("os", "ubuntu"))]
-    address: Option<Cidr>,
+    address: Option<IpAddr>,
 
     /// The default gateway for the network interface.
     #[structopt(long, required_if("os", "ubuntu"))]
@@ -83,9 +83,8 @@ impl Run for PrepareSdCardState {
         status!("Unmount SD card").on(|| diskutil!("unmountDisk", disk.id).run())?;
 
         status!("Flash SD card").on(|| {
-            let image_path: PathBuf = registry
-                .get(format!("download-image/{}/image", proc.os))?
-                .try_into()?;
+            let os = &proc.os;
+            let image_path: PathBuf = registry.get(format!("images/{os}"))?.try_into()?;
 
             prompt!(
                 "Do you want to flash target disk '{}' with operating system '{}'?",
@@ -170,8 +169,9 @@ impl Run for PrepareSdCardState {
         let username = proc.username.as_ref().unwrap().as_str();
 
         let pub_key = status!("Read SSH keypair").on(|| {
+            let cluster = &proc.cluster;
             let pub_key_path: PathBuf = registry
-                .get(format!("create-user/{username}/ssh/id_ed25519.pub"))?
+                .get(format!("clusters/{cluster}/users/{username}/ssh/pub"))?
                 .try_into()?;
 
             let pub_key = fs::read_to_string(pub_key_path)?;
