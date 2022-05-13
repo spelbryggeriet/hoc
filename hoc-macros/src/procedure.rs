@@ -81,10 +81,9 @@ fn gen_get_attributes(command_fields: &[CommandField]) -> TokenStream {
         .map(|f| {
             let title = crate::to_title_lower_case(f.ident.to_string());
             let ident = f.ident;
-            quote!(variant.push(::hoc_core::procedure::Attribute {
-                key: #title.to_string(),
-                value: self.#ident.clone().to_string(),
-            }))
+            quote! {
+                attributes.insert(#title.to_string(), self.#ident.clone().to_string());
+            }
         });
 
     let insertions = if let Some(insertion) = insertions.next() {
@@ -94,10 +93,10 @@ fn gen_get_attributes(command_fields: &[CommandField]) -> TokenStream {
     };
 
     quote! {
-        fn get_attributes(&self) -> Vec<::hoc_core::procedure::Attribute> {
-            let mut variant = Vec::new();
+        fn get_attributes(&self) -> ::hoc_core::procedure::Attributes {
+            let mut attributes = ::hoc_core::procedure::Attributes::new();
             #(#insertions;)*
-            variant
+            attributes
         }
     }
 }

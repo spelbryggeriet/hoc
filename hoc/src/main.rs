@@ -1,5 +1,5 @@
 use std::{
-    path::PathBuf,
+    collections::HashSet,
     process,
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -13,7 +13,6 @@ use structopt::StructOpt;
 
 use hoc_core::{
     history,
-    kv::WriteStore,
     procedure::{self, Id, Procedure},
     Context,
 };
@@ -30,7 +29,10 @@ lazy_static! {
     static ref INTERRUPT: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
 }
 
-fn list_string<T>(list: &[T], to_string: impl Fn(&T) -> String) -> Option<String> {
+fn list_string<T>(
+    mut iter: impl Iterator<Item = T>,
+    to_string: impl Fn(T) -> String,
+) -> Option<String> {
     let padded_to_string = |e, c| {
         let s = to_string(e);
         if let Some((head, tail)) = s.split_once('\n') {
@@ -44,65 +46,78 @@ fn list_string<T>(list: &[T], to_string: impl Fn(&T) -> String) -> Option<String
         }
     };
 
-    match list {
-        [init @ .., last] => {
-            let init_string = init
-                .into_iter()
-                .map(|e| format!("├╴{}\n", padded_to_string(e, '│')))
-                .collect::<String>();
+    let mut current = iter.next();
+    let mut result = String::new();
+    while let next @ Some(_) = iter.next() {
+        result += "├╴";
+        result += &padded_to_string(current.unwrap(), '|');
+        result += "\n";
+        current = next;
+    }
 
-            Some(format!("{init_string}└╴{}", padded_to_string(last, ' ')))
-        }
-        _ => None,
+    if let Some(last) = current {
+        result += "└╴";
+        result += &padded_to_string(last, ' ');
+        Some(result)
+    } else {
+        None
     }
 }
 
 fn validate_registry_state(context: &mut Context) -> hoc_log::Result<()> {
     let changes = context.registry().validate()?;
-    let changes_list = list_string(changes.as_slice(), |(_, c)| format!("{}", c));
+    let changes_list = list_string(changes.iter(), |(_, c)| format!("{}", c));
 
     if let Some(changes_list) = changes_list {
         info!("The registry state has changed:\n{}", changes_list);
 
         let change_keys: Vec<_> = changes.into_iter().map(|(k, _)| k).collect();
-        let history_keys: Vec<_> = context.history().indices().collect();
-        let mut affected_procedures: Vec<_> = change_keys
+        let history_iter: Vec<_> = context.history().iter().collect();
+        let affected_procedures: HashSet<_> = change_keys
             .iter()
-            .filter_map(|key| {
-                history_keys
-                    .iter()
-                    .find(|index| key.starts_with(PathBuf::from(**index)))
+            .flat_map(|key| {
+                history_iter.iter().filter_map(move |(index, item)| {
+                    item.registry_keys()
+                        .iter()
+                        .any(|k| k == key)
+                        .then(|| *index)
+                })
             })
             .collect();
-        affected_procedures.sort();
-        affected_procedures.dedup();
 
-        let procedures_list = list_string(affected_procedures.as_slice(), |i| {
-            if let Some(attr_list) =
-                list_string(i.attributes(), |a| format!("{}: {}", a.key, a.value))
-            {
-                format!("{}\n{attr_list}", i.name())
-            } else {
-                i.name().to_string()
-            }
-        });
-
+        let procedures_list = list_string(
+            affected_procedures.iter().copied(),
+            |i: &hoc_core::history::Index| {
+                if let Some(attr_list) =
+                    list_string(i.attributes().iter(), |(k, v)| format!("{}: {}", k, v))
+                {
+                    format!("{}\n{attr_list}", i.name())
+                } else {
+                    i.name().to_string()
+                }
+            },
+        );
         if let Some(procedures_list) = procedures_list {
             warning!(
                 "The following procedure histories will be reset:\n{}",
-                procedures_list
+                procedures_list,
             )
             .get()?;
 
-            let indices: Vec<_> = affected_procedures.into_iter().copied().cloned().collect();
+            let indices: Vec<_> = affected_procedures.into_iter().cloned().collect();
             let history = context.history_mut();
+            let invalid_keys: Vec<_> = indices
+                .iter()
+                .flat_map(|i| history.item(&i).registry_keys())
+                .cloned()
+                .collect();
 
             for index in indices {
                 history.remove_item(&index)?;
             }
 
             let registry = context.registry_mut();
-            for key in change_keys {
+            for key in invalid_keys {
                 registry.remove(key)?;
             }
 
@@ -190,6 +205,7 @@ fn run_step<P: Procedure>(
     state: P::State,
 ) -> hoc_log::Result<()> {
     let registry = context.registry_mut();
+    let record = registry.record_accesses();
 
     let halt = proc.run(state, registry)?;
     let state = match halt.state {
@@ -200,7 +216,7 @@ fn run_step<P: Procedure>(
     context
         .history_mut()
         .item_mut(&history_index)
-        .next(&state)?;
+        .next(&state, record.finish())?;
 
     if halt.persist {
         status!("Persist context").on(|| context.persist().log_context(ERR_MSG_PERSIST_CONTEXT))?;
@@ -243,9 +259,10 @@ fn run_procedure<P: Procedure>(context: &mut Context, mut proc: P) -> hoc_log::R
     let history_index = get_history_index(context, &proc)?;
     let proc_name = history_index.name().blue();
     status!("Run procedure {proc_name}").on(|| {
-        if let Some(attrs_list) = list_string(history_index.attributes(), |a| {
-            format!("{}: {}", a.key, a.value)
-        }) {
+        let attrs_list = list_string(history_index.attributes().iter(), |(k, v)| {
+            format!("{}: {}", k, v)
+        });
+        if let Some(attrs_list) = attrs_list {
             info!("Attributes:\n{}", attrs_list);
         }
 

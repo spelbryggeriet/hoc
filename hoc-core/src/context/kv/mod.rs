@@ -95,8 +95,6 @@ pub trait WriteStore: ReadStore {
     fn update<Q: AsRef<Path>, V: Into<Value>>(&self, key: Q, value: V) -> Result<Value, Error>;
 
     fn create_file<Q: AsRef<Path>>(&self, key: Q) -> Result<FileRef, Error>;
-
-    fn remove<Q: AsRef<Path>>(&self, key: Q) -> Result<Option<Value>, Error>;
 }
 
 #[derive(Debug)]
@@ -105,6 +103,7 @@ pub struct Store {
     file_dir: PathBuf,
     key_prefix: PathBuf,
     blocked_key_prefixes: Vec<PathBuf>,
+    recordings: Rc<RefCell<Vec<PathBuf>>>,
 }
 
 impl Store {
@@ -114,6 +113,7 @@ impl Store {
             file_dir: file_dir.into(),
             key_prefix: PathBuf::new(),
             blocked_key_prefixes: Vec::new(),
+            recordings: Rc::default(),
         }
     }
 
@@ -185,6 +185,7 @@ impl Store {
             file_dir: self.file_dir.clone(),
             key_prefix,
             blocked_key_prefixes,
+            recordings: Rc::clone(&self.recordings),
         })
     }
 
@@ -201,6 +202,38 @@ impl Store {
             Err(Error::UnrelatedSplits)
         }
     }
+
+    pub fn record_accesses(&mut self) -> Record {
+        if !self.recordings.borrow().is_empty() {
+            panic!("recording has not finished")
+        }
+
+        Record::new(Rc::clone(&self.recordings))
+    }
+
+    pub fn remove<Q: AsRef<Path>>(&self, key: Q) -> Result<Option<Value>, Error> {
+        self.validate_key(key.as_ref())?;
+        let key = self.key_prefix.join(key);
+
+        let item = self
+            .map
+            .borrow_mut()
+            .remove(&key)
+            .ok_or_else(|| Error::KeyDoesNotExist(key))?;
+
+        match item {
+            Item::Value(value) => Ok(Some(value)),
+            Item::File(file_ref) => match fs::remove_file(file_ref.path()) {
+                Ok(()) => Ok(None),
+                Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(None),
+                Err(err) => Err(err.into()),
+            },
+        }
+    }
+
+    pub fn get_keys(&self) -> Vec<PathBuf> {
+        self.map.borrow().keys().cloned().collect()
+    }
 }
 
 impl ReadStore for Store {
@@ -208,11 +241,15 @@ impl ReadStore for Store {
         self.validate_key(key.as_ref())?;
         let key = self.key_prefix.join(key);
 
-        self.map
+        let res = self
+            .map
             .borrow()
             .get(&key)
             .cloned()
-            .ok_or_else(|| Error::KeyDoesNotExist(key))
+            .ok_or_else(|| Error::KeyDoesNotExist(key.clone()))?;
+        self.recordings.borrow_mut().push(key);
+
+        Ok(res)
     }
 }
 
@@ -225,7 +262,10 @@ impl WriteStore for Store {
             return Err(Error::KeyAlreadyExists(key));
         }
 
-        self.map.borrow_mut().insert(key, Item::Value(value.into()));
+        self.map
+            .borrow_mut()
+            .insert(key.clone(), Item::Value(value.into()));
+        self.recordings.borrow_mut().push(key);
 
         Ok(())
     }
@@ -242,7 +282,9 @@ impl WriteStore for Store {
                 let previous_desc = previous.type_description();
 
                 if previous_desc == value_desc {
-                    Ok(mem::replace(previous, value))
+                    let res = mem::replace(previous, value);
+                    self.recordings.borrow_mut().push(key);
+                    Ok(res)
                 } else {
                     Err(Error::MismatchedTypes(previous_desc, value_desc))
                 }
@@ -279,29 +321,10 @@ impl WriteStore for Store {
         let file_ref = FileRef::new(path)?;
         self.map
             .borrow_mut()
-            .insert(key, Item::File(file_ref.clone()));
+            .insert(key.clone(), Item::File(file_ref.clone()));
+        self.recordings.borrow_mut().push(key);
 
         Ok(file_ref)
-    }
-
-    fn remove<Q: AsRef<Path>>(&self, key: Q) -> Result<Option<Value>, Error> {
-        self.validate_key(key.as_ref())?;
-        let key = self.key_prefix.join(key);
-
-        let item = self
-            .map
-            .borrow_mut()
-            .remove(&key)
-            .ok_or_else(|| Error::KeyDoesNotExist(key))?;
-
-        match item {
-            Item::Value(value) => Ok(Some(value)),
-            Item::File(file_ref) => match fs::remove_file(file_ref.path()) {
-                Ok(()) => Ok(None),
-                Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(None),
-                Err(err) => Err(err.into()),
-            },
-        }
     }
 }
 
@@ -402,6 +425,7 @@ impl<'de> Deserialize<'de> for Store {
                     file_dir,
                     key_prefix: PathBuf::new(),
                     blocked_key_prefixes: Vec::new(),
+                    recordings: Rc::default(),
                 })
             }
         }
@@ -499,6 +523,20 @@ impl_try_from_item!(Value::FloatingPointNumber for f32);
 impl_try_from_item!(Value::FloatingPointNumber for f64);
 impl_try_from_item!(Value::String for String);
 impl_try_from_item!(File::File for PathBuf);
+
+pub struct Record {
+    recordings: Rc<RefCell<Vec<PathBuf>>>,
+}
+
+impl Record {
+    fn new(recordings: Rc<RefCell<Vec<PathBuf>>>) -> Self {
+        Self { recordings }
+    }
+
+    pub fn finish(self) -> Vec<PathBuf> {
+        mem::take(&mut self.recordings.borrow_mut())
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]

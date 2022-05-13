@@ -1,24 +1,47 @@
-use std::{error::Error as StdError, str::FromStr};
+use std::{
+    error::Error as StdError,
+    hash::{Hash, Hasher},
+    ops::{Deref, DerefMut},
+    str::FromStr,
+};
 
 use hoc_log::error;
+use indexmap::IndexMap;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::{kv::WriteStore, process};
 
-#[macro_export]
-macro_rules! attributes {
-    ($($k:expr => $v:expr),* $(,)?) => {{
-        let mut map = Vec::new();
-        $(map.push($crate::procedure::Attribute { key: ($k).into(), value: ($v).into() });)*
-        map
-    }};
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Attributes(IndexMap<String, String>);
+
+impl Attributes {
+    pub fn new() -> Self {
+        Self(IndexMap::new())
+    }
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Deserialize, Serialize)]
-pub struct Attribute {
-    pub key: String,
-    pub value: String,
+impl Hash for Attributes {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        for (key, value) in self.0.iter() {
+            state.write(key.as_bytes());
+            state.write(value.as_bytes());
+        }
+    }
+}
+
+impl Deref for Attributes {
+    type Target = IndexMap<String, String>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl DerefMut for Attributes {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
 }
 
 pub enum HaltState<S> {
@@ -36,8 +59,8 @@ pub trait Procedure: Sized {
 
     const NAME: &'static str;
 
-    fn get_attributes(&self) -> Vec<Attribute> {
-        Vec::default()
+    fn get_attributes(&self) -> Attributes {
+        Attributes::default()
     }
 
     fn rewind_state(&self) -> Option<<Self::State as State>::Id> {

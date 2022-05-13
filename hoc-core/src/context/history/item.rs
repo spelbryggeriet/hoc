@@ -1,4 +1,4 @@
-use std::io;
+use std::{io, path::PathBuf};
 
 use hoc_log::error;
 use serde::{Deserialize, Serialize};
@@ -29,6 +29,7 @@ impl From<Error> for hoc_log::Error {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Item {
+    registry_keys: Vec<PathBuf>,
     #[serde(rename = "completed_steps")]
     completed: Vec<Step>,
     #[serde(rename = "current_step")]
@@ -38,9 +39,14 @@ pub struct Item {
 impl Item {
     pub fn new<P: Procedure>() -> Result<Self, Error> {
         Ok(Self {
+            registry_keys: Vec::new(),
             completed: Vec::new(),
             current: Some(Step::new::<P>()?),
         })
+    }
+
+    pub fn registry_keys(&self) -> &[PathBuf] {
+        &self.registry_keys
     }
 
     pub fn completed(&self) -> &[Step] {
@@ -55,7 +61,13 @@ impl Item {
         self.current.as_mut()
     }
 
-    pub fn next<S: State>(&mut self, state: &Option<S>) -> Result<(), Error> {
+    pub fn next<S: State>(
+        &mut self,
+        state: &Option<S>,
+        registry_keys: Vec<PathBuf>,
+    ) -> Result<(), Error> {
+        self.registry_keys = registry_keys;
+
         if let Some(state) = state {
             if let Some(completed_step) = self.current.replace(Step::from_state(state)?) {
                 self.completed.push(completed_step);

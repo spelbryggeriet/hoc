@@ -1,23 +1,23 @@
-use std::{collections::HashMap, path::PathBuf};
+use std::collections::HashMap;
 
 use hoc_log::error;
 use indexmap::IndexMap;
 use serde::{de::Visitor, ser::SerializeMap, Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::procedure::{Attribute, Procedure};
+use crate::procedure::{Attributes, Procedure};
 
 pub use crate::context::history::item::Item;
 
 mod item;
 
-#[derive(Debug, Clone, Hash, PartialEq, Eq, PartialOrd, Ord)]
-pub struct Index(String, Vec<Attribute>);
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+pub struct Index(String, Attributes);
 
-fn attrs_string(attrs: &[Attribute]) -> String {
+fn attrs_string(attrs: &Attributes) -> String {
     attrs
         .iter()
-        .map(|Attribute { key, value }| format!(r#""{key}": {value}"#))
+        .map(|(key, value)| format!(r#""{key}": {value}"#))
         .collect::<Vec<_>>()
         .join(", ")
 }
@@ -27,23 +27,8 @@ impl Index {
         self.0.as_str()
     }
 
-    pub fn attributes(&self) -> &[Attribute] {
+    pub fn attributes(&self) -> &Attributes {
         &self.1
-    }
-}
-
-impl From<Index> for PathBuf {
-    fn from(index: Index) -> Self {
-        PathBuf::from(&index)
-    }
-}
-
-impl From<&Index> for PathBuf {
-    fn from(index: &Index) -> Self {
-        let mut path = PathBuf::new();
-        path.push(index.name());
-        path.extend(index.attributes().iter().map(|a| &a.value));
-        path
     }
 }
 
@@ -113,8 +98,8 @@ impl History {
         self.map.get_mut(index).unwrap()
     }
 
-    pub fn indices(&self) -> indexmap::map::Keys<Index, Item> {
-        self.map.keys()
+    pub fn iter(&self) -> indexmap::map::Iter<Index, Item> {
+        self.map.iter()
     }
 }
 
@@ -125,7 +110,7 @@ impl Serialize for History {
     {
         #[derive(Serialize)]
         struct Output<'a> {
-            attributes: &'a [Attribute],
+            attributes: &'a Attributes,
             #[serde(flatten)]
             cache: &'a Item,
         }
@@ -172,7 +157,7 @@ impl<'de> Deserialize<'de> for History {
             {
                 #[derive(Deserialize)]
                 struct Input {
-                    attributes: Vec<Attribute>,
+                    attributes: Attributes,
                     #[serde(flatten)]
                     cache: Item,
                 }
@@ -188,7 +173,7 @@ impl<'de> Deserialize<'de> for History {
                                 "duplicate cache {key} with attributes {{{}}}",
                                 attrs
                                     .iter()
-                                    .map(|Attribute { key, value }| format!("{key:?}: {value}"))
+                                    .map(|(key, value)| format!("{key:?}: {value}"))
                                     .collect::<Vec<_>>()
                                     .join(", ")
                             )));
