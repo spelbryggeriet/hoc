@@ -7,17 +7,18 @@ use std::{
 };
 
 use console::Style;
-use dialoguer::{Confirm, Input};
+use dialoguer::Input;
 use thiserror::Error;
 
 use crate::{context::PrintContext, prefix::PrefixPrefs, Never, Result, LOG};
 pub use status::Status;
 pub use stream::Stream;
 
-use self::{choose::Choose, hidden_input::HiddenInput};
+use self::{choose::Choose, hidden_input::HiddenInput, prompt::Prompt};
 
 mod choose;
 mod hidden_input;
+mod prompt;
 mod status;
 mod stream;
 
@@ -31,12 +32,6 @@ pub enum Error {
 
     #[error("The operation was aborted.")]
     UserAborted,
-
-    #[error("choose: {0}")]
-    Choose(#[from] choose::Error),
-
-    #[error("hidden input: {0}")]
-    HiddenInput(#[from] hidden_input::Error),
 }
 
 impl From<io::Error> for Error {
@@ -162,7 +157,7 @@ impl Log {
         );
     }
 
-    pub fn warning(&self, message: impl AsRef<str>) -> Result<()> {
+    pub fn warning(&self, message: impl AsRef<str>) -> Prompt {
         let mut print_context = self.print_context.lock().unwrap();
 
         let yellow = Style::new().yellow();
@@ -175,7 +170,7 @@ impl Log {
             PrefixPrefs::in_status_overflow(),
         );
 
-        self.prompt_impl(&mut print_context, "Do you want to continue?")
+        self.prompt("Do you want to continue?")
     }
 
     pub fn error(&self, message: impl AsRef<str>) -> Result<Never> {
@@ -196,33 +191,8 @@ impl Log {
         Err(Error::ErrorLogged)
     }
 
-    pub fn prompt(&self, message: impl AsRef<str>) -> Result<()> {
-        self.prompt_impl(&mut self.print_context.lock().unwrap(), message)
-    }
-
-    fn prompt_impl(
-        &self,
-        print_context: &mut PrintContext,
-        message: impl AsRef<str>,
-    ) -> Result<()> {
-        print_context.print_spacing_if_needed(LogType::Prompt);
-
-        let mut prompt = print_context.create_line_prefix(PrefixPrefs::in_status().flag("?"));
-        prompt += message.as_ref();
-
-        let cyan = Style::new().cyan();
-        let want_continue = Confirm::new()
-            .with_prompt(cyan.apply_to(prompt).to_string())
-            .default(false)
-            .interact_on(&print_context.stdout)
-            .unwrap_or_else(|e| panic!("failed printing to stdout: {}", e));
-
-        if want_continue {
-            Ok(())
-        } else {
-            print_context.failure = true;
-            Err(Error::UserAborted)
-        }
+    pub fn prompt<'a, C: Into<Cow<'a, str>>>(&self, message: C) -> Prompt<'a> {
+        Prompt::new(Arc::clone(&self.print_context), message.into())
     }
 
     pub fn input(&self, message: impl AsRef<str>) -> String {

@@ -91,7 +91,8 @@ fn validate_registry_state(context: &mut Context) -> hoc_log::Result<()> {
             warning!(
                 "The following procedure histories will be reset:\n{}",
                 procedures_list
-            )?;
+            )
+            .get()?;
 
             let indices: Vec<_> = affected_procedures.into_iter().copied().cloned().collect();
             let history = context.history_mut();

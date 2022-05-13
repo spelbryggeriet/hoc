@@ -1,6 +1,6 @@
 use std::{
     borrow::Cow,
-    fmt,
+    fmt::{self},
     sync::{Arc, Mutex},
 };
 
@@ -8,7 +8,12 @@ use console::Style;
 use dialoguer::{theme::Theme, Select};
 use thiserror::Error;
 
-use crate::{context::PrintContext, log::LogType, prefix::PrefixPrefs};
+use crate::{
+    context::PrintContext,
+    log::{LogErr, LogType},
+    prefix::PrefixPrefs,
+    Never,
+};
 
 #[derive(Debug, Error)]
 pub enum Error {
@@ -19,6 +24,15 @@ pub enum Error {
     Aborted,
 }
 
+impl From<Error> for crate::Error {
+    fn from(err: Error) -> Self {
+        Result::<Never, _>::Err(err)
+            .log_context("choose")
+            .unwrap_err()
+    }
+}
+
+#[must_use]
 pub struct Choose<'a, T> {
     print_context: Arc<Mutex<PrintContext>>,
     message: Cow<'a, str>,

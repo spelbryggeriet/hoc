@@ -7,9 +7,12 @@ use console::Style;
 use dialoguer::Password;
 use thiserror::Error;
 
-use crate::{context::PrintContext, prefix::PrefixPrefs};
-
-use super::LogType;
+use crate::{
+    context::PrintContext,
+    log::{LogErr, LogType},
+    prefix::PrefixPrefs,
+    Never,
+};
 
 #[derive(Debug, Error)]
 pub enum Error {
@@ -17,6 +20,15 @@ pub enum Error {
     MismatchedPasswords,
 }
 
+impl From<Error> for crate::Error {
+    fn from(err: Error) -> Self {
+        Result::<Never, _>::Err(err)
+            .log_context("hidden input")
+            .unwrap_err()
+    }
+}
+
+#[must_use]
 pub struct HiddenInput<'a> {
     print_context: Arc<Mutex<PrintContext>>,
     message: Cow<'a, str>,

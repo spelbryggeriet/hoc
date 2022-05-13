@@ -91,7 +91,8 @@ impl Run for PrepareSdCardState {
                 "Do you want to flash target disk '{}' with operating system '{}'?",
                 disk.description(),
                 proc.os,
-            )?;
+            )
+            .get()?;
 
             dd!(
                 "bs=1m",
@@ -132,7 +133,8 @@ impl Run for PrepareSdCardState {
             prompt!(
                 "Do you want to mount disk partition '{}'?",
                 disk_partition.description(),
-            )?;
+            )
+            .get()?;
 
             diskutil!("mount", disk_partition.id).run()?;
 
