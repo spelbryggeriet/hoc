@@ -41,6 +41,7 @@ impl From<Error> for hoc_log::Error {
     }
 }
 
+#[derive(Debug)]
 pub struct Context {
     state: State,
     file: File,

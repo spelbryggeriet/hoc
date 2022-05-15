@@ -1,5 +1,4 @@
 use std::{
-    collections::HashSet,
     process,
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -13,10 +12,10 @@ use structopt::StructOpt;
 
 use hoc_core::{
     history,
-    procedure::{self, Id, Procedure},
+    procedure::{self, Id, Procedure, State},
     Context,
 };
-use hoc_log::{error, info, status, warning, LogErr};
+use hoc_log::{bail, error, info, status, warning, LogErr};
 
 use crate::command::Command;
 
@@ -27,6 +26,15 @@ const ERR_MSG_PERSIST_CONTEXT: &str = "Persisting context";
 
 lazy_static! {
     static ref INTERRUPT: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
+}
+
+#[derive(StructOpt)]
+struct MainCommand {
+    #[structopt(flatten)]
+    procedure: Command,
+
+    #[structopt(long)]
+    rerun: bool,
 }
 
 fn list_string<T>(
@@ -64,6 +72,16 @@ fn list_string<T>(
     }
 }
 
+fn index_to_string(index: &hoc_core::history::Index) -> String {
+    if let Some(attr_list) =
+        list_string(index.attributes().iter(), |(k, v)| format!("{}: {}", k, v))
+    {
+        format!("{}\n{attr_list}", index.name())
+    } else {
+        index.name().to_string()
+    }
+}
+
 fn validate_registry_state(context: &mut Context) -> hoc_log::Result<()> {
     let changes = context.registry().validate()?;
     let changes_list = list_string(changes.iter(), |(_, c)| format!("{}", c));
@@ -72,31 +90,18 @@ fn validate_registry_state(context: &mut Context) -> hoc_log::Result<()> {
         info!("The registry state has changed:\n{}", changes_list);
 
         let change_keys: Vec<_> = changes.into_iter().map(|(k, _)| k).collect();
-        let history_iter: Vec<_> = context.history().iter().collect();
-        let affected_procedures: HashSet<_> = change_keys
+        let affected_procedures: Vec<_> = context
+            .history()
             .iter()
-            .flat_map(|key| {
-                history_iter.iter().filter_map(move |(index, item)| {
-                    item.registry_keys()
-                        .iter()
-                        .any(|k| k == key)
-                        .then(|| *index)
-                })
+            .filter_map(|(index, item)| {
+                item.registry_keys()
+                    .iter()
+                    .any(|k| change_keys.contains(k))
+                    .then(|| index.clone())
             })
             .collect();
 
-        let procedures_list = list_string(
-            affected_procedures.iter().copied(),
-            |i: &hoc_core::history::Index| {
-                if let Some(attr_list) =
-                    list_string(i.attributes().iter(), |(k, v)| format!("{}: {}", k, v))
-                {
-                    format!("{}\n{attr_list}", i.name())
-                } else {
-                    i.name().to_string()
-                }
-            },
-        );
+        let procedures_list = list_string(affected_procedures.iter(), index_to_string);
         if let Some(procedures_list) = procedures_list {
             warning!(
                 "The following procedure histories will be reset:\n{}",
@@ -104,15 +109,14 @@ fn validate_registry_state(context: &mut Context) -> hoc_log::Result<()> {
             )
             .get()?;
 
-            let indices: Vec<_> = affected_procedures.into_iter().cloned().collect();
             let history = context.history_mut();
-            let invalid_keys: Vec<_> = indices
+            let invalid_keys: Vec<_> = affected_procedures
                 .iter()
                 .flat_map(|i| history.item(&i).registry_keys())
                 .cloned()
                 .collect();
 
-            for index in indices {
+            for index in affected_procedures {
                 history.remove_item(&index)?;
             }
 
@@ -121,8 +125,34 @@ fn validate_registry_state(context: &mut Context) -> hoc_log::Result<()> {
                 registry.remove(key)?;
             }
 
-            context.persist()?;
+            context.persist().log_context(ERR_MSG_PERSIST_CONTEXT)?;
         }
+    }
+
+    Ok(())
+}
+
+fn check_dependencies<P: Procedure>(context: &Context) -> hoc_log::Result<()> {
+    let history = context.history();
+    let mut incomplete_deps: Vec<_> = history
+        .iter()
+        .filter_map(|(index, item)| {
+            (P::DEPENDENCIES.contains(&index.name()) && !item.is_complete()).then(|| index.name())
+        })
+        .chain(
+            P::DEPENDENCIES
+                .iter()
+                .copied()
+                .filter(|d| history.indices().all(|i| i.name() != *d)),
+        )
+        .collect();
+    incomplete_deps.sort();
+    let incomplete_deps_list = list_string(incomplete_deps.iter(), <&str>::to_string);
+    if let Some(incomplete_deps) = incomplete_deps_list {
+        bail!(
+            "The following procedures are required to be run before '{}':\n{incomplete_deps}",
+            P::NAME
+        );
     }
 
     Ok(())
@@ -146,31 +176,47 @@ fn rewind_history<P: Procedure>(
     proc: &P,
     history_index: &history::Index,
 ) -> hoc_log::Result<()> {
-    let history_item = context.history_mut().item_mut(history_index);
-    if let Some(state_id) = proc.rewind_state() {
-        let mut iter = history_item
-            .completed()
-            .iter()
-            .map(procedure::Step::id::<P::State>)
-            .enumerate();
+    let dependencies = P::DEPENDENCIES;
+    let history = context.history();
 
-        while let Some((rewind_index, rewind_id)) = iter.next() {
-            if rewind_id.log_context(ERR_MSG_PARSE_ID)? == state_id {
-                info!(
-                    "Rewinding back to {} ({}).",
-                    format!("Step {}", rewind_index + 1).yellow(),
-                    state_id.description(),
-                );
+    let affected_procedures: Vec<_> = history
+        .indices()
+        .filter_map(|index| {
+            (index != history_index && dependencies.contains(&index.name())).then(|| index.clone())
+        })
+        .collect();
+    let procedures_list = list_string(affected_procedures.iter(), index_to_string);
 
-                drop(iter);
-                history_item
-                    .invalidate::<P::State>(state_id)
-                    .log_context("Invalidating history item")?;
-                context.persist().log_context(ERR_MSG_PERSIST_CONTEXT)?;
-                break;
-            }
+    let history = context.history_mut();
+    if let Some(procedures_list) = procedures_list {
+        let proc_name = P::NAME;
+        warning!("The following procedures depend on '{proc_name}' and need to be reset:\n{procedures_list}").get()?;
+        for index in affected_procedures {
+            history.remove_item(&index)?;
         }
     }
+
+    history.remove_item(history_index)?;
+    history.add_item(proc)?;
+
+    let keys_to_remove: Vec<_> = context
+        .registry()
+        .get_keys()
+        .into_iter()
+        .filter(|k| {
+            context
+                .history()
+                .items()
+                .all(|item| item.registry_keys().iter().all(|rk| k != rk))
+        })
+        .collect();
+
+    let registry = context.registry_mut();
+    for key in keys_to_remove {
+        registry.remove(key)?;
+    }
+
+    context.persist().log_context(ERR_MSG_PERSIST_CONTEXT)?;
 
     Ok(())
 }
@@ -253,10 +299,29 @@ fn run_loop<P: Procedure>(
     }
 }
 
-fn run_procedure<P: Procedure>(context: &mut Context, mut proc: P) -> hoc_log::Result<()> {
-    status!("Validate registry state").on(|| validate_registry_state(context))?;
+fn run_procedure<P: Procedure>(
+    context: &mut Context,
+    mut proc: P,
+    rerun: bool,
+) -> hoc_log::Result<()> {
+    let history_index = status!("Pre-check").on(|| {
+        let history_index = get_history_index(context, &proc)?;
 
-    let history_index = get_history_index(context, &proc)?;
+        status!("Validate registry state").on(|| validate_registry_state(context))?;
+        status!("Check dependencies").on(|| check_dependencies::<P>(context))?;
+        if rerun {
+            let state_id = P::State::default().id();
+            status!(
+                "Rewind back to {} ({})",
+                "Step 1".yellow(),
+                state_id.description(),
+            )
+            .on(|| rewind_history(context, &proc, &history_index))?;
+        }
+
+        hoc_log::Result::Ok(history_index)
+    })?;
+
     let proc_name = history_index.name().blue();
     status!("Run procedure {proc_name}").on(|| {
         let attrs_list = list_string(history_index.attributes().iter(), |(k, v)| {
@@ -266,7 +331,6 @@ fn run_procedure<P: Procedure>(context: &mut Context, mut proc: P) -> hoc_log::R
             info!("Attributes:\n{}", attrs_list);
         }
 
-        rewind_history(context, &proc, &history_index)?;
         run_loop(context, &mut proc, &history_index)
     })
 }
@@ -286,11 +350,13 @@ fn main() {
 
         let mut context = Context::load().log_context("Loading context")?;
 
-        match Command::from_args() {
-            Command::CreateUser(proc) => run_procedure(&mut context, proc)?,
-            Command::DownloadImage(proc) => run_procedure(&mut context, proc)?,
-            Command::PrepareSdCard(proc) => run_procedure(&mut context, proc)?,
-            Command::Init(proc) => run_procedure(&mut context, proc)?,
+        let main_command = MainCommand::from_args();
+        let rerun = main_command.rerun;
+        match main_command.procedure {
+            Command::CreateUser(proc) => run_procedure(&mut context, proc, rerun)?,
+            Command::DownloadImage(proc) => run_procedure(&mut context, proc, rerun)?,
+            Command::PrepareSdCard(proc) => run_procedure(&mut context, proc, rerun)?,
+            Command::Init(proc) => run_procedure(&mut context, proc, rerun)?,
         }
         Ok(())
     };

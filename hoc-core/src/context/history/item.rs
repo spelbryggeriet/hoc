@@ -61,6 +61,10 @@ impl Item {
         self.current.as_mut()
     }
 
+    pub fn is_complete(&self) -> bool {
+        self.current().is_none()
+    }
+
     pub fn next<S: State>(
         &mut self,
         state: &Option<S>,
@@ -74,18 +78,6 @@ impl Item {
             }
         } else if let Some(completed_step) = self.current.take() {
             self.completed.push(completed_step);
-        }
-
-        Ok(())
-    }
-
-    pub fn invalidate<S: State>(&mut self, id: S::Id) -> Result<(), Error> {
-        for (index, step) in self.completed.iter().enumerate() {
-            if id == step.id::<S>()? {
-                self.completed.truncate(index + 1);
-                self.current.replace(self.completed.remove(index));
-                break;
-            }
         }
 
         Ok(())

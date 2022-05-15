@@ -13,6 +13,7 @@ pub struct CreateUser {
     #[procedure(attribute)]
     username: String,
 
+    /// The cluster the user should belong to.
     #[procedure(attribute)]
     #[structopt(long)]
     cluster: String,

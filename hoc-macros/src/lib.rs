@@ -30,27 +30,27 @@ fn to_title_lower_case<S: AsRef<str>>(s: S) -> String {
     title
 }
 
-fn parse_attributes<T: Parse + Clone + Ord, U: ToTokens>(
+fn parse_attributes<T: Parse + Clone + PartialEq, U: ToTokens>(
     attr_name: &str,
     attrs: &[Attribute],
     blame_tokens: U,
 ) -> Vec<T> {
-    let parsed: Vec<T> = attrs
+    let iter = attrs
         .iter()
         .filter(|a| a.path.is_ident(attr_name))
         .flat_map(|a| {
             a.parse_args_with(Punctuated::<T, Token![,]>::parse_terminated)
                 .unwrap_or_abort()
-        })
-        .collect();
-    let mut sorted_parsed = parsed.clone();
-    sorted_parsed.sort();
-    sorted_parsed.dedup_by(|a, b| {
-        if a == b {
+        });
+
+    let mut attrs = Vec::new();
+    for attr in iter {
+        if attrs.contains(&attr) {
             abort!(blame_tokens, "duplicate attributes specified");
         } else {
-            false
+            attrs.push(attr);
         }
-    });
-    parsed
+    }
+
+    attrs
 }

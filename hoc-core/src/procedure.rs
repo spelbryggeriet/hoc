@@ -58,13 +58,10 @@ pub trait Procedure: Sized {
     type State: State;
 
     const NAME: &'static str;
+    const DEPENDENCIES: &'static [&'static str] = &[];
 
     fn get_attributes(&self) -> Attributes {
         Attributes::default()
-    }
-
-    fn rewind_state(&self) -> Option<<Self::State as State>::Id> {
-        None
     }
 
     fn run(

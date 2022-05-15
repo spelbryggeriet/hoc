@@ -3,11 +3,14 @@ use proc_macro2::{Span, TokenStream};
 use proc_macro_error::{abort, abort_call_site, set_dummy};
 use quote::quote;
 use syn::{
+    parenthesized,
     parse::{Parse, ParseStream},
-    DataStruct, DeriveInput, Ident, Token,
+    punctuated::Punctuated,
+    DataStruct, DeriveInput, Ident, LitStr, Token,
 };
 
 pub fn impl_procedure(input: DeriveInput) -> TokenStream {
+    let command_attributes = crate::parse_attributes("procedure", &input.attrs, &input.ident);
     let command_fields: Vec<_> = match &input.data {
         syn::Data::Struct(DataStruct {
             fields: syn::Fields::Named(fields),
@@ -42,8 +45,13 @@ pub fn impl_procedure(input: DeriveInput) -> TokenStream {
         }
     });
 
-    let impl_procedure =
-        gen_impl_procedure(command_name, &state_name, &procedure_desc, &command_fields);
+    let impl_procedure = gen_impl_procedure(
+        command_name,
+        &state_name,
+        &procedure_desc,
+        &command_attributes,
+        &command_fields,
+    );
 
     quote! {
         #impl_procedure
@@ -54,8 +62,10 @@ fn gen_impl_procedure(
     struct_name: &Ident,
     state_name: &Ident,
     procedure_desc: &str,
+    command_attributes: &[CommandAttr],
     command_fields: &[CommandField],
 ) -> TokenStream {
+    let procedure_deps = gen_dependencies(command_attributes);
     let get_attributes = gen_get_attributes(command_fields);
     let run = gen_run(command_fields);
 
@@ -63,10 +73,29 @@ fn gen_impl_procedure(
         impl ::hoc_core::procedure::Procedure for #struct_name {
             type State = #state_name;
             const NAME: &'static str = #procedure_desc;
+            const DEPENDENCIES: &'static [&'static str] = #procedure_deps;
 
             #get_attributes
             #run
         }
+    }
+}
+
+fn gen_dependencies(command_attributes: &[CommandAttr]) -> TokenStream {
+    let dependencies = command_attributes
+        .iter()
+        .filter_map(|attr| {
+            #[allow(irrefutable_let_patterns)]
+            if let CommandAttr::Dependencies(deps) = attr {
+                Some(deps)
+            } else {
+                None
+            }
+        })
+        .flatten();
+
+    quote! {
+        &[#(#dependencies),*]
     }
 }
 
@@ -138,7 +167,44 @@ struct CommandField<'a> {
     attrs: Vec<CommandFieldAttr>,
 }
 
-#[derive(PartialOrd, Ord, Clone)]
+#[derive(Clone)]
+enum CommandAttr {
+    Dependencies(Vec<LitStr>),
+}
+
+impl PartialEq for CommandAttr {
+    fn eq(&self, other: &Self) -> bool {
+        use CommandAttr::*;
+
+        #[allow(unreachable_patterns)]
+        match (self, other) {
+            (Dependencies(_), Dependencies(_)) => true,
+            _ => false,
+        }
+    }
+}
+
+impl Eq for CommandAttr {}
+
+impl Parse for CommandAttr {
+    fn parse(input: ParseStream) -> syn::Result<Self> {
+        let name: Ident = input.parse()?;
+        let name_str = name.to_string();
+
+        match &*name_str {
+            "dependencies" => {
+                let content;
+                let _paren = parenthesized!(content in input);
+                let lit_strs: Punctuated<LitStr, Token![,]> =
+                    content.parse_terminated(<LitStr as Parse>::parse)?;
+                Ok(Self::Dependencies(lit_strs.into_iter().collect()))
+            }
+            _ => abort!(name, "unexpected attribute: {}", name_str),
+        }
+    }
+}
+
+#[derive(Clone)]
 enum CommandFieldAttr {
     Attribute,
     TryDefault(Ident),

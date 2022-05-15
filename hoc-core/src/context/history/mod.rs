@@ -101,6 +101,14 @@ impl History {
     pub fn iter(&self) -> indexmap::map::Iter<Index, Item> {
         self.map.iter()
     }
+
+    pub fn indices(&self) -> indexmap::map::Keys<Index, Item> {
+        self.map.keys()
+    }
+
+    pub fn items(&self) -> indexmap::map::Values<Index, Item> {
+        self.map.values()
+    }
 }
 
 impl Serialize for History {
