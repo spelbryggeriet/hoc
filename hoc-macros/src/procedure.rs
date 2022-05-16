@@ -1,12 +1,11 @@
-use heck::ToKebabCase;
+use heck::{ToLowerCamelCase, ToUpperCamelCase};
 use proc_macro2::{Span, TokenStream};
 use proc_macro_error::{abort, abort_call_site, set_dummy};
 use quote::quote;
 use syn::{
     parenthesized,
     parse::{Parse, ParseStream},
-    punctuated::Punctuated,
-    DataStruct, DeriveInput, Ident, LitStr, Token,
+    DataStruct, DeriveInput, Ident, Token, Type, TypePath,
 };
 
 pub fn impl_procedure(input: DeriveInput) -> TokenStream {
@@ -20,6 +19,7 @@ pub fn impl_procedure(input: DeriveInput) -> TokenStream {
             .iter()
             .map(|f| CommandField {
                 ident: f.ident.as_ref().unwrap(),
+                ty: &f.ty,
                 attrs: crate::parse_attributes("procedure", &f.attrs, &f.ident),
             })
             .collect(),
@@ -28,12 +28,12 @@ pub fn impl_procedure(input: DeriveInput) -> TokenStream {
 
     let command_name = &input.ident;
     let state_name = Ident::new(&format!("{command_name}State"), Span::call_site());
-    let procedure_desc = command_name.to_string().to_kebab_case();
+    let procedure_name = command_name.to_string().to_upper_camel_case();
 
     set_dummy(quote! {
         impl ::hoc_core::procedure::Procedure for #command_name {
             type State = #state_name;
-            const NAME: &'static str = #procedure_desc;
+            const NAME: &'static str = #procedure_name;
 
             fn run(
                 &mut self,
@@ -48,7 +48,7 @@ pub fn impl_procedure(input: DeriveInput) -> TokenStream {
     let impl_procedure = gen_impl_procedure(
         command_name,
         &state_name,
-        &procedure_desc,
+        &procedure_name,
         &command_attributes,
         &command_fields,
     );
@@ -59,43 +59,25 @@ pub fn impl_procedure(input: DeriveInput) -> TokenStream {
 }
 
 fn gen_impl_procedure(
-    struct_name: &Ident,
+    command_name: &Ident,
     state_name: &Ident,
-    procedure_desc: &str,
+    procedure_name: &str,
     command_attributes: &[CommandAttr],
     command_fields: &[CommandField],
 ) -> TokenStream {
-    let procedure_deps = gen_dependencies(command_attributes);
     let get_attributes = gen_get_attributes(command_fields);
+    let get_dependencies = gen_get_dependencies(command_name, command_attributes, command_fields);
     let run = gen_run(command_fields);
 
     quote! {
-        impl ::hoc_core::procedure::Procedure for #struct_name {
+        impl ::hoc_core::procedure::Procedure for #command_name {
             type State = #state_name;
-            const NAME: &'static str = #procedure_desc;
-            const DEPENDENCIES: &'static [&'static str] = #procedure_deps;
+            const NAME: &'static str = #procedure_name;
 
             #get_attributes
+            #get_dependencies
             #run
         }
-    }
-}
-
-fn gen_dependencies(command_attributes: &[CommandAttr]) -> TokenStream {
-    let dependencies = command_attributes
-        .iter()
-        .filter_map(|attr| {
-            #[allow(irrefutable_let_patterns)]
-            if let CommandAttr::Dependencies(deps) = attr {
-                Some(deps)
-            } else {
-                None
-            }
-        })
-        .flatten();
-
-    quote! {
-        &[#(#dependencies),*]
     }
 }
 
@@ -108,10 +90,10 @@ fn gen_get_attributes(command_fields: &[CommandField]) -> TokenStream {
                 .any(|a| matches!(a, CommandFieldAttr::Attribute))
         })
         .map(|f| {
-            let title = crate::to_title_lower_case(f.ident.to_string());
+            let name = f.ident.to_string().to_lower_camel_case();
             let ident = f.ident;
             quote! {
-                attributes.insert(#title.to_string(), self.#ident.clone().to_string());
+                attributes.insert(#name.to_string(), self.#ident.clone().to_string());
             }
         });
 
@@ -123,9 +105,77 @@ fn gen_get_attributes(command_fields: &[CommandField]) -> TokenStream {
 
     quote! {
         fn get_attributes(&self) -> ::hoc_core::procedure::Attributes {
-            let mut attributes = ::hoc_core::procedure::Attributes::new();
-            #(#insertions;)*
+            let mut attributes = ::hoc_core::procedure::Attributes::default();
+            #(#insertions)*
             attributes
+        }
+    }
+}
+
+fn gen_get_dependencies(
+    command_name: &Ident,
+    command_attributes: &[CommandAttr],
+    command_fields: &[CommandField],
+) -> TokenStream {
+    let dependencies = command_attributes.iter().find_map(|attr| {
+        #[allow(irrefutable_let_patterns)]
+        if let CommandAttr::Dependencies(deps) = attr {
+            Some(deps)
+        } else {
+            None
+        }
+    });
+
+    let dependencies = if let Some(dependencies) = dependencies {
+        dependencies
+    } else {
+        return TokenStream::default();
+    };
+
+    let insertions = dependencies.iter().map(|dep| {
+        let name = dep.procedure.to_string();
+        let attr_insertions = dep.attributes.iter().map(|(name, field)| {
+            let name = name.to_string();
+            if let Some(command_field) = command_fields.iter().find(|f| f.ident == field) {
+                if let Type::Path(TypePath { path, .. }) = command_field.ty {
+                    if path
+                        .segments
+                        .last()
+                        .map_or(false, |seg| seg.ident == "Option")
+                    {
+                        return quote! {
+                            if let Some(field) = self.#field.as_ref() {
+                                attributes.insert(#name.to_string(), field.to_string());
+                            }
+                        };
+                    }
+                }
+
+                quote! {
+                    attributes.insert(#name.to_string(), self.#field.to_string());
+                }
+            } else {
+                abort!(field, "no field `{}` in `{}`", field, command_name)
+            }
+        });
+
+        quote! {
+            dependencies.insert(::hoc_core::procedure::Key::new(
+                #name.to_string(),
+                {
+                    let mut attributes = ::hoc_core::procedure::Attributes::default();
+                    #(#attr_insertions)*
+                    attributes
+                }
+            ));
+        }
+    });
+
+    quote! {
+        fn get_dependencies(&self) -> ::hoc_core::procedure::Dependencies {
+            let mut dependencies = ::hoc_core::procedure::Dependencies::default();
+            #(#insertions)*
+            dependencies
         }
     }
 }
@@ -164,12 +214,13 @@ fn gen_run(command_fields: &[CommandField]) -> TokenStream {
 
 struct CommandField<'a> {
     ident: &'a Ident,
+    ty: &'a Type,
     attrs: Vec<CommandFieldAttr>,
 }
 
 #[derive(Clone)]
 enum CommandAttr {
-    Dependencies(Vec<LitStr>),
+    Dependencies(Vec<Dependency>),
 }
 
 impl PartialEq for CommandAttr {
@@ -195,12 +246,57 @@ impl Parse for CommandAttr {
             "dependencies" => {
                 let content;
                 let _paren = parenthesized!(content in input);
-                let lit_strs: Punctuated<LitStr, Token![,]> =
-                    content.parse_terminated(<LitStr as Parse>::parse)?;
-                Ok(Self::Dependencies(lit_strs.into_iter().collect()))
+                let deps_punct = content.parse_terminated::<Dependency, Token![,]>(Parse::parse)?;
+
+                let mut dependencies = Vec::<Dependency>::with_capacity(deps_punct.len());
+                for dep in deps_punct.into_iter() {
+                    if dependencies.iter().any(|d| d.procedure == dep.procedure) {
+                        abort!(dep.procedure, "duplicate procedure specified");
+                    } else {
+                        dependencies.push(dep);
+                    }
+                }
+
+                Ok(Self::Dependencies(dependencies))
             }
             _ => abort!(name, "unexpected attribute: {}", name_str),
         }
+    }
+}
+
+#[derive(Clone)]
+struct Dependency {
+    procedure: Ident,
+    attributes: Vec<(Ident, Ident)>,
+}
+
+impl Parse for Dependency {
+    fn parse(input: ParseStream) -> syn::Result<Self> {
+        let procedure: Ident = input.parse()?;
+
+        let content;
+        let _paren = parenthesized!(content in input);
+
+        let attrs_punct = content.parse_terminated::<_, Token![,]>(|content_input| {
+            let name: Ident = content_input.parse()?;
+            let _eq: Token![=] = content_input.parse()?;
+            let attr: Ident = content_input.parse()?;
+            Ok((name, attr))
+        })?;
+
+        let mut attributes = Vec::<(Ident, Ident)>::with_capacity(attrs_punct.len());
+        for attr in attrs_punct.into_iter() {
+            if attributes.iter().any(|(n, _)| n == &attr.0) {
+                abort!(attr.0, "duplicate procedure attribute specified");
+            } else {
+                attributes.push(attr);
+            }
+        }
+
+        Ok(Self {
+            procedure,
+            attributes,
+        })
     }
 }
 

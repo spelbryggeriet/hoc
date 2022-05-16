@@ -1,31 +1,51 @@
 use std::{
     cell::{Ref, RefCell},
     fs,
-    path::{Path, PathBuf},
+    net::IpAddr,
+    path::PathBuf,
 };
 
-use osshkeys::{keys::FingerprintHash, KeyPair, PublicKey, PublicParts};
+use osshkeys::{keys::FingerprintHash, PublicKey, PublicParts};
 use serde::{Deserialize, Serialize};
 use structopt::StructOpt;
 
-use hoc_core::{cmd, kv::WriteStore, ssh::SshClient};
-use hoc_log::{error, hidden_input, info, status, LogErr, Result};
+use hoc_core::{
+    cmd,
+    kv::{ReadStore, WriteStore},
+    ssh::SshClient,
+};
+use hoc_log::{hidden_input, info, status, LogErr, Result};
 use hoc_macros::{Procedure, ProcedureState};
 
 use crate::command::util::os::OperatingSystem;
 
+const NOMAD_URL: &str = "https://releases.hashicorp.com/nomad/1.2.6/nomad_1.2.6_linux_arm64.zip";
+const NOMAD_VERSION: &str = "1.2.6";
+
+const CONSUL_URL: &str =
+    "https://releases.hashicorp.com/consul/1.11.4/consul_1.11.4_linux_arm64.zip";
+const CONSUL_VERSION: &str = "1.11.4";
+
+const ENVOY_URL: &str =
+    "https://archive.tetratelabs.io/envoy/download/v1.21.1/envoy-v1.20.2-linux-arm64.tar.xz";
+const ENVOY_VERSION: &str = "1.20.2";
+
 #[derive(Procedure, StructOpt)]
+#[procedure(dependencies(PrepareSdCard(cluster=cluster, nodeName=node_name)))]
 pub struct Init {
     #[procedure(attribute)]
     #[structopt(long)]
     cluster: String,
 
+    #[procedure(attribute)]
+    #[structopt(long)]
+    node_name: String,
+
     #[structopt(long)]
     node_os: OperatingSystem,
 
-    #[procedure(attribute)]
     #[structopt(long)]
-    node_address: String,
+    node_address: IpAddr,
 
     #[structopt(long)]
     username: String,
@@ -45,11 +65,10 @@ pub enum InitState {
     AssignSudoPrivileges,
     DeletePiUser,
     SetUpSshAccess,
-    #[state(finish)]
-    InstallDependencies,
-
     ChangePassword,
 
+    InstallDependencies,
+    InitializeNomad,
     #[state(finish)]
     InitializeConsul,
 }
@@ -64,18 +83,14 @@ impl Run for InitState {
         Ok(state)
     }
 
-    fn add_new_user(proc: &mut Init, registry: &impl WriteStore) -> Result<Self> {
+    fn add_new_user(proc: &mut Init, _registry: &impl WriteStore) -> Result<Self> {
         let username = &proc.username;
-        let password = proc.password_for_user(username)?;
-        let client = proc.ssh_client_password_auth(&proc.node_address, "pi", "raspberry")?;
-
-        let priv_path: PathBuf = registry
-            .get(format!("create-user/{username}/ssh/id_ed25519"))?
-            .try_into()?;
-        let priv_key = fs::read_to_string(priv_path)?;
-
-        KeyPair::from_keystr(&priv_key, Some(&password))
-            .log_context("incorrect password provided")?;
+        let password = proc.get_password_for_user(username)?;
+        let client = proc.get_ssh_client_with_password_auth(
+            &proc.node_address.to_string(),
+            "pi",
+            "raspberry",
+        )?;
 
         // Add the new user.
         adduser!(username)
@@ -89,7 +104,11 @@ impl Run for InitState {
 
     fn assign_sudo_privileges(proc: &mut Init, _registry: &impl WriteStore) -> Result<Self> {
         let username = &proc.username;
-        let client = proc.ssh_client_password_auth(&proc.node_address, "pi", "raspberry")?;
+        let client = proc.get_ssh_client_with_password_auth(
+            &proc.node_address.to_string(),
+            "pi",
+            "raspberry",
+        )?;
 
         // Assign the user the relevant groups.
         usermod!(
@@ -117,8 +136,12 @@ impl Run for InitState {
 
     fn delete_pi_user(proc: &mut Init, _registry: &impl WriteStore) -> Result<Self> {
         let username = &proc.username;
-        let password = proc.password_for_user(&username)?;
-        let client = proc.ssh_client_password_auth(&proc.node_address, &username, &password)?;
+        let password = proc.get_password_for_user(&username)?;
+        let client = proc.get_ssh_client_with_password_auth(
+            &proc.node_address.to_string(),
+            &username,
+            &password,
+        )?;
 
         // Kill all processes owned by the `pi` user.
         pkill!("-u", "pi")
@@ -137,15 +160,13 @@ impl Run for InitState {
     }
 
     fn set_up_ssh_access(proc: &mut Init, registry: &impl WriteStore) -> Result<Self> {
+        let cluster = &proc.cluster;
         let username = &proc.username;
-        let password = proc.password_for_user(username)?;
+        let password = proc.get_password_for_user(username)?;
 
-        let (pub_key, pub_path, priv_path) = status!("Read SSH keypair").on(|| {
+        let pub_key = status!("Read SSH keypair").on(|| {
             let pub_path: PathBuf = registry
-                .get(format!("create-user/{username}/ssh/id_ed25519.pub"))?
-                .try_into()?;
-            let priv_path: PathBuf = registry
-                .get(format!("create-user/{username}/ssh/id_ed25519"))?
+                .get(format!("clusters/{cluster}/users/{username}/ssh/pub"))?
                 .try_into()?;
 
             let pub_key = fs::read_to_string(&pub_path)?;
@@ -157,10 +178,14 @@ impl Run for InitState {
                     .log_err()?
             );
 
-            hoc_log::Result::Ok((pub_key, pub_path, priv_path))
+            hoc_log::Result::Ok(pub_key)
         })?;
 
-        let client = proc.ssh_client_password_auth(&proc.node_address, username, &password)?;
+        let client = proc.get_ssh_client_with_password_auth(
+            &proc.node_address.to_string(),
+            username,
+            &password,
+        )?;
 
         status!("Send SSH public key").on(|| {
             // Create the `.ssh` directory.
@@ -234,13 +259,7 @@ impl Run for InitState {
                 .run()?;
 
             // Verify again after SSH server restart.
-            let client = proc.ssh_client_key_auth(
-                &proc.node_address,
-                username,
-                &pub_path,
-                &priv_path,
-                &password,
-            )?;
+            let client = proc.get_ssh_client_with_key_auth(registry, &password)?;
 
             sshd!("-t").sudo_password(&*password).ssh(&client).run()?;
 
@@ -250,59 +269,9 @@ impl Run for InitState {
         Ok(InstallDependencies)
     }
 
-    fn install_dependencies(proc: &mut Init, registry: &impl WriteStore) -> Result<()> {
-        let username = &proc.username;
-        let pub_path: PathBuf = registry
-            .get(format!("create-user/{username}/ssh/id_ed25519.pub"))?
-            .try_into()?;
-        let priv_path: PathBuf = registry
-            .get(format!("create-user/{username}/ssh/id_ed25519"))?
-            .try_into()?;
-
-        let password = proc.password_for_user(&username)?;
-        let client = proc.ssh_client_key_auth(
-            &proc.node_address,
-            &username,
-            &pub_path,
-            &priv_path,
-            &password,
-        )?;
-
-        let (_, hashicorp_gpg) = curl!("-fsSL", "https://apt.releases.hashicorp.com/gpg")
-            .ssh(&client)
-            .run()?;
-        apt_key!("add", "-")
-            .sudo_password(&*password)
-            .stdin_lines(hashicorp_gpg.lines())
-            .hide_stderr()
-            .ssh(&client)
-            .run()?;
-
-        let (_, _code_name) = lsb_release!("-cs").ssh(&client).run()?;
-
-        error!("not implemented")?;
-
-        Ok(())
-    }
-
     fn change_password(proc: &mut Init, registry: &impl WriteStore) -> Result<InitState> {
         let username = &proc.username;
-
-        let pub_path: PathBuf = registry
-            .get(format!("create-user/{username}/ssh/id_ed25519.pub"))?
-            .try_into()?;
-        let priv_path: PathBuf = registry
-            .get(format!("create-user/{username}/ssh/id_ed25519"))?
-            .try_into()?;
-
-        let password = proc.password_for_user(username)?;
-        let client = proc.ssh_client_key_auth(
-            &proc.node_address,
-            username,
-            &pub_path,
-            &priv_path,
-            &password,
-        )?;
+        let (password, client) = proc.get_password_and_ssh_client(registry)?;
 
         chpasswd!()
             .sudo_password("temporary_password")
@@ -310,29 +279,79 @@ impl Run for InitState {
             .ssh(&client)
             .run()?;
 
+        Ok(InstallDependencies)
+    }
+
+    fn install_dependencies(proc: &mut Init, registry: &impl WriteStore) -> Result<InitState> {
+        let (_, client) = proc.get_password_and_ssh_client(registry)?;
+
+        let nomad_dest = format!("/run/nomad/{NOMAD_VERSION}.zip");
+        let consul_dest = format!("/run/consul/{CONSUL_VERSION}.zip");
+        let envoy_dest = format!("/run/envoy/{ENVOY_VERSION}.tar.xz");
+
+        // Nomad.
+        cmd!("mkdir", "/run/nomad").ssh(&client).run()?;
+        cmd!("wget", NOMAD_URL, "-O", nomad_dest)
+            .ssh(&client)
+            .run()?;
+        cmd!("unzip", "-o", nomad_dest, "-d", "/usr/local/bin")
+            .ssh(&client)
+            .run()?;
+
+        // Consul.
+        cmd!("mkdir", "/run/consul").ssh(&client).run()?;
+        cmd!("wget", CONSUL_URL, "-O", consul_dest)
+            .ssh(&client)
+            .run()?;
+        cmd!("unzip", "-o", consul_dest, "-d", "/usr/local/bin")
+            .ssh(&client)
+            .run()?;
+
+        // Envoy.
+        cmd!("mkdir", "/run/envoy").ssh(&client).run()?;
+        cmd!("wget", ENVOY_URL, "-O", envoy_dest)
+            .ssh(&client)
+            .run()?;
+        cmd!("xz", "-d", envoy_dest).ssh(&client).run()?;
+        cmd!(
+            "tar",
+            "-xf",
+            envoy_dest.trim_end_matches(".xz"),
+            "--overwrite",
+            "--strip-components",
+            "2",
+            "-C",
+            "/usr/local/bin"
+        )
+        .ssh(&client)
+        .run()?;
+
+        Ok(InitializeNomad)
+    }
+
+    fn initialize_nomad(proc: &mut Init, registry: &impl WriteStore) -> Result<InitState> {
+        let (_, client) = proc.get_password_and_ssh_client(registry)?;
+
+        cmd!("nomad", "-autocomplete-install").ssh(&client).run()?;
+        cmd!("complete", "-C", "/usr/local/bin/nomad", "nomad")
+            .ssh(&client)
+            .run()?;
+        cmd!("systemctl", "daemon-reload").ssh(&client).run()?;
+        cmd!("systemctl", "enable", "nomad").ssh(&client).run()?;
+        cmd!("systemctl", "start", "nomad").ssh(&client).run()?;
+
         Ok(InitializeConsul)
     }
 
     fn initialize_consul(proc: &mut Init, registry: &impl WriteStore) -> Result<()> {
-        let username = &proc.username;
-
-        let pub_path: PathBuf = registry
-            .get(format!("create-user/{username}/ssh/id_ed25519.pub"))?
-            .try_into()?;
-        let priv_path: PathBuf = registry
-            .get(format!("create-user/{username}/ssh/id_ed25519"))?
-            .try_into()?;
-
-        let password = proc.password_for_user(username)?;
-        let client = proc.ssh_client_key_auth(
-            &proc.node_address,
-            username,
-            &pub_path,
-            &priv_path,
-            &password,
-        )?;
-
         let cluster = &proc.cluster;
+        let (_, client) = proc.get_password_and_ssh_client(registry)?;
+
+        cmd!("consul", "-autocomplete-install").ssh(&client).run()?;
+        cmd!("complete", "-C", "/usr/local/bin/consul", "consul")
+            .ssh(&client)
+            .run()?;
+
         let (_, key) = cmd!("consul", "keygen").ssh(&client).run()?;
         registry.put(format!("clusters/{cluster}/key"), key)?;
 
@@ -341,7 +360,7 @@ impl Run for InitState {
 }
 
 impl Init {
-    fn password_for_user(&self, username: &str) -> Result<Ref<String>> {
+    fn get_password_for_user(&self, username: &str) -> Result<Ref<String>> {
         if self.password.borrow().is_none() {
             let password = hidden_input!("Enter password for {}", username).get()?;
             self.password.replace(Some(password));
@@ -350,34 +369,7 @@ impl Init {
         Ok(Ref::map(self.password.borrow(), |o| o.as_ref().unwrap()))
     }
 
-    fn ssh_client_key_auth(
-        &self,
-        host: &str,
-        username: &str,
-        pub_key_path: &Path,
-        priv_key_path: &Path,
-        key_passphrase: &str,
-    ) -> Result<Ref<SshClient>> {
-        {
-            let mut ref_mut = self.ssh_client.borrow_mut();
-            if let Some(ref mut client) = *ref_mut {
-                client.update_key_auth(username, pub_key_path, priv_key_path, key_passphrase)?;
-            } else {
-                let new_client = SshClient::new_key_auth(
-                    host,
-                    username,
-                    pub_key_path,
-                    priv_key_path,
-                    key_passphrase,
-                )?;
-                ref_mut.replace(new_client);
-            };
-        }
-
-        Ok(Ref::map(self.ssh_client.borrow(), |o| o.as_ref().unwrap()))
-    }
-
-    fn ssh_client_password_auth(
+    fn get_ssh_client_with_password_auth(
         &self,
         host: &str,
         username: &str,
@@ -394,5 +386,46 @@ impl Init {
         }
 
         Ok(Ref::map(self.ssh_client.borrow(), |o| o.as_ref().unwrap()))
+    }
+
+    fn get_ssh_client_with_key_auth(
+        &self,
+        registry: &impl ReadStore,
+        key_passphrase: &str,
+    ) -> Result<Ref<SshClient>> {
+        let host = &self.node_address.to_string();
+        let cluster = &self.cluster;
+        let username = &self.username;
+
+        let pub_path: PathBuf = registry
+            .get(format!("clusters/{cluster}/users/{username}/ssh/pub"))?
+            .try_into()?;
+        let priv_path: PathBuf = registry
+            .get(format!("clusters/{cluster}/users/{username}/ssh/priv"))?
+            .try_into()?;
+
+        {
+            let mut ref_mut = self.ssh_client.borrow_mut();
+            if let Some(ref mut client) = *ref_mut {
+                client.update_key_auth(username, pub_path, priv_path, key_passphrase)?;
+            } else {
+                let new_client =
+                    SshClient::new_key_auth(host, username, pub_path, priv_path, key_passphrase)?;
+                ref_mut.replace(new_client);
+            };
+        }
+
+        Ok(Ref::map(self.ssh_client.borrow(), |o| o.as_ref().unwrap()))
+    }
+
+    fn get_password_and_ssh_client<'a>(
+        &self,
+        registry: &impl ReadStore,
+    ) -> Result<(Ref<String>, Ref<SshClient>)> {
+        let username = &self.username;
+        let password = self.get_password_for_user(username)?;
+        let client = self.get_ssh_client_with_key_auth(registry, &password)?;
+
+        Ok((password, client))
     }
 }

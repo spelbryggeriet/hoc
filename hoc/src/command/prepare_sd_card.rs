@@ -16,7 +16,7 @@ use hoc_macros::{Procedure, ProcedureState};
 use crate::command::util::{disk, os::OperatingSystem};
 
 #[derive(Procedure, StructOpt)]
-#[procedure(dependencies("create-user", "download-image"))]
+#[procedure(dependencies(CreateUser(cluster=cluster, username=username), DownloadImage(os=os)))]
 pub struct PrepareSdCard {
     /// The cluster of the user to prepare.
     #[procedure(attribute)]

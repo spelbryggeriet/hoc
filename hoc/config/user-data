@@ -154,26 +154,10 @@ write_files:
 
 runcmd:
   # Nomad
-  - [ mkdir, /run/nomad, /opt/nomad ]
+  - [ mkdir, /opt/nomad ]
   - [ chown, -R, "nomad:nomad", /etc/nomad.d, /opt/nomad ]
   - [ chmod, 0700, /etc/nomad.d ]
-  - [ wget, "https://releases.hashicorp.com/nomad/1.2.6/nomad_1.2.6_linux_arm64.zip", -O, /run/nomad/1.2.6.zip ]
-  - [ unzip, -o, /run/nomad/1.2.6.zip, -d, /usr/local/bin ]
-  - [ nomad, -autocomplete-install ]
-  - [ complete, -C, /usr/local/bin/nomad, nomad ]
-  - [ systemctl, daemon-reload ]
-  - [ systemctl, enable, nomad ]
-  - [ systemctl, start, --no-block, nomad ]
 
   # Consul
-  - [ mkdir, /run/consul ]
-  - [ wget, "https://releases.hashicorp.com/consul/1.11.4/consul_1.11.4_linux_arm64.zip", -O, /run/consul/1.11.4.zip ]
-  - [ unzip, -o, /run/consul/1.11.4.zip, -d, /usr/local/bin ]
-  - [ consul, -autocomplete-install ]
-  - [ complete, -C, /usr/local/bin/consul, consul ]
+  # TODO
 
-  # Envoy
-  - [ mkdir, /run/envoy ]
-  - [ wget, "https://archive.tetratelabs.io/envoy/download/v1.21.1/envoy-v1.20.2-linux-arm64.tar.xz", -O, /run/envoy/1.20.2.tar.xz ]
-  - [ xz, -d, /run/envoy/1.20.2.tar.xz ]
-  - [ tar, -xf, /run/envoy/1.20.2.tar, --overwrite, --strip-components, 2, -C, /usr/local/bin ]

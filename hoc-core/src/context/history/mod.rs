@@ -2,51 +2,22 @@ use std::collections::HashMap;
 
 use hoc_log::error;
 use indexmap::IndexMap;
-use serde::{de::Visitor, ser::SerializeMap, Deserialize, Serialize};
+use serde::{de::Visitor, ser::SerializeMap, Deserialize, Serialize, Serializer};
 use thiserror::Error;
 
-use crate::procedure::{Attributes, Procedure};
+use crate::procedure::{Attributes, Key, Procedure};
 
 pub use crate::context::history::item::Item;
 
 mod item;
 
-#[derive(Debug, Clone, Hash, PartialEq, Eq)]
-pub struct Index(String, Attributes);
-
-fn attrs_string(attrs: &Attributes) -> String {
-    attrs
-        .iter()
-        .map(|(key, value)| format!(r#""{key}": {value}"#))
-        .collect::<Vec<_>>()
-        .join(", ")
-}
-
-impl Index {
-    pub fn name(&self) -> &str {
-        self.0.as_str()
-    }
-
-    pub fn attributes(&self) -> &Attributes {
-        &self.1
-    }
-}
-
 #[derive(Debug, Error)]
 pub enum Error {
-    #[error(
-        "item already exists: {} with attributes {{{}}}",
-        _0.name(),
-        attrs_string(_0.attributes()),
-    )]
-    ItemAlreadyExists(Index),
+    #[error("item already exists: {_0}")]
+    ItemAlreadyExists(Key),
 
-    #[error(
-        "item does not exist: {} with attributes {{{}}}",
-        _0.name(),
-        attrs_string(_0.attributes()),
-    )]
-    ItemDoesNotExist(Index),
+    #[error("item does not exist: {_0}")]
+    ItemDoesNotExist(Key),
 
     #[error("item: {0}")]
     Item(#[from] item::Error),
@@ -60,53 +31,53 @@ impl From<Error> for hoc_log::Error {
 
 #[derive(Debug, Default)]
 pub struct History {
-    map: IndexMap<Index, Item>,
+    map: IndexMap<Key, Item>,
 }
 
 impl History {
-    pub fn get_index<P: Procedure>(&self, procedure: &P) -> Option<Index> {
-        let cache_index = Index(P::NAME.to_string(), procedure.get_attributes());
-        self.map.contains_key(&cache_index).then(|| cache_index)
+    pub fn get_item_key<P: Procedure>(&self, procedure: &P) -> Option<Key> {
+        let key = procedure.key();
+        self.map.contains_key(&key).then(|| key)
     }
 
-    pub fn add_item<P: Procedure>(&mut self, procedure: &P) -> Result<Index, Error> {
-        let item = Item::new::<P>()?;
-        let index = Index(P::NAME.to_string(), procedure.get_attributes());
+    pub fn add_item<P: Procedure>(&mut self, procedure: &P) -> Result<Key, Error> {
+        let item = Item::new(procedure)?;
+        let key = procedure.key();
 
-        if self.map.contains_key(&index) {
-            return Err(Error::ItemAlreadyExists(index));
+        if self.map.contains_key(&key) {
+            return Err(Error::ItemAlreadyExists(key));
         }
 
-        self.map.insert(index.clone(), item);
-        Ok(index)
+        self.map.insert(key.clone(), item);
+        Ok(key)
     }
 
-    pub fn remove_item(&mut self, index: &Index) -> Result<(), Error> {
-        if !self.map.contains_key(index) {
-            return Err(Error::ItemDoesNotExist(index.clone()));
+    pub fn remove_item(&mut self, key: &Key) -> Result<(), Error> {
+        if !self.map.contains_key(key) {
+            return Err(Error::ItemDoesNotExist(key.clone()));
         }
 
-        self.map.remove(index);
+        self.map.remove(key);
         Ok(())
     }
 
-    pub fn item(&self, index: &Index) -> &Item {
-        &self.map[index]
+    pub fn item(&self, key: &Key) -> &Item {
+        &self.map[key]
     }
 
-    pub fn item_mut(&mut self, index: &Index) -> &mut Item {
-        self.map.get_mut(index).unwrap()
+    pub fn item_mut(&mut self, key: &Key) -> &mut Item {
+        self.map.get_mut(key).unwrap()
     }
 
-    pub fn iter(&self) -> indexmap::map::Iter<Index, Item> {
+    pub fn iter(&self) -> indexmap::map::Iter<Key, Item> {
         self.map.iter()
     }
 
-    pub fn indices(&self) -> indexmap::map::Keys<Index, Item> {
+    pub fn keys(&self) -> indexmap::map::Keys<Key, Item> {
         self.map.keys()
     }
 
-    pub fn items(&self) -> indexmap::map::Values<Index, Item> {
+    pub fn items(&self) -> indexmap::map::Values<Key, Item> {
         self.map.values()
     }
 }
@@ -114,7 +85,7 @@ impl History {
 impl Serialize for History {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
-        S: serde::Serializer,
+        S: Serializer,
     {
         #[derive(Serialize)]
         struct Output<'a> {
@@ -156,7 +127,7 @@ impl<'de> Deserialize<'de> for History {
             type Value = History;
 
             fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
-                formatter.write_str("a map of attributed caches")
+                formatter.write_str("a map of history items")
             }
 
             fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
@@ -167,29 +138,22 @@ impl<'de> Deserialize<'de> for History {
                 struct Input {
                     attributes: Attributes,
                     #[serde(flatten)]
-                    cache: Item,
+                    item: Item,
                 }
 
-                let mut cache_map = IndexMap::with_capacity(map.size_hint().unwrap_or(0));
-                while let Some((key, caches)) = map.next_entry::<String, Vec<Input>>()? {
-                    for attr_cache in caches {
-                        let cache_index = Index(key.clone(), attr_cache.attributes);
-                        if cache_map.contains_key(&cache_index) {
-                            let key = cache_index.name();
-                            let attrs = cache_index.attributes();
+                let mut history_map = IndexMap::with_capacity(map.size_hint().unwrap_or(0));
+                while let Some((name, attr_items)) = map.next_entry::<String, Vec<Input>>()? {
+                    for attr_item in attr_items {
+                        let key = Key::new(name.clone(), attr_item.attributes);
+                        if history_map.contains_key(&key) {
                             return Err(serde::de::Error::custom(format!(
-                                "duplicate cache {key} with attributes {{{}}}",
-                                attrs
-                                    .iter()
-                                    .map(|(key, value)| format!("{key:?}: {value}"))
-                                    .collect::<Vec<_>>()
-                                    .join(", ")
+                                "duplicate history item: {key}"
                             )));
                         }
-                        cache_map.insert(cache_index, attr_cache.cache);
+                        history_map.insert(key, attr_item.item);
                     }
                 }
-                Ok(History { map: cache_map })
+                Ok(History { map: history_map })
             }
         }
 

@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::{
-    procedure::{self, Procedure, State, Step},
+    procedure::{self, Dependencies, Procedure, State, Step},
     process,
 };
 
@@ -29,6 +29,7 @@ impl From<Error> for hoc_log::Error {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Item {
+    dependencies: Dependencies,
     registry_keys: Vec<PathBuf>,
     #[serde(rename = "completed_steps")]
     completed: Vec<Step>,
@@ -37,12 +38,17 @@ pub struct Item {
 }
 
 impl Item {
-    pub fn new<P: Procedure>() -> Result<Self, Error> {
+    pub fn new<P: Procedure>(proc: &P) -> Result<Self, Error> {
         Ok(Self {
+            dependencies: proc.get_dependencies(),
             registry_keys: Vec::new(),
             completed: Vec::new(),
             current: Some(Step::new::<P>()?),
         })
+    }
+
+    pub fn dependencies(&self) -> &Dependencies {
+        &self.dependencies
     }
 
     pub fn registry_keys(&self) -> &[PathBuf] {
