@@ -4,11 +4,12 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use hoc_core::cmd;
 use hoc_log::{error, info, status, Result};
 use serde::Deserialize;
 
 pub fn get_attached_disks() -> Result<impl Iterator<Item = AttachedDiskInfo>> {
-    let (_, stdout) = diskutil!("list", "-plist", "external", Type::Physical)
+    let (_, stdout) = cmd!("diskutil", "list", "-plist", "external", Type::Physical)
         .hide_output()
         .run()?;
 
@@ -27,7 +28,7 @@ pub fn get_attached_disk_partitions() -> Result<impl Iterator<Item = AttachedDis
 pub fn find_mount_dir(disk_id: &str) -> Result<PathBuf> {
     status!("Find mount directory image disk").on(|| {
         info!("Disk ID: {}", disk_id);
-        let (_, df_output) = df!().run()?;
+        let (_, df_output) = cmd!("df").run()?;
         let disk_line =
             if let Some(disk_line) = df_output.lines().find(|line| line.contains(&disk_id)) {
                 disk_line

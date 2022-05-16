@@ -93,7 +93,7 @@ impl Run for InitState {
         )?;
 
         // Add the new user.
-        adduser!(username)
+        cmd!("adduser", username)
             .stdin_lines([&*password, &*password])
             .sudo()
             .ssh(&client)
@@ -111,7 +111,8 @@ impl Run for InitState {
         )?;
 
         // Assign the user the relevant groups.
-        usermod!(
+        cmd!(
+            "usermod",
             "-a",
             "-G",
             "adm,dialout,cdrom,sudo,audio,video,plugdev,games,users,input,netdev,gpio,i2c,spi",
@@ -123,13 +124,13 @@ impl Run for InitState {
 
         // Create sudo file for the user.
         let sudo_file = format!("/etc/sudoers.d/010_{username}");
-        tee!(sudo_file)
+        cmd!("tee", sudo_file)
             .stdin_line(&format!("{username} ALL=(ALL) PASSWD: ALL"))
             .sudo()
             .hide_output()
             .ssh(&client)
             .run()?;
-        chmod!("440", sudo_file).sudo().ssh(&client).run()?;
+        cmd!("chmod", "440", sudo_file).sudo().ssh(&client).run()?;
 
         Ok(DeletePiUser)
     }
@@ -144,14 +145,14 @@ impl Run for InitState {
         )?;
 
         // Kill all processes owned by the `pi` user.
-        pkill!("-u", "pi")
+        cmd!("pkill", "-u", "pi")
             .sudo_password(&*password)
             .success_codes([0, 1])
             .ssh(&client)
             .run()?;
 
         // Delete the default `pi` user.
-        deluser!("--remove-home", "pi")
+        cmd!("deluser", "--remove-home", "pi")
             .sudo_password(&*password)
             .ssh(&client)
             .run()?;
@@ -189,7 +190,7 @@ impl Run for InitState {
 
         status!("Send SSH public key").on(|| {
             // Create the `.ssh` directory.
-            mkdir!("-p", "-m", "700", format!("/home/{username}/.ssh"))
+            cmd!("mkdir", "-p", "-m", "700", format!("/home/{username}/.ssh"))
                 .ssh(&client)
                 .run()?;
 
@@ -197,20 +198,24 @@ impl Run for InitState {
             let src = dest.clone() + "_updated";
 
             // Check if the authorized keys file exists.
-            let (status_code, _) = test!("-s", dest).success_codes([0, 1]).ssh(&client).run()?;
+            let (status_code, _) = cmd!("test", "-s", dest)
+                .success_codes([0, 1])
+                .ssh(&client)
+                .run()?;
             if status_code == 1 {
                 // Create the authorized keys file.
-                cat!()
+                cmd!("cat")
                     .stdin_line(username)
                     .stdout(&dest)
                     .ssh(&client)
                     .run()?;
-                chmod!("644", dest).ssh(&client).run()?;
+                cmd!("chmod", "644", dest).ssh(&client).run()?;
             }
 
             // Copy the public key to the authorized keys file.
             let key = pub_key.replace("/", r"\/");
-            sed!(
+            cmd!(
+                "sed",
                 format!(
                     "0,/{username}$/{{h;s/^.*{username}$/{key}/}};${{x;/^$/{{s//{key}/;H}};x}}"
                 ),
@@ -222,10 +227,10 @@ impl Run for InitState {
             .run()?;
 
             // Move the updated config contents.
-            dd!(format!("if={src}"), format!("of={dest}"))
+            cmd!("dd", format!("if={src}"), format!("of={dest}"))
                 .ssh(&client)
                 .run()?;
-            rm!(src).ssh(&client).run()?;
+            cmd!("rm", src).ssh(&client).run()?;
 
             hoc_log::Result::Ok(())
         })?;
@@ -236,7 +241,8 @@ impl Run for InitState {
 
             // Set `PasswordAuthentication` to `no`.
             let key = "PasswordAuthentication";
-            sed!(
+            cmd!(
+                "sed",
                 format!("0,/{key}/{{h;s/^.*{key}.*$/{key} no/}};${{x;/^$/{{s//{key} no/;H}};x}}"),
                 dest,
             )
@@ -245,15 +251,18 @@ impl Run for InitState {
             .run()?;
 
             // Move the updated config contents.
-            dd!(format!("if={src}"), format!("of={dest}"))
+            cmd!("dd", format!("if={src}"), format!("of={dest}"))
                 .sudo_password(&*password)
                 .ssh(&client)
                 .run()?;
-            rm!(src).ssh(&client).run()?;
+            cmd!("rm", src).ssh(&client).run()?;
 
             // Verify sshd config and restart the SSH server.
-            sshd!("-t").sudo_password(&*password).ssh(&client).run()?;
-            systemctl!("restart", "ssh")
+            cmd!("sshd", "-t")
+                .sudo_password(&*password)
+                .ssh(&client)
+                .run()?;
+            cmd!("systemctl", "restart", "ssh")
                 .sudo_password(&*password)
                 .ssh(&client)
                 .run()?;
@@ -261,7 +270,10 @@ impl Run for InitState {
             // Verify again after SSH server restart.
             let client = proc.get_ssh_client_with_key_auth(registry, &password)?;
 
-            sshd!("-t").sudo_password(&*password).ssh(&client).run()?;
+            cmd!("sshd", "-t")
+                .sudo_password(&*password)
+                .ssh(&client)
+                .run()?;
 
             hoc_log::Result::Ok(())
         })?;
@@ -273,7 +285,7 @@ impl Run for InitState {
         let username = &proc.username;
         let (password, client) = proc.get_password_and_ssh_client(registry)?;
 
-        chpasswd!()
+        cmd!("chpasswd")
             .sudo_password("temporary_password")
             .stdin_line(format!("{username}:{password}"))
             .ssh(&client)

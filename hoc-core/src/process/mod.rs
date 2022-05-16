@@ -28,24 +28,6 @@ macro_rules! cmd {
     };
 }
 
-#[macro_export]
-macro_rules! cmd_macros {
-    ($($name:ident $(=> $cmd:literal)?),* $(,)?) => {
-        $crate::_with_dollar_sign!(($d:tt) => {
-            $(
-            macro_rules! $name {
-                ($d ($d args:expr),* $d (,)?) => {
-                    $crate::cmd!(
-                        $(if true { $cmd } else )? { stringify!($name) },
-                        $d ($d args),*
-                    )
-                };
-            }
-            )*
-        });
-    };
-}
-
 pub mod ssh;
 
 pub const SUCCESS_CODE: i32 = 0;

@@ -9,7 +9,10 @@ use osshkeys::{keys::FingerprintHash, PublicKey, PublicParts};
 use serde::{Deserialize, Serialize};
 use structopt::StructOpt;
 
-use hoc_core::kv::{ReadStore, WriteStore};
+use hoc_core::{
+    cmd,
+    kv::{ReadStore, WriteStore},
+};
 use hoc_log::{choose, error, info, prompt, status, LogErr, Result};
 use hoc_macros::{Procedure, ProcedureState};
 
@@ -81,7 +84,7 @@ impl Run for PrepareSdCardState {
         };
 
         let disk = disks.remove(index);
-        status!("Unmount SD card").on(|| diskutil!("unmountDisk", disk.id).run())?;
+        status!("Unmount SD card").on(|| cmd!("diskutil", "unmountDisk", disk.id).run())?;
 
         status!("Flash SD card").on(|| {
             let os = &proc.os;
@@ -94,7 +97,8 @@ impl Run for PrepareSdCardState {
             )
             .get()?;
 
-            dd!(
+            cmd!(
+                "dd",
                 "bs=1m",
                 format!("if={}", image_path.to_string_lossy()),
                 format!("of=/dev/r{}", disk.id),
@@ -136,7 +140,7 @@ impl Run for PrepareSdCardState {
             )
             .get()?;
 
-            diskutil!("mount", disk_partition.id).run()?;
+            cmd!("diskutil", "mount", disk_partition.id).run()?;
 
             hoc_log::Result::Ok(disk_partition.id)
         })?;
@@ -249,8 +253,9 @@ impl Run for PrepareSdCardState {
         _registry: &impl ReadStore,
         disk_partition_id: String,
     ) -> Result<()> {
-        status!("Sync image disk writes").on(|| sync!().run())?;
-        status!("Unmount image disk").on(|| diskutil!("unmount", disk_partition_id).run())?;
+        status!("Sync image disk writes").on(|| cmd!("sync",).run())?;
+        status!("Unmount image disk")
+            .on(|| cmd!("diskutil", "unmount", disk_partition_id).run())?;
 
         Ok(())
     }

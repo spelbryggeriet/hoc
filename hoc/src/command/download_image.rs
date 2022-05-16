@@ -9,7 +9,7 @@ use structopt::StructOpt;
 use xz2::read::XzDecoder;
 use zip::ZipArchive;
 
-use hoc_core::kv::WriteStore;
+use hoc_core::{cmd, kv::WriteStore};
 use hoc_log::{bail, error, info, status, LogErr, Result};
 use hoc_macros::{Procedure, ProcedureState};
 
@@ -57,7 +57,7 @@ impl Run for DownloadImageState {
         })?;
 
         status!("Determine file type").on(|| {
-            let output = cmd_file!(file_ref.path()).run()?.1.to_lowercase();
+            let output = cmd!("file", file_ref.path()).run()?.1.to_lowercase();
             if output.contains("zip archive") {
                 info!("Zip archive file type detected");
                 Ok(DecompressZipArchive)
