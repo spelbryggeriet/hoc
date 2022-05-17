@@ -345,7 +345,7 @@ fn main() {
         })
         .log_context("Setting interrupt handler")?;
 
-        hoc_core::reset_sudo_privileges().log_context("Resetting sudo privileges")?;
+        hoc_core::process::reset_sudo_privileges().log_context("Resetting sudo privileges")?;
 
         let mut context = Context::load().log_context("Loading context")?;
 

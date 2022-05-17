@@ -12,7 +12,7 @@ use structopt::StructOpt;
 use hoc_core::{
     cmd,
     kv::{self, ReadStore, WriteStore},
-    ssh::SshClient,
+    process::{self, ssh::SshClient},
 };
 use hoc_log::{hidden_input, info, status, LogErr, Result};
 use hoc_macros::{Procedure, ProcedureState};
@@ -109,6 +109,7 @@ impl Run for InitState {
             "pi",
             "raspberry",
         )?;
+        let common_set = process::Settings::default().sudo().ssh(&client);
 
         // Assign the user the relevant groups.
         cmd!(
@@ -118,19 +119,16 @@ impl Run for InitState {
             "adm,dialout,cdrom,sudo,audio,video,plugdev,games,users,input,netdev,gpio,i2c,spi",
             username,
         )
-        .sudo()
-        .ssh(&client)
-        .run()?;
+        .run_with(&common_set)?;
 
         // Create sudo file for the user.
         let sudo_file = format!("/etc/sudoers.d/010_{username}");
         cmd!("tee", sudo_file)
+            .settings(&common_set)
             .stdin_line(&format!("{username} ALL=(ALL) PASSWD: ALL"))
-            .sudo()
             .hide_output()
-            .ssh(&client)
             .run()?;
-        cmd!("chmod", "440", sudo_file).sudo().ssh(&client).run()?;
+        cmd!("chmod", "440", sudo_file).run_with(&common_set)?;
 
         Ok(DeletePiUser)
     }
@@ -143,19 +141,18 @@ impl Run for InitState {
             &username,
             &password,
         )?;
+        let common_set = process::Settings::default()
+            .sudo_password(&*password)
+            .ssh(&client);
 
         // Kill all processes owned by the `pi` user.
         cmd!("pkill", "-u", "pi")
-            .sudo_password(&*password)
+            .settings(&common_set)
             .success_codes([0, 1])
-            .ssh(&client)
             .run()?;
 
         // Delete the default `pi` user.
-        cmd!("deluser", "--remove-home", "pi")
-            .sudo_password(&*password)
-            .ssh(&client)
-            .run()?;
+        cmd!("deluser", "--remove-home", "pi").run_with(&common_set)?;
 
         Ok(SetUpSshAccess)
     }
@@ -164,6 +161,13 @@ impl Run for InitState {
         let cluster = &proc.cluster;
         let username = &proc.username;
         let password = proc.get_password_for_user(username)?;
+        let client = proc.get_ssh_client_with_password_auth(
+            &proc.node_address.to_string(),
+            username,
+            &password,
+        )?;
+        let common_set = process::Settings::default().ssh(&client);
+        let sudo_set = process::Settings::from_settings(&common_set).sudo_password(&*password);
 
         let pub_key = status!("Read SSH keypair").on(|| {
             let pub_path: PathBuf = registry
@@ -182,34 +186,27 @@ impl Run for InitState {
             hoc_log::Result::Ok(pub_key)
         })?;
 
-        let client = proc.get_ssh_client_with_password_auth(
-            &proc.node_address.to_string(),
-            username,
-            &password,
-        )?;
-
         status!("Send SSH public key").on(|| {
             // Create the `.ssh` directory.
             cmd!("mkdir", "-p", "-m", "700", format!("/home/{username}/.ssh"))
-                .ssh(&client)
-                .run()?;
+                .run_with(&common_set)?;
 
             let dest = format!("/home/{username}/.ssh/authorized_keys");
             let src = dest.clone() + "_updated";
 
             // Check if the authorized keys file exists.
             let (status_code, _) = cmd!("test", "-s", dest)
+                .settings(&common_set)
                 .success_codes([0, 1])
-                .ssh(&client)
                 .run()?;
             if status_code == 1 {
                 // Create the authorized keys file.
                 cmd!("cat")
+                    .settings(&common_set)
                     .stdin_line(username)
                     .stdout(&dest)
-                    .ssh(&client)
                     .run()?;
-                cmd!("chmod", "644", dest).ssh(&client).run()?;
+                cmd!("chmod", "644", dest).run_with(&common_set)?;
             }
 
             // Copy the public key to the authorized keys file.
@@ -221,16 +218,14 @@ impl Run for InitState {
                 ),
                 dest,
             )
+            .settings(&common_set)
             .stdout(&src)
             .secret(&key)
-            .ssh(&client)
             .run()?;
 
             // Move the updated config contents.
-            cmd!("dd", format!("if={src}"), format!("of={dest}"))
-                .ssh(&client)
-                .run()?;
-            cmd!("rm", src).ssh(&client).run()?;
+            cmd!("dd", format!("if={src}"), format!("of={dest}")).run_with(&common_set)?;
+            cmd!("rm", src).run_with(&common_set)?;
 
             hoc_log::Result::Ok(())
         })?;
@@ -246,34 +241,22 @@ impl Run for InitState {
                 format!("0,/{key}/{{h;s/^.*{key}.*$/{key} no/}};${{x;/^$/{{s//{key} no/;H}};x}}"),
                 dest,
             )
+            .settings(&common_set)
             .stdout(&src)
-            .ssh(&client)
             .run()?;
 
             // Move the updated config contents.
-            cmd!("dd", format!("if={src}"), format!("of={dest}"))
-                .sudo_password(&*password)
-                .ssh(&client)
-                .run()?;
-            cmd!("rm", src).ssh(&client).run()?;
+            cmd!("dd", format!("if={src}"), format!("of={dest}")).run_with(&sudo_set)?;
+            cmd!("rm", src).run_with(&common_set)?;
 
             // Verify sshd config and restart the SSH server.
-            cmd!("sshd", "-t")
-                .sudo_password(&*password)
-                .ssh(&client)
-                .run()?;
-            cmd!("systemctl", "restart", "ssh")
-                .sudo_password(&*password)
-                .ssh(&client)
-                .run()?;
+            cmd!("sshd", "-t").run_with(&sudo_set)?;
+            cmd!("systemctl", "restart", "ssh").run_with(&sudo_set)?;
 
             // Verify again after SSH server restart.
             let client = proc.get_ssh_client_with_key_auth(registry, &password)?;
 
-            cmd!("sshd", "-t")
-                .sudo_password(&*password)
-                .ssh(&client)
-                .run()?;
+            cmd!("sshd", "-t").settings(&sudo_set).ssh(&client).run()?;
 
             hoc_log::Result::Ok(())
         })?;
@@ -296,43 +279,28 @@ impl Run for InitState {
 
     fn install_dependencies(proc: &mut Init, registry: &impl WriteStore) -> Result<InitState> {
         let (_, client) = proc.get_password_and_ssh_client(registry)?;
+        let common_set = process::Settings::default().ssh(&client);
+        let all_set =
+            process::Settings::from_settings(&common_set).working_directory("/run/consul");
 
         let nomad_filename = format!("{NOMAD_VERSION}.zip");
         let consul_filename = format!("{CONSUL_VERSION}.zip");
         let envoy_filename = format!("{ENVOY_VERSION}.tar.xz");
 
         // Nomad.
-        cmd!("mkdir", "/run/nomad").ssh(&client).run()?;
-        cmd!("wget", NOMAD_URL, "-O", nomad_filename)
-            .working_directory("/run/nomad")
-            .ssh(&client)
-            .run()?;
-        cmd!("unzip", "-o", nomad_filename, "-d", "/usr/local/bin")
-            .working_directory("/run/nomad")
-            .ssh(&client)
-            .run()?;
+        cmd!("mkdir", "/run/nomad").run_with(&common_set)?;
+        cmd!("wget", NOMAD_URL, "-O", nomad_filename).run_with(&all_set)?;
+        cmd!("unzip", "-o", nomad_filename, "-d", "/usr/local/bin").run_with(&all_set)?;
 
         // Consul.
-        cmd!("mkdir", "/run/consul").ssh(&client).run()?;
-        cmd!("wget", CONSUL_URL, "-O", consul_filename)
-            .working_directory("/run/consul")
-            .ssh(&client)
-            .run()?;
-        cmd!("unzip", "-o", consul_filename, "-d", "/usr/local/bin")
-            .working_directory("/run/consul")
-            .ssh(&client)
-            .run()?;
+        cmd!("mkdir", "/run/consul").run_with(&common_set)?;
+        cmd!("wget", CONSUL_URL, "-O", consul_filename).run_with(&all_set)?;
+        cmd!("unzip", "-o", consul_filename, "-d", "/usr/local/bin").run_with(&all_set)?;
 
         // Envoy.
-        cmd!("mkdir", "/run/envoy").ssh(&client).run()?;
-        cmd!("wget", ENVOY_URL, "-O", envoy_filename)
-            .working_directory("/run/envoy")
-            .ssh(&client)
-            .run()?;
-        cmd!("xz", "-d", envoy_filename)
-            .working_directory("/run/envoy")
-            .ssh(&client)
-            .run()?;
+        cmd!("mkdir", "/run/envoy").run_with(&common_set)?;
+        cmd!("wget", ENVOY_URL, "-O", envoy_filename).run_with(&all_set)?;
+        cmd!("xz", "-d", envoy_filename).run_with(&all_set)?;
         cmd!(
             "tar",
             "-xf",
@@ -343,23 +311,20 @@ impl Run for InitState {
             "-C",
             "/usr/local/bin"
         )
-        .working_directory("/run/envoy")
-        .ssh(&client)
-        .run()?;
+        .run_with(&all_set)?;
 
         Ok(InitializeNomad)
     }
 
     fn initialize_nomad(proc: &mut Init, registry: &impl WriteStore) -> Result<InitState> {
         let (_, client) = proc.get_password_and_ssh_client(registry)?;
+        let common_set = process::Settings::default().ssh(&client);
 
-        cmd!("nomad", "-autocomplete-install").ssh(&client).run()?;
-        cmd!("complete", "-C", "/usr/local/bin/nomad", "nomad")
-            .ssh(&client)
-            .run()?;
-        cmd!("systemctl", "daemon-reload").ssh(&client).run()?;
-        cmd!("systemctl", "enable", "nomad").ssh(&client).run()?;
-        cmd!("systemctl", "start", "nomad").ssh(&client).run()?;
+        cmd!("nomad", "-autocomplete-install").run_with(&common_set)?;
+        cmd!("complete", "-C", "/usr/local/bin/nomad", "nomad").run_with(&common_set)?;
+        cmd!("systemctl", "daemon-reload").run_with(&common_set)?;
+        cmd!("systemctl", "enable", "nomad").run_with(&common_set)?;
+        cmd!("systemctl", "start", "nomad").run_with(&common_set)?;
 
         Ok(InitializeConsul)
     }
@@ -367,17 +332,16 @@ impl Run for InitState {
     fn initialize_consul(proc: &mut Init, registry: &impl WriteStore) -> Result<()> {
         let cluster = &proc.cluster;
         let (_, client) = proc.get_password_and_ssh_client(registry)?;
+        let common_set = process::Settings::default().ssh(&client);
 
-        cmd!("consul", "-autocomplete-install").ssh(&client).run()?;
-        cmd!("complete", "-C", "/usr/local/bin/consul", "consul")
-            .ssh(&client)
-            .run()?;
+        cmd!("consul", "-autocomplete-install").run_with(&common_set)?;
+        cmd!("complete", "-C", "/usr/local/bin/consul", "consul").run_with(&common_set)?;
 
         let registry_key = format!("clusters/{cluster}/key");
         let key: String = match registry.get(&registry_key) {
             Ok(key) => key.try_into()?,
             Err(kv::Error::KeyDoesNotExist(_)) => {
-                let (_, key) = cmd!("consul", "keygen").ssh(&client).run()?;
+                let (_, key) = cmd!("consul", "keygen").run_with(&common_set)?;
                 registry.put(&registry_key, key.clone())?;
                 key
             }
@@ -385,8 +349,8 @@ impl Run for InitState {
         };
 
         cmd!("consul", "tls", "ca", "create")
+            .settings(&common_set)
             .working_directory("/run/consul")
-            .ssh(&client)
             .run()?;
 
         Ok(())
