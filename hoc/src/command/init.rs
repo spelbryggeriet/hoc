@@ -11,7 +11,7 @@ use structopt::StructOpt;
 
 use hoc_core::{
     cmd,
-    kv::{ReadStore, WriteStore},
+    kv::{self, ReadStore, WriteStore},
     ssh::SshClient,
 };
 use hoc_log::{hidden_input, info, status, LogErr, Result};
@@ -297,44 +297,53 @@ impl Run for InitState {
     fn install_dependencies(proc: &mut Init, registry: &impl WriteStore) -> Result<InitState> {
         let (_, client) = proc.get_password_and_ssh_client(registry)?;
 
-        let nomad_dest = format!("/run/nomad/{NOMAD_VERSION}.zip");
-        let consul_dest = format!("/run/consul/{CONSUL_VERSION}.zip");
-        let envoy_dest = format!("/run/envoy/{ENVOY_VERSION}.tar.xz");
+        let nomad_filename = format!("{NOMAD_VERSION}.zip");
+        let consul_filename = format!("{CONSUL_VERSION}.zip");
+        let envoy_filename = format!("{ENVOY_VERSION}.tar.xz");
 
         // Nomad.
         cmd!("mkdir", "/run/nomad").ssh(&client).run()?;
-        cmd!("wget", NOMAD_URL, "-O", nomad_dest)
+        cmd!("wget", NOMAD_URL, "-O", nomad_filename)
+            .working_directory("/run/nomad")
             .ssh(&client)
             .run()?;
-        cmd!("unzip", "-o", nomad_dest, "-d", "/usr/local/bin")
+        cmd!("unzip", "-o", nomad_filename, "-d", "/usr/local/bin")
+            .working_directory("/run/nomad")
             .ssh(&client)
             .run()?;
 
         // Consul.
         cmd!("mkdir", "/run/consul").ssh(&client).run()?;
-        cmd!("wget", CONSUL_URL, "-O", consul_dest)
+        cmd!("wget", CONSUL_URL, "-O", consul_filename)
+            .working_directory("/run/consul")
             .ssh(&client)
             .run()?;
-        cmd!("unzip", "-o", consul_dest, "-d", "/usr/local/bin")
+        cmd!("unzip", "-o", consul_filename, "-d", "/usr/local/bin")
+            .working_directory("/run/consul")
             .ssh(&client)
             .run()?;
 
         // Envoy.
         cmd!("mkdir", "/run/envoy").ssh(&client).run()?;
-        cmd!("wget", ENVOY_URL, "-O", envoy_dest)
+        cmd!("wget", ENVOY_URL, "-O", envoy_filename)
+            .working_directory("/run/envoy")
             .ssh(&client)
             .run()?;
-        cmd!("xz", "-d", envoy_dest).ssh(&client).run()?;
+        cmd!("xz", "-d", envoy_filename)
+            .working_directory("/run/envoy")
+            .ssh(&client)
+            .run()?;
         cmd!(
             "tar",
             "-xf",
-            envoy_dest.trim_end_matches(".xz"),
+            envoy_filename.trim_end_matches(".xz"),
             "--overwrite",
             "--strip-components",
             "2",
             "-C",
             "/usr/local/bin"
         )
+        .working_directory("/run/envoy")
         .ssh(&client)
         .run()?;
 
@@ -364,8 +373,21 @@ impl Run for InitState {
             .ssh(&client)
             .run()?;
 
-        let (_, key) = cmd!("consul", "keygen").ssh(&client).run()?;
-        registry.put(format!("clusters/{cluster}/key"), key)?;
+        let registry_key = format!("clusters/{cluster}/key");
+        let key: String = match registry.get(&registry_key) {
+            Ok(key) => key.try_into()?,
+            Err(kv::Error::KeyDoesNotExist(_)) => {
+                let (_, key) = cmd!("consul", "keygen").ssh(&client).run()?;
+                registry.put(&registry_key, key.clone())?;
+                key
+            }
+            Err(err) => return Err(err.into()),
+        };
+
+        cmd!("consul", "tls", "ca", "create")
+            .working_directory("/run/consul")
+            .ssh(&client)
+            .run()?;
 
         Ok(())
     }

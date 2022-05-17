@@ -299,19 +299,23 @@ fn run_procedure<P: Procedure>(
     mut proc: P,
     rerun: bool,
 ) -> hoc_log::Result<()> {
-    let history_index = status!("Pre-check").on(|| {
+    let history_index = status!("Prepare").on(|| {
         let history_index = get_history_item_key(context, &proc)?;
 
-        status!("Validate registry state").on(|| validate_registry_state(context))?;
-        status!("Check dependencies").on(|| check_dependencies(context, &proc))?;
+        info!("Validating registry state");
+        validate_registry_state(context)?;
+
+        info!("Checking dependencies");
+        check_dependencies(context, &proc)?;
+
         if rerun {
             let state_id = P::State::default().id();
-            status!(
-                "Rewind back to {} ({})",
+            info!(
+                "Rewinding back to {} ({})",
                 "Step 1".yellow(),
                 state_id.description(),
-            )
-            .on(|| rewind_history(context, &proc, &history_index))?;
+            );
+            rewind_history(context, &proc, &history_index)?;
         }
 
         hoc_log::Result::Ok(history_index)

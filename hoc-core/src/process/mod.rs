@@ -149,6 +149,7 @@ pub struct Process<'a> {
     program: &'a OsStr,
     args: Vec<Cow<'a, OsStr>>,
     ssh_client: Option<&'a ssh::SshClient>,
+    working_directory: Option<Cow<'a, str>>,
     sudo: Option<Option<Cow<'a, str>>>,
     pipe_input: Vec<Cow<'a, str>>,
     stdout: Option<&'a OsStr>,
@@ -164,6 +165,7 @@ impl<'process> Process<'process> {
         Self {
             program: program.as_ref(),
             args: Vec::new(),
+            working_directory: None,
             sudo: None,
             ssh_client: None,
             pipe_input: Vec::new(),
@@ -183,6 +185,11 @@ impl<'process> Process<'process> {
 
     pub fn ssh(mut self, client: &'process ssh::SshClient) -> Self {
         self.ssh_client = Some(client);
+        self
+    }
+
+    pub fn working_directory<S: Into<Cow<'process, str>>>(mut self, working_directory: S) -> Self {
+        self.working_directory = Some(working_directory.into());
         self
     }
 
@@ -366,6 +373,10 @@ impl<'process> Process<'process> {
                     out + " " + &arg
                 });
 
+            if let Some(working_directory) = self.working_directory {
+                cmd = format!("cd {} ; {}", working_directory.into_owned(), cmd);
+            }
+
             if let Some(path) = self.stdout {
                 cmd += &format!(" 1>{}", path.to_string_lossy().quotify());
             }
@@ -382,6 +393,10 @@ impl<'process> Process<'process> {
             cmd.args(&self.args)
                 .stdin(Stdio::piped())
                 .stderr(Stdio::piped());
+
+            if let Some(working_directory) = self.working_directory {
+                cmd.current_dir(working_directory.as_ref());
+            }
 
             if let Some(path) = self.stdout {
                 cmd.stdin(
