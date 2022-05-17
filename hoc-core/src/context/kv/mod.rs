@@ -12,7 +12,7 @@ use indexmap::IndexMap;
 use serde::{de::Visitor, ser::SerializeMap, Deserialize, Deserializer, Serialize, Serializer};
 use thiserror::Error;
 
-use self::file::FileRef;
+pub use self::file::FileRef;
 
 mod file;
 
@@ -442,6 +442,34 @@ impl TryFrom<FileRef> for PathBuf {
     }
 }
 
+impl TryFrom<Item> for FileRef {
+    type Error = Error;
+
+    fn try_from(item: Item) -> Result<Self, Self::Error> {
+        match item {
+            Item::File(file_ref) => Ok(file_ref),
+            item => Err(Error::MismatchedTypes(
+                item.type_description(),
+                TypeDescription::File,
+            )),
+        }
+    }
+}
+
+impl TryFrom<Item> for Value {
+    type Error = Error;
+
+    fn try_from(item: Item) -> Result<Self, Self::Error> {
+        match item {
+            Item::Value(value) => Ok(value),
+            item => Err(Error::MismatchedTypes(
+                item.type_description(),
+                TypeDescription::Value,
+            )),
+        }
+    }
+}
+
 macro_rules! impl_try_from_integer {
     ($variant:ident for $impl_type:ty) => {
         impl TryFrom<Value> for $impl_type {
@@ -602,6 +630,7 @@ pub enum TypeDescription {
     FloatingPointNumber,
     String,
     File,
+    Value,
 }
 
 impl Display for TypeDescription {
@@ -613,6 +642,7 @@ impl Display for TypeDescription {
             Self::FloatingPointNumber => write!(f, "floating point number"),
             Self::String => write!(f, "string"),
             Self::File => write!(f, "file"),
+            Self::Value => write!(f, "value"),
         }
     }
 }

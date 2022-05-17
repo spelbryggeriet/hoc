@@ -1,6 +1,7 @@
 use std::{
     cell::{Ref, RefCell},
-    fs,
+    fs::{self, File},
+    io::{Read, Write},
     net::IpAddr,
     path::PathBuf,
 };
@@ -191,11 +192,10 @@ impl Run for InitState {
             cmd!("mkdir", "-p", "-m", "700", format!("/home/{username}/.ssh"))
                 .run_with(&common_set)?;
 
-            let dest = format!("/home/{username}/.ssh/authorized_keys");
-            let src = dest.clone() + "_updated";
+            let authorized_keys_path = format!("/home/{username}/.ssh/authorized_keys");
 
             // Check if the authorized keys file exists.
-            let (status_code, _) = cmd!("test", "-s", dest)
+            let (status_code, _) = cmd!("test", "-s", authorized_keys_path)
                 .settings(&common_set)
                 .success_codes([0, 1])
                 .run()?;
@@ -204,50 +204,41 @@ impl Run for InitState {
                 cmd!("cat")
                     .settings(&common_set)
                     .stdin_line(username)
-                    .stdout(&dest)
+                    .stdout(&authorized_keys_path)
                     .run()?;
-                cmd!("chmod", "644", dest).run_with(&common_set)?;
+                cmd!("chmod", "644", authorized_keys_path).run_with(&common_set)?;
             }
 
             // Copy the public key to the authorized keys file.
             let key = pub_key.replace("/", r"\/");
             cmd!(
                 "sed",
+                "-i",
                 format!(
                     "0,/{username}$/{{h;s/^.*{username}$/{key}/}};${{x;/^$/{{s//{key}/;H}};x}}"
                 ),
-                dest,
+                authorized_keys_path,
             )
             .settings(&common_set)
-            .stdout(&src)
             .secret(&key)
             .run()?;
-
-            // Move the updated config contents.
-            cmd!("dd", format!("if={src}"), format!("of={dest}")).run_with(&common_set)?;
-            cmd!("rm", src).run_with(&common_set)?;
 
             hoc_log::Result::Ok(())
         })?;
 
         status!("Initialize SSH server").on(|| {
-            let dest = "/etc/ssh/sshd_config";
-            let src = format!("/home/{username}/sshd_config_updated");
+            let sshd_config_path = "/etc/ssh/sshd_config";
 
             // Set `PasswordAuthentication` to `no`.
             let key = "PasswordAuthentication";
             cmd!(
                 "sed",
+                "-i",
                 format!("0,/{key}/{{h;s/^.*{key}.*$/{key} no/}};${{x;/^$/{{s//{key} no/;H}};x}}"),
-                dest,
+                sshd_config_path,
             )
             .settings(&common_set)
-            .stdout(&src)
             .run()?;
-
-            // Move the updated config contents.
-            cmd!("dd", format!("if={src}"), format!("of={dest}")).run_with(&sudo_set)?;
-            cmd!("rm", src).run_with(&common_set)?;
 
             // Verify sshd config and restart the SSH server.
             cmd!("sshd", "-t").run_with(&sudo_set)?;
@@ -322,7 +313,6 @@ impl Run for InitState {
 
         cmd!("nomad", "-autocomplete-install").run_with(&common_set)?;
         cmd!("complete", "-C", "/usr/local/bin/nomad", "nomad").run_with(&common_set)?;
-        cmd!("systemctl", "daemon-reload").run_with(&common_set)?;
         cmd!("systemctl", "enable", "nomad").run_with(&common_set)?;
         cmd!("systemctl", "start", "nomad").run_with(&common_set)?;
 
@@ -331,15 +321,18 @@ impl Run for InitState {
 
     fn initialize_consul(proc: &mut Init, registry: &impl WriteStore) -> Result<()> {
         let cluster = &proc.cluster;
-        let (_, client) = proc.get_password_and_ssh_client(registry)?;
+        let node_address = &proc.node_address;
+        let (password, client) = proc.get_password_and_ssh_client(registry)?;
         let common_set = process::Settings::default().ssh(&client);
 
+        // Set up command autocomplete.
         cmd!("consul", "-autocomplete-install").run_with(&common_set)?;
         cmd!("complete", "-C", "/usr/local/bin/consul", "consul").run_with(&common_set)?;
 
+        // Generate common cluster key.
         let registry_key = format!("clusters/{cluster}/key");
-        let key: String = match registry.get(&registry_key) {
-            Ok(key) => key.try_into()?,
+        let encrypt_key: String = match registry.get(&registry_key).and_then(String::try_from) {
+            Ok(key) => key,
             Err(kv::Error::KeyDoesNotExist(_)) => {
                 let (_, key) = cmd!("consul", "keygen").run_with(&common_set)?;
                 registry.put(&registry_key, key.clone())?;
@@ -348,10 +341,105 @@ impl Run for InitState {
             Err(err) => return Err(err.into()),
         };
 
-        cmd!("consul", "tls", "ca", "create")
+        cmd!("mkdir", "-p", "/etc/consul.d/certs").run_with(&common_set)?;
+
+        // Create or distribute certificate authority certificate.
+        let cert_pub_key = format!("clusters/{cluster}/certs/ca_pub");
+        let cert_priv_key = format!("clusters/{cluster}/certs/ca_priv");
+        let cert_pub_path = "/etc/consul.d/certs/consul-agent-ca.pem";
+        let cert_priv_path = "/etc/consul.d/certs/consul-agent-ca-key.pem";
+        match registry.get(&cert_pub_key).and_then(kv::FileRef::try_from) {
+            Ok(ca_pub_file_ref) => {
+                // Read certificate and key files.
+                let ca_priv_file_ref: kv::FileRef = registry.get(cert_priv_key)?.try_into()?;
+                let mut ca_pub_file = File::open(ca_pub_file_ref.path())?;
+                let mut ca_priv_file = File::open(ca_priv_file_ref.path())?;
+                let mut ca_pub = String::new();
+                let mut ca_priv = String::new();
+                ca_pub_file.read_to_string(&mut ca_pub)?;
+                ca_priv_file.read_to_string(&mut ca_priv)?;
+
+                // Send certificate and key to server.
+                cmd!("cat")
+                    .settings(&common_set)
+                    .stdin_lines(ca_pub.lines())
+                    .stdout(&cert_pub_path)
+                    .run()?;
+                cmd!("cat")
+                    .settings(&common_set)
+                    .stdin_lines(ca_priv.lines())
+                    .stdout(&cert_priv_path)
+                    .run()?;
+            }
+            Err(kv::Error::KeyDoesNotExist(_)) => {
+                // Create CA certificate.
+                cmd!("consul", "tls", "ca", "create")
+                    .settings(&common_set)
+                    .working_directory("/etc/consul.d/certs")
+                    .run()?;
+
+                // Download certificate and key.
+                let (_, ca_pub) = cmd!("cat", cert_pub_path).run_with(&common_set)?;
+                let (_, ca_priv) = cmd!("cat", cert_priv_path)
+                    .settings(&common_set)
+                    .hide_stdout()
+                    .run()?;
+
+                // Store certificate and key in registry.
+                let ca_pub_file_ref = registry.create_file(cert_pub_key)?;
+                let ca_priv_file_ref = registry.create_file(cert_priv_key)?;
+                let mut ca_pub_file = File::options()
+                    .create_new(true)
+                    .write(true)
+                    .open(ca_pub_file_ref.path())?;
+                let mut ca_priv_file = File::options()
+                    .create_new(true)
+                    .write(true)
+                    .open(ca_priv_file_ref.path())?;
+                ca_pub_file.write_all(ca_pub.as_bytes())?;
+                ca_priv_file.write_all(ca_priv.as_bytes())?;
+            }
+            Err(err) => return Err(err.into()),
+        }
+
+        // Create server certificates.
+        cmd!("consul", "tls", "cert", "create", "-server", "-dc", cluster, "-domain", "consul")
             .settings(&common_set)
-            .working_directory("/run/consul")
+            .working_directory("/etc/consul.d/certs")
             .run()?;
+
+        // Remove key from server.
+        cmd!("rm", cert_priv_path).run_with(&common_set)?;
+
+        // Set or get auto-join address.
+        let auto_join_key = "clusters/{cluster}/auto_join_address";
+        let auto_join_address = match registry.get(&auto_join_key).and_then(String::try_from) {
+            Ok(address) => address,
+            Err(kv::Error::KeyDoesNotExist(_)) => {
+                let address = node_address.to_string();
+                registry.put(auto_join_key, address.clone())?;
+                address
+            }
+            Err(err) => return Err(err.into()),
+        };
+
+        // Update Consul configuration file
+        let encrypt_sed = format!(r#"s/^(encrypt = \[")temporary_key("\])$/\1{encrypt_key}\2/"#);
+        let retry_join_sed =
+            format!(r#"s/^(retry_join = \[")temporary_password("\])$/\1{auto_join_address}\2/"#);
+        let consul_config_path = "/etc/consul.d/consul.hcl";
+        cmd!("sed", "-ri", encrypt_sed, consul_config_path).run_with(&common_set)?;
+        cmd!("sed", "-ri", retry_join_sed, consul_config_path).run_with(&common_set)?;
+
+        // Validate Consul configuration.
+        cmd!("consul", "validate", "/etc/consul.d/")
+            .settings(&common_set)
+            .sudo_password(&*password)
+            .run()?;
+
+        // Start Consul service.
+        cmd!("systemctl", "enable", "consul").run_with(&common_set)?;
+        cmd!("systemctl", "start", "consul").run_with(&common_set)?;
 
         Ok(())
     }

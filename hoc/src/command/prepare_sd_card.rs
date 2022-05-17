@@ -171,7 +171,9 @@ impl Run for PrepareSdCardState {
         registry: &impl ReadStore,
         disk_partition_id: String,
     ) -> Result<Self> {
+        let cluster = &proc.cluster;
         let username = proc.username.as_ref().unwrap().as_str();
+        let address = proc.address.as_ref().unwrap();
 
         let pub_key = status!("Read SSH keypair").on(|| {
             let cluster = &proc.cluster;
@@ -197,7 +199,9 @@ impl Run for PrepareSdCardState {
             let data_map: serde_yaml::Value = serde_yaml::from_str(&format!(
                 include_str!("../../config/user-data"),
                 admin_username = username,
+                cluster = cluster,
                 hostname = proc.node_name,
+                ip_address = address,
                 ssh_pub_key = pub_key,
             ))
             .log_context("invalid user-data format")?;
@@ -216,7 +220,7 @@ impl Run for PrepareSdCardState {
             let gateway = proc.gateway.unwrap();
             let data_map: serde_yaml::Value = serde_yaml::from_str(&format!(
                 include_str!("../../config/network-config"),
-                address = proc.address.unwrap(),
+                address = address,
                 gateway = gateway,
                 gateway_ip_version = if gateway.is_ipv4() {
                     4
