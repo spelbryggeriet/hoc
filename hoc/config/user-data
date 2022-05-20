@@ -98,6 +98,7 @@ users:
     ssh_authorized_keys:
       - {ssh_pub_key}
     sudo: 'ALL=(ALL) PASSWD:ALL'
+    shell: /bin/bash
   - name: nomad
     system: true
     homedir: /etc/nomad.d

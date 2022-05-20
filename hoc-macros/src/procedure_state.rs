@@ -304,8 +304,9 @@ fn gen_run_trait(
         let name = Ident::new(&v.ident.to_string().to_snake_case(), Span::call_site());
         let args = v.fields.iter().map(|f| &f.ident);
         let persist = !v.attrs.contains(&StateVariantAttr::Transient);
+        let finish = v.attrs.contains(&StateVariantAttr::Finish);
 
-        if v.attrs.contains(&StateVariantAttr::Finish) {
+        if finish {
             quote!({
                 #state_name::#name(procedure, registry #(, #args)*)?;
                 ::hoc_core::procedure::Halt {
@@ -371,22 +372,35 @@ fn parse_state_variant(variant: &Variant) -> StateVariant {
             ident,
             fields: Fields::Named(ref fields),
             discriminant: None,
-        } => StateVariant {
-            attrs: crate::parse_attributes("state", attrs, ident),
-            ident,
-            fields: fields
-                .named
-                .iter()
-                .map(|f| {
-                    let ident = f.ident.as_ref().unwrap();
-                    StateVariantField {
-                        attrs: crate::parse_attributes("state", &f.attrs, ident),
-                        ident,
-                        ty: &f.ty,
-                    }
-                })
-                .collect(),
-        },
+        } => {
+            let parsed_attrs = crate::parse_attributes("state", attrs, ident);
+            if parsed_attrs.contains(&StateVariantAttr::Finish) {
+                let transient = attrs
+                    .iter()
+                    .zip(parsed_attrs.iter())
+                    .find_map(|(a, p)| (*p == StateVariantAttr::Transient).then(|| a));
+                if let Some(transient) = transient {
+                    abort!(transient, "a finish state must not be transient");
+                }
+            }
+
+            StateVariant {
+                attrs: parsed_attrs,
+                ident,
+                fields: fields
+                    .named
+                    .iter()
+                    .map(|f| {
+                        let ident = f.ident.as_ref().unwrap();
+                        StateVariantField {
+                            attrs: crate::parse_attributes("state", &f.attrs, ident),
+                            ident,
+                            ty: &f.ty,
+                        }
+                    })
+                    .collect(),
+            }
+        }
         Variant {
             attrs,
             ident,

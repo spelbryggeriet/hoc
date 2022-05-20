@@ -16,7 +16,7 @@ use hoc_core::{
 use hoc_log::{choose, error, info, prompt, status, LogErr, Result};
 use hoc_macros::{Procedure, ProcedureState};
 
-use crate::command::util::{disk, os::OperatingSystem};
+use crate::command::util::{cidr::Cidr, disk, os::OperatingSystem};
 
 #[derive(Procedure, StructOpt)]
 #[procedure(dependencies(CreateUser(cluster=cluster, username=username), DownloadImage(os=os)))]
@@ -43,6 +43,10 @@ pub struct PrepareSdCard {
     #[structopt(long, required_if("os", "ubuntu"))]
     address: Option<IpAddr>,
 
+    /// The number of bits in the subnet.
+    #[structopt(long, required_if("os", "ubuntu"))]
+    prefix_len: Option<u32>,
+
     /// The default gateway for the network interface.
     #[structopt(long, required_if("os", "ubuntu"))]
     gateway: Option<IpAddr>,
@@ -65,7 +69,7 @@ pub enum PrepareSdCardState {
         disk_partition_id: String,
     },
 
-    #[state(transient, finish)]
+    #[state(finish)]
     Unmount {
         disk_partition_id: String,
     },
@@ -174,6 +178,7 @@ impl Run for PrepareSdCardState {
         let cluster = &proc.cluster;
         let username = proc.username.as_ref().unwrap().as_str();
         let address = proc.address.as_ref().unwrap();
+        let prefix_len = proc.prefix_len.unwrap();
 
         let pub_key = status!("Read SSH keypair").on(|| {
             let cluster = &proc.cluster;
@@ -220,7 +225,10 @@ impl Run for PrepareSdCardState {
             let gateway = proc.gateway.unwrap();
             let data_map: serde_yaml::Value = serde_yaml::from_str(&format!(
                 include_str!("../../config/network-config"),
-                address = address,
+                address = Cidr {
+                    ip_addr: address.clone(),
+                    prefix_len: prefix_len,
+                },
                 gateway = gateway,
                 gateway_ip_version = if gateway.is_ipv4() {
                     4
@@ -249,6 +257,8 @@ impl Run for PrepareSdCardState {
             hoc_log::Result::Ok(())
         })?;
 
+        status!("Sync image disk writes").on(|| cmd!("sync",).run())?;
+
         Ok(Unmount { disk_partition_id })
     }
 
@@ -257,7 +267,6 @@ impl Run for PrepareSdCardState {
         _registry: &impl ReadStore,
         disk_partition_id: String,
     ) -> Result<()> {
-        status!("Sync image disk writes").on(|| cmd!("sync",).run())?;
         status!("Unmount image disk")
             .on(|| cmd!("diskutil", "unmount", disk_partition_id).run())?;
 

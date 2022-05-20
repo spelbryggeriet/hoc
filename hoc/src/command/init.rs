@@ -28,8 +28,8 @@ const CONSUL_URL: &str =
 const CONSUL_VERSION: &str = "1.11.4";
 
 const ENVOY_URL: &str =
-    "https://archive.tetratelabs.io/envoy/download/v1.21.1/envoy-v1.20.2-linux-arm64.tar.xz";
-const ENVOY_VERSION: &str = "1.20.2";
+    "https://archive.tetratelabs.io/envoy/download/v1.22.0/envoy-v1.22.0-linux-arm64.tar.xz";
+const ENVOY_VERSION: &str = "1.22.0";
 
 #[derive(Procedure, StructOpt)]
 #[procedure(dependencies(PrepareSdCard(cluster=cluster, nodeName=node_name)))]
@@ -269,40 +269,44 @@ impl Run for InitState {
     }
 
     fn install_dependencies(proc: &mut Init, registry: &impl WriteStore) -> Result<InitState> {
-        let (_, client) = proc.get_password_and_ssh_client(registry)?;
-        let common_set = process::Settings::default().ssh(&client);
-        let all_set =
-            process::Settings::from_settings(&common_set).working_directory("/run/consul");
+        let (password, client) = proc.get_password_and_ssh_client(registry)?;
+        let sudo_set = process::Settings::default()
+            .ssh(&client)
+            .sudo_password(&*password);
 
-        let nomad_filename = format!("{NOMAD_VERSION}.zip");
-        let consul_filename = format!("{CONSUL_VERSION}.zip");
-        let envoy_filename = format!("{ENVOY_VERSION}.tar.xz");
+        let bin_dir = "/usr/local/bin";
+        let nomad_dir = "/run/nomad";
+        let consul_dir = "/run/consul";
+        let envoy_dir = "/run/envoy";
+        let nomad_path = format!("{nomad_dir}/{NOMAD_VERSION}.zip");
+        let consul_path = format!("{consul_dir}/{CONSUL_VERSION}.zip");
+        let envoy_path = format!("{envoy_dir}/{ENVOY_VERSION}.tar.xz");
 
         // Nomad.
-        cmd!("mkdir", "/run/nomad").run_with(&common_set)?;
-        cmd!("wget", NOMAD_URL, "-O", nomad_filename).run_with(&all_set)?;
-        cmd!("unzip", "-o", nomad_filename, "-d", "/usr/local/bin").run_with(&all_set)?;
+        cmd!("mkdir", "-p", nomad_dir).run_with(&sudo_set)?;
+        cmd!("wget", NOMAD_URL, "-O", nomad_path).run_with(&sudo_set)?;
+        cmd!("unzip", "-o", nomad_path, "-d", bin_dir).run_with(&sudo_set)?;
 
         // Consul.
-        cmd!("mkdir", "/run/consul").run_with(&common_set)?;
-        cmd!("wget", CONSUL_URL, "-O", consul_filename).run_with(&all_set)?;
-        cmd!("unzip", "-o", consul_filename, "-d", "/usr/local/bin").run_with(&all_set)?;
+        cmd!("mkdir", "-p", consul_dir).run_with(&sudo_set)?;
+        cmd!("wget", CONSUL_URL, "-O", consul_path).run_with(&sudo_set)?;
+        cmd!("unzip", "-o", consul_path, "-d", bin_dir).run_with(&sudo_set)?;
 
         // Envoy.
-        cmd!("mkdir", "/run/envoy").run_with(&common_set)?;
-        cmd!("wget", ENVOY_URL, "-O", envoy_filename).run_with(&all_set)?;
-        cmd!("xz", "-d", envoy_filename).run_with(&all_set)?;
+        cmd!("mkdir", "-p", envoy_dir).run_with(&sudo_set)?;
+        cmd!("wget", ENVOY_URL, "-O", envoy_path).run_with(&sudo_set)?;
+        cmd!("xz", "-d", envoy_path).run_with(&sudo_set)?;
         cmd!(
             "tar",
             "-xf",
-            envoy_filename.trim_end_matches(".xz"),
+            envoy_path.trim_end_matches(".xz"),
             "--overwrite",
             "--strip-components",
             "2",
             "-C",
             "/usr/local/bin"
         )
-        .run_with(&all_set)?;
+        .run_with(&sudo_set)?;
 
         Ok(InitializeNomad)
     }
@@ -323,7 +327,8 @@ impl Run for InitState {
         let cluster = &proc.cluster;
         let node_address = &proc.node_address;
         let (password, client) = proc.get_password_and_ssh_client(registry)?;
-        let common_set = process::Settings::default().ssh(&client);
+        let mut common_set = process::Settings::default().ssh(&client);
+        let sudo_set = process::Settings::from_settings(&common_set).sudo_password(&*password);
 
         // Set up command autocomplete.
         cmd!("consul", "-autocomplete-install").run_with(&common_set)?;
@@ -344,14 +349,17 @@ impl Run for InitState {
         cmd!("mkdir", "-p", "/etc/consul.d/certs").run_with(&common_set)?;
 
         // Create or distribute certificate authority certificate.
-        let cert_pub_key = format!("clusters/{cluster}/certs/ca_pub");
-        let cert_priv_key = format!("clusters/{cluster}/certs/ca_priv");
-        let cert_pub_path = "/etc/consul.d/certs/consul-agent-ca.pem";
-        let cert_priv_path = "/etc/consul.d/certs/consul-agent-ca-key.pem";
-        match registry.get(&cert_pub_key).and_then(kv::FileRef::try_from) {
+        let ca_pub_key = format!("clusters/{cluster}/certs/ca_pub");
+        let ca_priv_key = format!("clusters/{cluster}/certs/ca_priv");
+        let certs_dir = "/etc/consul.d/certs";
+        let ca_pub_filename = "consul-agent-ca.pem";
+        let ca_priv_filename = "consul-agent-ca-key.pem";
+        let ca_pub_path = format!("{certs_dir}/{ca_pub_filename}");
+        let ca_priv_path = format!("{certs_dir}/{ca_priv_filename}");
+        match registry.get(&ca_pub_key).and_then(kv::FileRef::try_from) {
             Ok(ca_pub_file_ref) => {
                 // Read certificate and key files.
-                let ca_priv_file_ref: kv::FileRef = registry.get(cert_priv_key)?.try_into()?;
+                let ca_priv_file_ref: kv::FileRef = registry.get(ca_priv_key)?.try_into()?;
                 let mut ca_pub_file = File::open(ca_pub_file_ref.path())?;
                 let mut ca_priv_file = File::open(ca_priv_file_ref.path())?;
                 let mut ca_pub = String::new();
@@ -363,31 +371,29 @@ impl Run for InitState {
                 cmd!("cat")
                     .settings(&common_set)
                     .stdin_lines(ca_pub.lines())
-                    .stdout(&cert_pub_path)
+                    .stdout(&ca_pub_path)
                     .run()?;
                 cmd!("cat")
                     .settings(&common_set)
                     .stdin_lines(ca_priv.lines())
-                    .stdout(&cert_priv_path)
+                    .stdout(&ca_priv_path)
                     .run()?;
             }
             Err(kv::Error::KeyDoesNotExist(_)) => {
                 // Create CA certificate.
-                cmd!("consul", "tls", "ca", "create")
-                    .settings(&common_set)
-                    .working_directory("/etc/consul.d/certs")
-                    .run()?;
+                cmd!("consul", "tls", "ca", "create").run_with(&common_set)?;
+                cmd!("mv", ca_pub_filename, ca_priv_filename, certs_dir).run_with(&sudo_set)?;
 
                 // Download certificate and key.
-                let (_, ca_pub) = cmd!("cat", cert_pub_path).run_with(&common_set)?;
-                let (_, ca_priv) = cmd!("cat", cert_priv_path)
+                let (_, ca_pub) = cmd!("cat", ca_pub_path).run_with(&common_set)?;
+                let (_, ca_priv) = cmd!("cat", ca_priv_path)
                     .settings(&common_set)
                     .hide_stdout()
                     .run()?;
 
                 // Store certificate and key in registry.
-                let ca_pub_file_ref = registry.create_file(cert_pub_key)?;
-                let ca_priv_file_ref = registry.create_file(cert_priv_key)?;
+                let ca_pub_file_ref = registry.create_file(ca_pub_key)?;
+                let ca_priv_file_ref = registry.create_file(ca_priv_key)?;
                 let mut ca_pub_file = File::options()
                     .create_new(true)
                     .write(true)
@@ -403,13 +409,14 @@ impl Run for InitState {
         }
 
         // Create server certificates.
+        let cert_filename = format!("{cluster}-server-consul-0.pem");
+        let key_filename = format!("{cluster}-server-consul-0-key.pem");
         cmd!("consul", "tls", "cert", "create", "-server", "-dc", cluster, "-domain", "consul")
-            .settings(&common_set)
-            .working_directory("/etc/consul.d/certs")
-            .run()?;
+            .run_with(&common_set)?;
+        cmd!("mv", cert_filename, key_filename, certs_dir).run_with(&sudo_set)?;
 
         // Remove key from server.
-        cmd!("rm", cert_priv_path).run_with(&common_set)?;
+        cmd!("rm", ca_priv_path).run_with(&common_set)?;
 
         // Set or get auto-join address.
         let auto_join_key = "clusters/{cluster}/auto_join_address";
@@ -440,6 +447,88 @@ impl Run for InitState {
         // Start Consul service.
         cmd!("systemctl", "enable", "consul").run_with(&common_set)?;
         cmd!("systemctl", "start", "consul").run_with(&common_set)?;
+
+        // Set up ACL.
+        let mgmt_token_key = format!("clusters/{cluster}/tokens/management");
+        let node_token_key = format!("clusters/{cluster}/tokens/node");
+        let (mgmt_token, node_token) =
+            match registry.get(&mgmt_token_key).and_then(String::try_from) {
+                Ok(token) => (
+                    token,
+                    registry.get(node_token_key).and_then(String::try_from)?,
+                ),
+                Err(kv::Error::KeyDoesNotExist(_)) => {
+                    // Bootstrap ACL.
+                    let cert_path = format!("/etc/consul.d/certs/{cluster}-server-consul-0.pem");
+                    let key_path = format!("/etc/consul.d/certs/{cluster}-server-consul-0-key.pem");
+                    let (_, mgmt_token) = cmd!("consul", "acl", "bootstrap")
+                        .settings(&common_set)
+                        .env("CONSUL_CACERT", ca_pub_path)
+                        .env("CONSUL_CLIENT_CERT", cert_path)
+                        .env("CONSUL_CLIENT_KEY", key_path)
+                        .hide_stdout()
+                        .run()?;
+
+                    common_set = common_set.secret(mgmt_token.clone());
+
+                    // Create ACL policy.
+                    cmd!("cat")
+                        .settings(&common_set)
+                        .stdin_lines(include_str!("../../config/node-policy.hcl").lines())
+                        .stdout(&"node-policy.hcl")
+                        .run()?;
+
+                    cmd!(
+                        "consul",
+                        "acl",
+                        "policy",
+                        "create",
+                        format!("-token={mgmt_token}"),
+                        "-name",
+                        "node-policy",
+                        "-rules",
+                        "@node-policy.hcl"
+                    )
+                    .run_with(&common_set)?;
+
+                    cmd!("rm", "node-policy.hcl").run_with(&common_set)?;
+
+                    // Create ACL token.
+                    let (_, node_token) = cmd!(
+                        "consul",
+                        "acl",
+                        "token",
+                        "create",
+                        format!("-token={mgmt_token}"),
+                        "-description",
+                        "node token",
+                        "-policy-name",
+                        "node-policy"
+                    )
+                    .settings(&common_set)
+                    .hide_stdout()
+                    .run()?;
+
+                    common_set = common_set.secret(node_token.clone());
+
+                    registry.put(mgmt_token_key, mgmt_token.clone())?;
+                    registry.put(node_token_key, node_token.clone())?;
+
+                    (mgmt_token, node_token)
+                }
+                Err(err) => return Err(err.into()),
+            };
+
+        // Assign ACL token to node.
+        cmd!(
+            "consul",
+            "acl",
+            "set-agent-token",
+            format!("-token={mgmt_token}"),
+            "agent",
+            node_token,
+        )
+        .run_with(&common_set)?;
 
         Ok(())
     }

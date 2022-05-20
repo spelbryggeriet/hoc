@@ -1,5 +1,6 @@
 use std::{
     borrow::Cow,
+    collections::HashMap,
     ffi::OsStr,
     io::{self, BufRead, BufReader, Read},
     process,
@@ -48,14 +49,14 @@ fn process_exit_err_msg(program: &str, status: i32, stdout: &str, stderr: &str) 
 }
 
 trait Obfuscate<'a> {
-    fn obfuscate(self, secrets: &[&str]) -> Cow<'a, str>;
+    fn obfuscate<S: AsRef<str>>(self, secrets: &[S]) -> Cow<'a, str>;
 }
 
 impl<'a> Obfuscate<'a> for Cow<'a, str> {
-    fn obfuscate(mut self, secrets: &[&str]) -> Cow<'a, str> {
-        for secret in secrets {
-            if self.contains(secret) {
-                self = Cow::Owned(self.replace(secret, &"<obfuscated>".red().to_string()));
+    fn obfuscate<S: AsRef<str>>(mut self, secrets: &[S]) -> Cow<'a, str> {
+        for secret in secrets.into_iter() {
+            if self.contains(secret.as_ref()) {
+                self = Cow::Owned(self.replace(secret.as_ref(), &"<obfuscated>".red().to_string()));
             }
         }
         self
@@ -63,13 +64,13 @@ impl<'a> Obfuscate<'a> for Cow<'a, str> {
 }
 
 impl<'a> Obfuscate<'a> for String {
-    fn obfuscate(self, secrets: &[&str]) -> Cow<'a, str> {
+    fn obfuscate<S: AsRef<str>>(self, secrets: &[S]) -> Cow<'a, str> {
         Cow::<str>::Owned(self).obfuscate(secrets)
     }
 }
 
 impl<'a> Obfuscate<'a> for &'a str {
-    fn obfuscate(self, secrets: &[&str]) -> Cow<'a, str> {
+    fn obfuscate<S: AsRef<str>>(self, secrets: &[S]) -> Cow<'a, str> {
         Cow::Borrowed(self).obfuscate(secrets)
     }
 }
@@ -93,6 +94,16 @@ impl<'a> Quotify<'a> for Cow<'a, str> {
         } else {
             self
         }
+    }
+}
+
+impl<'a> Quotify<'a> for &'a Cow<'a, str> {
+    fn needs_quotes(&self) -> bool {
+        Cow::needs_quotes(self)
+    }
+
+    fn quotify(self) -> Cow<'a, str> {
+        Cow::quotify(Cow::Borrowed(self))
     }
 }
 
@@ -148,8 +159,8 @@ pub struct Process<'a> {
     settings: Settings<'a>,
 }
 
-impl<'process> Process<'process> {
-    pub fn cmd<S: AsRef<OsStr>>(program: &'process S) -> Self {
+impl<'proc> Process<'proc> {
+    pub fn cmd<S: AsRef<OsStr>>(program: &'proc S) -> Self {
         Self {
             program: program.as_ref(),
             args: Vec::new(),
@@ -157,23 +168,27 @@ impl<'process> Process<'process> {
         }
     }
 
-    pub fn arg<S: AsRef<OsStr>>(mut self, arg: &'process S) -> Self {
+    pub fn arg<S: AsRef<OsStr>>(mut self, arg: &'proc S) -> Self {
         self.args.push(Cow::Borrowed(arg.as_ref()));
         self
     }
 
-    pub fn settings(mut self, settings: &'process Settings) -> Self {
+    pub fn settings(mut self, settings: &'proc Settings) -> Self {
         self.settings = Settings::from_settings(settings);
         self
     }
 
-    pub fn ssh(mut self, client: &'process ssh::SshClient) -> Self {
-        self.settings = self.settings.ssh(client);
+    pub fn env<K, V>(mut self, key: K, value: V) -> Self
+    where
+        K: Into<Cow<'proc, str>>,
+        V: Into<Cow<'proc, str>>,
+    {
+        self.settings = self.settings.env(key, value);
         self
     }
 
-    pub fn working_directory<S: Into<Cow<'process, str>>>(mut self, working_directory: S) -> Self {
-        self.settings = self.settings.working_directory(working_directory);
+    pub fn ssh(mut self, client: &'proc ssh::SshClient) -> Self {
+        self.settings = self.settings.ssh(client);
         self
     }
 
@@ -182,12 +197,12 @@ impl<'process> Process<'process> {
         self
     }
 
-    pub fn sudo_password<S: Into<Cow<'process, str>>>(mut self, password: S) -> Self {
+    pub fn sudo_password<S: Into<Cow<'proc, str>>>(mut self, password: S) -> Self {
         self.settings = self.settings.sudo_password(password);
         self
     }
 
-    pub fn stdin_line<S: Into<Cow<'process, str>>>(mut self, input: S) -> Self {
+    pub fn stdin_line<S: Into<Cow<'proc, str>>>(mut self, input: S) -> Self {
         self.settings = self.settings.stdin_line(input);
         self
     }
@@ -195,13 +210,13 @@ impl<'process> Process<'process> {
     pub fn stdin_lines<I, S>(mut self, input: I) -> Self
     where
         I: IntoIterator<Item = S>,
-        S: Into<Cow<'process, str>>,
+        S: Into<Cow<'proc, str>>,
     {
         self.settings = self.settings.stdin_lines(input);
         self
     }
 
-    pub fn secret<S: AsRef<str>>(mut self, secret: &'process S) -> Self {
+    pub fn secret<S: Into<Cow<'proc, str>>>(mut self, secret: S) -> Self {
         self.settings = self.settings.secret(secret);
         self
     }
@@ -216,7 +231,7 @@ impl<'process> Process<'process> {
         self
     }
 
-    pub fn stdout<S: AsRef<OsStr>>(mut self, path: &'process S) -> Self {
+    pub fn stdout<S: AsRef<OsStr>>(mut self, path: &'proc S) -> Self {
         self.settings = self.settings.stdout(path);
         self
     }
@@ -253,23 +268,27 @@ trait ProcessOutput {
     fn stderr(&mut self) -> Self::Stderr;
     fn finish(self) -> Result<Option<i32>, Error>;
 
-    fn read_stdout_to_string(
+    fn read_stdout_to_string<S: AsRef<str>>(
         &mut self,
         show_output: bool,
-        secrets: &[&str],
+        secrets: &[S],
     ) -> Result<String, Error> {
         Self::read_lines(self.stdout(), show_output, secrets)
     }
 
-    fn read_stderr_to_string(
+    fn read_stderr_to_string<S: AsRef<str>>(
         &mut self,
         show_output: bool,
-        secrets: &[&str],
+        secrets: &[S],
     ) -> Result<String, Error> {
         Self::read_lines(self.stderr(), show_output, secrets)
     }
 
-    fn read_lines(reader: impl Read, show_output: bool, secrets: &[&str]) -> Result<String, Error> {
+    fn read_lines<S: AsRef<str>>(
+        reader: impl Read,
+        show_output: bool,
+        secrets: &[S],
+    ) -> Result<String, Error> {
         let mut output = String::new();
         let buf_reader = BufReader::new(reader);
         for line in buf_reader.lines() {
@@ -296,12 +315,12 @@ trait ProcessOutput {
 
 #[derive(Default)]
 pub struct Settings<'a> {
-    working_directory: Option<Cow<'a, str>>,
+    env: HashMap<Cow<'a, str>, Cow<'a, str>>,
     sudo: Option<Option<Cow<'a, str>>>,
     ssh_client: Option<&'a ssh::SshClient>,
     pipe_input: Vec<Cow<'a, str>>,
     stdout: Option<&'a OsStr>,
-    secrets: Vec<&'a str>,
+    secrets: Vec<Cow<'a, str>>,
     success_codes: Option<Vec<i32>>,
     silent: bool,
     hide_stdout: bool,
@@ -311,7 +330,7 @@ pub struct Settings<'a> {
 impl<'set> Settings<'set> {
     pub fn from_settings(set: &Self) -> Self {
         Self {
-            working_directory: set.working_directory.clone(),
+            env: set.env.clone(),
             sudo: set.sudo.clone(),
             pipe_input: set.pipe_input.clone(),
             secrets: set.secrets.clone(),
@@ -320,13 +339,17 @@ impl<'set> Settings<'set> {
         }
     }
 
-    pub fn ssh(mut self, client: &'set ssh::SshClient) -> Self {
-        self.ssh_client = Some(client);
+    pub fn env<K, V>(mut self, key: K, value: V) -> Self
+    where
+        K: Into<Cow<'set, str>>,
+        V: Into<Cow<'set, str>>,
+    {
+        self.env.insert(key.into(), value.into());
         self
     }
 
-    pub fn working_directory<S: Into<Cow<'set, str>>>(mut self, working_directory: S) -> Self {
-        self.working_directory = Some(working_directory.into());
+    pub fn ssh(mut self, client: &'set ssh::SshClient) -> Self {
+        self.ssh_client = Some(client);
         self
     }
 
@@ -354,8 +377,8 @@ impl<'set> Settings<'set> {
         self
     }
 
-    pub fn secret<S: AsRef<str>>(mut self, secret: &'set S) -> Self {
-        self.secrets.push(secret.as_ref());
+    pub fn secret<S: Into<Cow<'set, str>>>(mut self, secret: S) -> Self {
+        self.secrets.push(secret.into());
         self
     }
 
@@ -371,7 +394,7 @@ impl<'set> Settings<'set> {
 
     pub fn silent(mut self) -> Self {
         self.silent = true;
-        self
+        self.hide_output()
     }
 
     pub fn stdout<S: AsRef<OsStr>>(mut self, path: &'set S) -> Self {

@@ -10,8 +10,8 @@ use thiserror::Error;
 
 #[derive(Copy, Clone, Eq, PartialEq, Hash)]
 pub struct Cidr {
-    ip_addr: IpAddr,
-    prefix_len: u32,
+    pub ip_addr: IpAddr,
+    pub prefix_len: u32,
 }
 
 #[derive(Error, Debug)]

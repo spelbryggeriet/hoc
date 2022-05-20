@@ -19,15 +19,13 @@ pub fn exec<'a>(
     args: Vec<Cow<'a, OsStr>>,
     set: &Settings,
 ) -> Result<(i32, String), Error> {
-    let show_stdout = !set.silent && !set.hide_stdout;
-    let show_stderr = !set.silent && !set.hide_stderr;
-
     if !set.silent {
         let sudo_str = if set.sudo.is_some() {
             "sudo ".green().to_string()
         } else {
             String::new()
         };
+
         let command_str = args
             .iter()
             .map(|arg| {
@@ -41,18 +39,6 @@ pub fn exec<'a>(
             .fold(program.to_string_lossy().green().to_string(), |out, arg| {
                 out + " " + &arg
             });
-        let redirect_output_str = if let Some(path) = set.stdout {
-            format!(" 1>{}", path.to_string_lossy().quotify())
-                .blue()
-                .to_string()
-        } else {
-            String::new()
-        };
-        let redirect_input_str = if !set.pipe_input.is_empty() {
-            format!(" {}{}", "0<".blue(), "'mark'".obfuscate(&["mark"]).yellow())
-        } else {
-            String::new()
-        };
 
         let client = if let Some(ref client) = set.ssh_client {
             client.host().blue()
@@ -60,11 +46,9 @@ pub fn exec<'a>(
             "this computer".blue()
         };
 
-        let cmd_status = status!(
-                "Run command on {client}: {sudo_str}{command_str}{redirect_output_str}{redirect_input_str}",
-            );
+        let cmd_status = status!("Run ({client}): {sudo_str}{command_str}",);
 
-        match exec_impl(program, args, show_stdout, show_stderr, set) {
+        match exec_impl(program, args, set) {
             Ok((status, output)) => {
                 cmd_status
                     .with_label(format!("exit: {status}").green())
@@ -97,15 +81,13 @@ pub fn exec<'a>(
             err => err,
         }
     } else {
-        exec_impl(program, args, show_stdout, show_stderr, set)
+        exec_impl(program, args, set)
     }
 }
 
 fn exec_impl<'a>(
     mut program: &'a OsStr,
     mut args: Vec<Cow<'a, OsStr>>,
-    show_stdout: bool,
-    show_stderr: bool,
     set: &Settings,
 ) -> Result<(i32, String), Error> {
     let program_str = program.to_string_lossy().into_owned();
@@ -128,37 +110,39 @@ fn exec_impl<'a>(
         }
     };
 
+    let mut cmd_str = args
+        .iter()
+        .map(|arg| arg.to_string_lossy().quotify())
+        .fold(program.to_string_lossy().into_owned(), |out, arg| {
+            out + " " + &arg
+        });
+
     let (stdout, stderr, status) = if let Some(client) = set.ssh_client {
-        let mut cmd = args
-            .iter()
-            .map(|arg| arg.to_string_lossy().quotify())
-            .fold(program_str.clone(), |out, arg| out + " " + &arg);
-
-        if let Some(ref working_directory) = set.working_directory {
-            cmd = format!("cd {} ; {}", working_directory, cmd);
-        }
-
         if let Some(path) = set.stdout {
-            cmd += &format!(" 1>{}", path.to_string_lossy().quotify());
+            cmd_str += &format!(" 1>{}", path.to_string_lossy().quotify());
         }
 
-        let mut channel = client.spawn(&cmd, &set.pipe_input)?;
+        let mut channel = client.spawn(&cmd_str, &pipe_input)?;
+
+        for (key, value) in set.env.iter() {
+            channel
+                .setenv(key, value)
+                .map_err(super::ssh::SshError::Ssh)?;
+        }
 
         (
-            channel.read_stderr_to_string(show_stdout, &set.secrets)?,
-            channel.read_stderr_to_string(show_stderr, &set.secrets)?,
+            channel.read_stderr_to_string(!set.hide_stdout, &set.secrets)?,
+            channel.read_stderr_to_string(!set.hide_stderr, &set.secrets)?,
             channel.finish()?,
         )
     } else {
-        let mut cmd = std::process::Command::new(program);
-        cmd.args(&args).stdin(Stdio::piped()).stderr(Stdio::piped());
-
-        if let Some(ref working_directory) = set.working_directory {
-            cmd.current_dir(working_directory.as_ref());
-        }
+        let mut cmd = std::process::Command::new("sh");
+        cmd.args(["-c", &cmd_str])
+            .stdin(Stdio::piped())
+            .stderr(Stdio::piped());
 
         if let Some(path) = set.stdout {
-            cmd.stdin(
+            cmd.stdout(
                 File::options()
                     .write(true)
                     .truncate(true)
@@ -169,19 +153,23 @@ fn exec_impl<'a>(
             cmd.stdout(Stdio::piped());
         }
 
+        for (key, value) in set.env.iter() {
+            cmd.env(key.as_ref(), value.as_ref());
+        }
+
         let mut child = cmd.spawn()?;
 
-        if !set.pipe_input.is_empty() {
+        if !pipe_input.is_empty() {
             let mut stdin = child.stdin.take().unwrap();
-            for input in &set.pipe_input {
+            for input in &pipe_input {
                 stdin.write_all(input.as_bytes())?;
                 stdin.write_all(b"\n")?;
             }
         }
 
         (
-            child.read_stdout_to_string(show_stdout, &set.secrets)?,
-            child.read_stderr_to_string(show_stderr, &set.secrets)?,
+            child.read_stdout_to_string(!set.hide_stdout, &set.secrets)?,
+            child.read_stderr_to_string(!set.hide_stderr, &set.secrets)?,
             child.finish()?,
         )
     };
@@ -190,11 +178,11 @@ fn exec_impl<'a>(
         let success_codes = set.success_codes.as_deref().unwrap_or(&[SUCCESS_CODE]);
         if success_codes.contains(&status) {
             if !set.silent {
-                if !show_stdout && !show_stderr {
+                if set.hide_stdout && set.hide_stderr {
                     info!("{}", "<output hidden>".blue());
-                } else if !show_stdout {
+                } else if set.hide_stdout {
                     info!("{}", "<stdout hidden>".blue());
-                } else if !show_stderr {
+                } else if set.hide_stderr {
                     info!("{}", "<stderr hidden>".blue());
                 }
             }

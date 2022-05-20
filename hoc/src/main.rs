@@ -299,7 +299,7 @@ fn run_procedure<P: Procedure>(
     mut proc: P,
     rerun: bool,
 ) -> hoc_log::Result<()> {
-    let history_index = status!("Prepare").on(|| {
+    let history_index = status!("Check environment").on(|| {
         let history_index = get_history_item_key(context, &proc)?;
 
         info!("Validating registry state");
