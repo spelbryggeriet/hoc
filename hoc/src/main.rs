@@ -352,10 +352,10 @@ fn main() {
         let main_command = MainCommand::from_args();
         let rerun = main_command.rerun;
         match main_command.procedure {
-            Command::CreateUser(proc) => run_procedure(&mut context, proc, rerun)?,
             Command::DownloadImage(proc) => run_procedure(&mut context, proc, rerun)?,
-            Command::PrepareSdCard(proc) => run_procedure(&mut context, proc, rerun)?,
             Command::Init(proc) => run_procedure(&mut context, proc, rerun)?,
+            Command::PrepareCluster(proc) => run_procedure(&mut context, proc, rerun)?,
+            Command::PrepareSdCard(proc) => run_procedure(&mut context, proc, rerun)?,
         }
         Ok(())
     };

@@ -5,28 +5,8 @@ use std::{
 
 use console::Style;
 use dialoguer::Password;
-use thiserror::Error;
 
-use crate::{
-    context::PrintContext,
-    log::{LogErr, LogType},
-    prefix::PrefixPrefs,
-    Never,
-};
-
-#[derive(Debug, Error)]
-pub enum Error {
-    #[error("passwords does not match")]
-    MismatchedPasswords,
-}
-
-impl From<Error> for crate::Error {
-    fn from(err: Error) -> Self {
-        Result::<Never, _>::Err(err)
-            .log_context("hidden input")
-            .unwrap_err()
-    }
-}
+use crate::{context::PrintContext, info, prefix::PrefixPrefs};
 
 #[must_use]
 pub struct HiddenInput<'a> {
@@ -49,32 +29,41 @@ impl<'input> HiddenInput<'input> {
         self
     }
 
-    pub fn get(self) -> Result<String, Error> {
-        let mut print_context = self.print_context.lock().unwrap();
-
-        print_context.print_spacing_if_needed(LogType::Input);
-
-        let mut prompt = print_context.create_line_prefix(PrefixPrefs::in_status().flag(">"));
+    pub fn get(self) -> String {
+        let mut prompt = self
+            .print_context
+            .lock()
+            .unwrap()
+            .create_line_prefix(PrefixPrefs::in_status().flag(">"));
         prompt += self.message.as_ref();
+        prompt = Style::new().cyan().apply_to(prompt).to_string();
+        let verify_prompt = prompt.clone() + " (verify)";
 
-        let cyan = Style::new().cyan();
-        let password = Password::new()
-            .with_prompt(cyan.apply_to(&prompt).to_string())
-            .interact_on(&print_context.stdout)
-            .unwrap_or_else(|e| panic!("failed printing to stdout: {}", e));
-        if self.verify {
-            prompt += " (verify)";
-            let password_verify = Password::new()
-                .with_prompt(cyan.apply_to(prompt).to_string())
+        let password = loop {
+            let print_context = self.print_context.lock().unwrap();
+
+            let password = Password::new()
+                .with_prompt(&prompt)
                 .interact_on(&print_context.stdout)
                 .unwrap_or_else(|e| panic!("failed printing to stdout: {}", e));
 
-            if password != password_verify {
-                print_context.failure = true;
-                return Err(Error::MismatchedPasswords);
+            if !self.verify {
+                break password;
             }
-        }
 
-        Ok(password)
+            let password_verify = Password::new()
+                .with_prompt(&verify_prompt)
+                .interact_on(&print_context.stdout)
+                .unwrap_or_else(|e| panic!("failed printing to stdout: {}", e));
+
+            if password == password_verify {
+                break password;
+            }
+
+            drop(print_context);
+            info!("The passwords don't match.");
+        };
+
+        password
     }
 }

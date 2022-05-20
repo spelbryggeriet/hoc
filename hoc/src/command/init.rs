@@ -537,7 +537,7 @@ impl Run for InitState {
 impl Init {
     fn get_password_for_user(&self, username: &str) -> Result<Ref<String>> {
         if self.password.borrow().is_none() {
-            let password = hidden_input!("Enter password for {}", username).get()?;
+            let password = hidden_input!("Enter password for {}", username).get();
             self.password.replace(Some(password));
         }
 

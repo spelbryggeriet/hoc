@@ -267,9 +267,9 @@ fn gen_run_trait(
         });
 
         let registry_type = if v.attrs.contains(&StateVariantAttr::Transient) {
-            quote!(ReadStore)
+            quote!(::hoc_core::kv::ReadStore)
         } else {
-            quote!(WriteStore)
+            quote!(::hoc_core::kv::WriteStore)
         };
 
         let return_type = if v.attrs.contains(&StateVariantAttr::Finish) {
