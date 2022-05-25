@@ -14,9 +14,9 @@ use super::{Error, Obfuscate, ProcessOutput, Quotify, Settings};
 
 pub const SUCCESS_CODE: i32 = 0;
 
-pub fn exec<'a>(
-    program: &'a OsStr,
-    args: Vec<Cow<'a, OsStr>>,
+pub fn exec(
+    program: &OsStr,
+    args: Vec<Cow<OsStr>>,
     set: &Settings,
 ) -> Result<(i32, String), Error> {
     if !set.silent {
@@ -85,28 +85,34 @@ pub fn exec<'a>(
     }
 }
 
-fn exec_impl<'a>(
+fn exec_impl<'args, 'a: 'args>(
     mut program: &'a OsStr,
-    mut args: Vec<Cow<'a, OsStr>>,
-    set: &Settings,
+    mut args: Vec<Cow<'args, OsStr>>,
+    set: &'a Settings,
 ) -> Result<(i32, String), Error> {
     let program_str = program.to_string_lossy().into_owned();
     let mut pipe_input = set.pipe_input.clone();
 
-    if let Some(ref sudo) = set.sudo {
+    if let Some((ref password, ref user)) = set.sudo {
         args.insert(
             0,
             Cow::Borrowed(mem::replace(&mut program, OsStr::new("sudo"))),
         );
 
-        if let Some(password) = sudo {
-            args.insert(0, Cow::Borrowed(OsStr::new("-kSp")));
-            args.insert(1, Cow::Borrowed(OsStr::new("")));
+        if let Some(user) = user {
+            args.insert(0, Cow::Borrowed(OsStr::new("-H")));
+            args.insert(1, Cow::Borrowed(OsStr::new("-u")));
+            args.insert(2, Cow::Borrowed(user));
+        }
+
+        if let Some(password) = password {
+            args.insert(3, Cow::Borrowed(OsStr::new("-kSp")));
+            args.insert(4, Cow::Borrowed(OsStr::new("")));
             pipe_input.insert(0, password.clone());
         } else {
             let line_prefix = OsString::from(hoc_log::LOG.create_line_prefix("[sudo] Password:"));
-            args.insert(0, Cow::Borrowed(OsStr::new("-p")));
-            args.insert(1, Cow::Owned(line_prefix));
+            args.insert(3, Cow::Borrowed(OsStr::new("-p")));
+            args.insert(4, Cow::Owned(line_prefix));
         }
     };
 

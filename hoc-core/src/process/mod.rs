@@ -165,7 +165,7 @@ impl<'proc> Process<'proc> {
     }
 
     pub fn settings(mut self, settings: &'proc Settings) -> Self {
-        self.settings = Settings::from_settings(settings);
+        self.settings = settings.clone();
         self
     }
 
@@ -190,6 +190,11 @@ impl<'proc> Process<'proc> {
 
     pub fn sudo_password<S: Into<Cow<'proc, str>>>(mut self, password: S) -> Self {
         self.settings = self.settings.sudo_password(password);
+        self
+    }
+
+    pub fn sudo_user<S: AsRef<OsStr>>(mut self, user: &'proc S) -> Self {
+        self.settings = self.settings.sudo_user(user);
         self
     }
 
@@ -304,32 +309,21 @@ trait ProcessOutput {
     }
 }
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct Settings<'a> {
     env: HashMap<Cow<'a, str>, Cow<'a, str>>,
-    sudo: Option<Option<Cow<'a, str>>>,
-    ssh_client: Option<&'a ssh::Client>,
-    pipe_input: Vec<Cow<'a, str>>,
-    stdout: Option<&'a OsStr>,
-    secrets: Vec<Cow<'a, str>>,
-    success_codes: Option<Vec<i32>>,
-    silent: bool,
-    hide_stdout: bool,
     hide_stderr: bool,
+    hide_stdout: bool,
+    pipe_input: Vec<Cow<'a, str>>,
+    secrets: Vec<Cow<'a, str>>,
+    silent: bool,
+    ssh_client: Option<&'a ssh::Client>,
+    stdout: Option<&'a OsStr>,
+    success_codes: Option<Vec<i32>>,
+    sudo: Option<(Option<Cow<'a, str>>, Option<&'a OsStr>)>,
 }
 
 impl<'set> Settings<'set> {
-    pub fn from_settings(set: &Self) -> Self {
-        Self {
-            env: set.env.clone(),
-            sudo: set.sudo.clone(),
-            pipe_input: set.pipe_input.clone(),
-            secrets: set.secrets.clone(),
-            success_codes: set.success_codes.clone(),
-            ..*set
-        }
-    }
-
     pub fn env<K, V>(mut self, key: K, value: V) -> Self
     where
         K: Into<Cow<'set, str>>,
@@ -345,12 +339,21 @@ impl<'set> Settings<'set> {
     }
 
     pub fn sudo(mut self) -> Self {
-        self.sudo = Some(None);
+        self.sudo = Some((None, None));
         self
     }
 
     pub fn sudo_password<S: Into<Cow<'set, str>>>(mut self, password: S) -> Self {
-        self.sudo = Some(Some(password.into()));
+        let password = Some(password.into());
+        let user = self.sudo.map_or(None, |(_, user)| user);
+        self.sudo = Some((password, user));
+        self
+    }
+
+    pub fn sudo_user<S: AsRef<OsStr>>(mut self, user: &'set S) -> Self {
+        let password = self.sudo.map_or(None, |(password, _)| password);
+        let user = Some(user.as_ref());
+        self.sudo = Some((password, user));
         self
     }
 

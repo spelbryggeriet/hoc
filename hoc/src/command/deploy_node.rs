@@ -618,7 +618,7 @@ impl Run for DeployNodeState {
         let pub_path = proc.get_pub_key_path(registry)?;
         let client = proc.connect(registry, ssh::Options::default().password_auth())?;
         let common_set = process::Settings::default().ssh(&client);
-        let sudo_set = process::Settings::from_settings(&common_set).sudo_password(&*password);
+        let sudo_set = common_set.clone().sudo_password(&*password);
 
         let pub_key = status!("Read SSH keypair").on(|| {
             let pub_key = fs::read_to_string(&pub_path)?;
@@ -763,7 +763,7 @@ impl Run for DeployNodeState {
         let password = proc.get_password()?;
         let client = proc.connect(registry, ssh::Options::default())?;
         let common_set = process::Settings::default().ssh(&client);
-        let sudo_set = process::Settings::from_settings(&common_set).sudo_password(&*password);
+        let sudo_set = common_set.clone().sudo_password(&*password);
 
         cmd!("nomad", "-autocomplete-install")
             .settings(&common_set)
@@ -781,7 +781,8 @@ impl Run for DeployNodeState {
         let password = proc.get_password()?;
         let client = proc.connect(registry, ssh::Options::default())?;
         let common_set = process::Settings::default().ssh(&client);
-        let sudo_set = process::Settings::from_settings(&common_set).sudo_password(&*password);
+        let sudo_set = common_set.clone().sudo_password(&*password);
+        let consul_set = sudo_set.clone().sudo_user(&"consul");
 
         // Set up command autocomplete.
         cmd!("consul", "-autocomplete-install")
@@ -865,14 +866,27 @@ impl Run for DeployNodeState {
         // Create server certificates.
         let cert_filename = format!("{cluster}-server-consul-0.pem");
         let key_filename = format!("{cluster}-server-consul-0-key.pem");
-        cmd!("cp", ca_pub_path, ".").run_with(&sudo_set)?;
-        cmd!("mv", ca_priv_path, ".").run_with(&sudo_set)?;
-        cmd!("consul", "tls", "cert", "create", "-server", "-dc", cluster, "-domain", "consul")
-            .run_with(&sudo_set)?;
-        cmd!("rm", ca_pub_filename).run_with(&common_set)?;
-        cmd!("rm", ca_priv_filename).run_with(&common_set)?;
+        cmd!(
+            "consul",
+            "tls",
+            "cert",
+            "create",
+            "-server",
+            "-dc",
+            cluster,
+            "-domain",
+            "consul",
+            "-ca",
+            ca_pub_path,
+            "-key",
+            ca_priv_path,
+        )
+        .run_with(&consul_set)?;
         cmd!("mv", cert_filename, key_filename, certs_dir).run_with(&sudo_set)?;
         cmd!("chown", "-R", "consul:consul", certs_dir).run_with(&sudo_set)?;
+
+        // Remove CA key.
+        cmd!("rm", ca_priv_path).run_with(&common_set)?;
 
         // Set or get auto-join address.
         let auto_join_key = format!("$/clusters/{cluster}/auto_join_address");
@@ -898,7 +912,7 @@ impl Run for DeployNodeState {
         cmd!("sed", "-ri", retry_join_sed, consul_config_path).run_with(&sudo_set)?;
 
         // Validate Consul configuration.
-        cmd!("consul", "validate", "/etc/consul.d/").run_with(&sudo_set)?;
+        cmd!("consul", "validate", "/etc/consul.d/").run_with(&consul_set)?;
 
         // Start Consul service.
         cmd!("systemctl", "enable", "consul").run_with(&sudo_set)?;
