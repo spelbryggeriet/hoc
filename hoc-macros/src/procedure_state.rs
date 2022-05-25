@@ -266,12 +266,6 @@ fn gen_run_trait(
             quote!(#field_name: #field_type)
         });
 
-        let registry_type = if v.attrs.contains(&StateVariantAttr::Transient) {
-            quote!(::hoc_core::kv::ReadStore)
-        } else {
-            quote!(::hoc_core::kv::WriteStore)
-        };
-
         let return_type = if v.attrs.contains(&StateVariantAttr::Finish) {
             quote!(())
         } else if v.attrs.contains(&StateVariantAttr::MaybeFinish) {
@@ -283,8 +277,8 @@ fn gen_run_trait(
         quote! {
             fn #name(
                 procedure: &mut #command_name,
-                registry: &impl #registry_type
-                #(, #args)*
+                registry: &impl ::hoc_core::kv::WriteStore,
+                #(#args,)*
             ) -> ::hoc_log::Result<#return_type>;
         }
     });

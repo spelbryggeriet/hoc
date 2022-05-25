@@ -10,8 +10,11 @@ use thiserror::Error;
 
 #[derive(Error, Debug)]
 pub enum Error {
-    #[error("expected version {_0}, got {_1}")]
+    #[error("expected version {0}, got {1}")]
     WrongVersion(i32, i32),
+
+    #[error("address is out of range: {0}")]
+    OutOfRange(IpAddr),
 }
 
 #[derive(Error, Debug)]
@@ -39,35 +42,63 @@ pub struct Cidr {
 }
 
 impl Cidr {
-    pub fn contains(&self, ip_addr: &IpAddr) -> Result<bool, Error> {
+    const fn bits(&self) -> (u128, u32) {
+        match self.ip_addr {
+            IpAddr::V4(ipv4_addr) => (u32::from_be_bytes(ipv4_addr.octets()) as u128, 32),
+            IpAddr::V6(ipv6_addr) => (u128::from_be_bytes(ipv6_addr.octets()), 128),
+        }
+    }
+
+    pub fn start_address(&self) -> IpAddr {
+        let (mut bits, num_bits) = self.bits();
+
+        bits >>= num_bits - self.prefix_len;
+        bits <<= num_bits - self.prefix_len;
+
+        match self.ip_addr {
+            IpAddr::V4(_) => IpAddr::from((bits as u32).to_be_bytes()),
+            IpAddr::V6(_) => IpAddr::from(bits.to_be_bytes()),
+        }
+    }
+
+    pub fn end_address(&self) -> IpAddr {
+        let (mut bits, num_bits) = self.bits();
+
+        bits >>= num_bits - self.prefix_len;
+        bits += 1;
+        bits <<= num_bits - self.prefix_len;
+
+        match self.ip_addr {
+            IpAddr::V4(_) => IpAddr::from((bits as u32).to_be_bytes()),
+            IpAddr::V6(_) => IpAddr::from(bits.to_be_bytes()),
+        }
+    }
+
+    pub fn contains(&self, ip_addr: IpAddr) -> Result<bool, Error> {
         match (self.ip_addr, ip_addr) {
             (IpAddr::V4(_), IpAddr::V6(_)) => return Err(Error::WrongVersion(4, 6)),
             (IpAddr::V6(_), IpAddr::V4(_)) => return Err(Error::WrongVersion(6, 4)),
             _ => (),
         }
 
-        let (num_bits, mut start_bits) = match self.ip_addr {
-            IpAddr::V4(ipv4_addr) => (32, u32::from_be_bytes(ipv4_addr.octets()) as u128),
-            IpAddr::V6(ipv6_addr) => (128, u128::from_be_bytes(ipv6_addr.octets())),
+        Ok(ip_addr >= self.start_address() && ip_addr < self.end_address())
+    }
+
+    pub fn step(&self, step: u128) -> Result<IpAddr, Error> {
+        let (mut bits, _) = self.bits();
+
+        bits += step;
+
+        let address = match self.ip_addr {
+            IpAddr::V4(_) => IpAddr::from((bits as u32).to_be_bytes()),
+            IpAddr::V6(_) => IpAddr::from(bits.to_be_bytes()),
         };
 
-        start_bits >>= num_bits - self.prefix_len;
-        let mut end_bits = start_bits + 1;
-        start_bits <<= num_bits - self.prefix_len;
-        end_bits <<= num_bits - self.prefix_len;
+        if address >= self.end_address() {
+            return Err(Error::OutOfRange(address));
+        }
 
-        let (start_address, end_address) = match self.ip_addr {
-            IpAddr::V4(_) => (
-                IpAddr::from((start_bits as u32).to_be_bytes()),
-                IpAddr::from((end_bits as u32).to_be_bytes()),
-            ),
-            IpAddr::V6(_) => (
-                IpAddr::from(start_bits.to_be_bytes()),
-                IpAddr::from(end_bits.to_be_bytes()),
-            ),
-        };
-
-        Ok(ip_addr >= &start_address && ip_addr < &end_address)
+        Ok(address)
     }
 }
 

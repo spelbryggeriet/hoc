@@ -1,7 +1,8 @@
 use std::{
+    cell::{Ref, RefCell},
     io::{self, Write},
     net::TcpStream,
-    path::{Path, PathBuf},
+    path::PathBuf,
 };
 
 use colored::Colorize;
@@ -11,123 +12,112 @@ use thiserror::Error;
 use crate::process::{self, ProcessOutput};
 
 #[derive(Debug, Error)]
-pub enum SshError {
+pub enum Error {
+    #[error("host not configured")]
+    Host,
+
+    #[error("user not configured")]
+    User,
+
+    #[error("password not configured")]
+    Password,
+
+    #[error("authentication not configured")]
+    Auth,
+
     #[error("tcp: {0}")]
     Tcp(#[from] io::Error),
 
-    #[error("ssh: {0}")]
+    #[error(transparent)]
     Ssh(#[from] ssh2::Error),
 }
 
-impl From<SshError> for hoc_log::Error {
-    fn from(err: SshError) -> Self {
+impl From<Error> for hoc_log::Error {
+    fn from(err: Error) -> Self {
         error!("{err}").unwrap_err()
     }
 }
 
-pub struct SshClient {
-    session: ssh2::Session,
-    host: String,
-    username: String,
-    auth: Authentication,
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct Options {
+    pub host: Option<String>,
+    pub user: Option<String>,
+    pub password: Option<String>,
+    pub auth: Option<Authentication>,
 }
 
-impl SshClient {
-    pub fn new_key_auth(
-        host: impl AsRef<str> + ToString,
-        username: impl AsRef<str> + ToString,
+impl Options {
+    pub fn host(mut self, host: impl ToString) -> Self {
+        self.host.replace(host.to_string());
+        self
+    }
+
+    pub fn user(mut self, user: impl ToString) -> Self {
+        self.user.replace(user.to_string());
+        self
+    }
+
+    pub fn password(mut self, password: impl ToString) -> Self {
+        self.password.replace(password.to_string());
+        self
+    }
+
+    pub fn password_auth(mut self) -> Self {
+        self.auth.replace(Authentication::Password);
+        self
+    }
+
+    pub fn key_auth(
+        mut self,
         pub_key_path: impl Into<PathBuf>,
         priv_key_path: impl Into<PathBuf>,
-        key_passphrase: impl ToString,
-    ) -> Result<Self, SshError> {
-        let auth = Authentication::Key {
-            pub_key: pub_key_path.into(),
-            priv_key: priv_key_path.into(),
-            passphrase: key_passphrase.to_string(),
-        };
-        let session = Self::create_session(host.as_ref(), username.as_ref(), &auth)?;
+    ) -> Self {
+        self.auth.replace(Authentication::Key {
+            pub_key_path: pub_key_path.into(),
+            priv_key_path: priv_key_path.into(),
+        });
+        self
+    }
+}
 
-        Ok(Self {
-            session,
-            host: host.to_string(),
-            username: username.to_string(),
-            auth,
-        })
+#[derive(Default)]
+pub struct Client {
+    session: RefCell<Option<ssh2::Session>>,
+    options: RefCell<Options>,
+}
+
+impl Client {
+    pub(super) fn options(&self) -> Ref<Options> {
+        self.options.borrow()
     }
 
-    pub fn new_password_auth(
-        host: impl AsRef<str> + ToString,
-        username: impl AsRef<str> + ToString,
-        password: impl ToString,
-    ) -> Result<Self, SshError> {
-        let auth = Authentication::Password(password.to_string());
-        let session = Self::create_session(host.as_ref(), username.as_ref(), &auth)?;
-
-        Ok(Self {
-            session,
-            host: host.to_string(),
-            username: username.to_string(),
-            auth,
-        })
-    }
-
-    pub fn update_key_auth(
-        &mut self,
-        username: impl AsRef<str> + ToString,
-        pub_key_path: impl AsRef<Path> + Into<PathBuf>,
-        priv_key_path: impl AsRef<Path> + Into<PathBuf>,
-        key_passphrase: impl AsRef<str> + ToString,
-    ) -> Result<(), SshError> {
-        let same_username = username.as_ref() == &self.username;
-        let same_key_auth = matches!(
-            &self.auth,
-            Authentication::Key {
-                pub_key,
-                priv_key,
-                passphrase,
-            } if pub_key == pub_key_path.as_ref()
-                && priv_key == priv_key_path.as_ref()
-                && passphrase == key_passphrase.as_ref(),
-        );
-
-        if !same_username || !same_key_auth {
-            self.username = username.to_string();
-            self.auth = Authentication::Key {
-                pub_key: pub_key_path.into(),
-                priv_key: priv_key_path.into(),
-                passphrase: key_passphrase.to_string(),
-            };
-            self.session = Self::create_session(&self.host, &self.username, &self.auth)?;
+    pub fn update(&self, options: Options) {
+        let mut ref_mut = self.options.borrow_mut();
+        if *ref_mut != options {
+            *ref_mut = options;
+            self.disconnect();
         }
+    }
 
+    pub fn connect(&self) -> Result<(), Error> {
+        let mut ref_mut = self.session.borrow_mut();
+        if ref_mut.is_none() {
+            ref_mut.replace(self.create_session()?);
+        }
         Ok(())
     }
 
-    pub fn update_password_auth(
-        &mut self,
-        username: impl AsRef<str> + ToString,
-        password: impl AsRef<str> + ToString,
-    ) -> Result<(), SshError> {
-        let same_username = username.as_ref() == &self.username;
-        let same_password_auth = matches!(
-            &self.auth,
-            Authentication::Password(pswd) if pswd == password.as_ref(),
-        );
-
-        if !same_username || !same_password_auth {
-            self.username = username.to_string();
-            self.auth = Authentication::Password(password.to_string());
-            self.session = Self::create_session(&self.host, &self.username, &self.auth)?;
-        }
-
-        Ok(())
+    pub fn disconnect(&self) {
+        self.session.borrow_mut().take();
     }
 
-    fn create_session(
-        host: &str,
-        username: &str,
-        auth: &Authentication,
-    ) -> Result<ssh2::Session, SshError> {
+    fn create_session(&self) -> Result<ssh2::Session, Error> {
+        let options = self.options();
+        let host = options.host.as_ref().ok_or(Error::Host)?;
+        let user = options.user.as_ref().ok_or(Error::User)?;
+        let password = options.password.as_ref().ok_or(Error::Password)?;
+        let auth = options.auth.as_ref().ok_or(Error::Auth)?;
+
         let host_str = host.blue();
         status!("Connecting to host {host_str}").on(|| {
             let port = 22;
@@ -139,34 +129,28 @@ impl SshClient {
 
             match auth {
                 Authentication::Key {
-                    pub_key,
-                    priv_key,
-                    passphrase,
+                    pub_key_path,
+                    priv_key_path,
                 } => session.userauth_pubkey_file(
-                    username,
-                    Some(&pub_key),
-                    &priv_key,
-                    Some(&passphrase),
+                    user,
+                    Some(&pub_key_path),
+                    &priv_key_path,
+                    Some(&password),
                 )?,
-                Authentication::Password(password) => {
-                    session.userauth_password(username, &password)?
-                }
+                Authentication::Password => session.userauth_password(user, &password)?,
             }
 
             Ok(session)
         })
     }
 
-    pub fn host(&self) -> &str {
-        &self.host
-    }
-
-    pub fn spawn<S, B>(&self, cmd: &S, pipe_input: &[B]) -> Result<ssh2::Channel, SshError>
+    pub fn spawn<S, B>(&self, cmd: &S, pipe_input: &[B]) -> Result<ssh2::Channel, Error>
     where
         S: AsRef<str>,
         B: AsRef<str>,
     {
-        let mut channel = self.session.channel_session()?;
+        self.connect()?;
+        let mut channel = self.session.borrow().as_ref().unwrap().channel_session()?;
 
         channel.exec(cmd.as_ref())?;
 
@@ -194,19 +178,15 @@ impl ProcessOutput for ssh2::Channel {
     }
 
     fn finish(mut self) -> Result<Option<i32>, process::Error> {
-        let err_into = Into::<SshError>::into;
+        let err_into = Into::<Error>::into;
         self.close().map_err(err_into)?;
         self.wait_close().map_err(err_into)?;
         Ok(Some(self.exit_status().map_err(err_into)?))
     }
 }
 
-#[derive(PartialEq, Eq)]
-enum Authentication {
-    Key {
-        pub_key: PathBuf,
-        priv_key: PathBuf,
-        passphrase: String,
-    },
-    Password(String),
+#[derive(Debug, PartialEq, Eq)]
+pub enum Authentication<P = PathBuf> {
+    Password,
+    Key { pub_key_path: P, priv_key_path: P },
 }

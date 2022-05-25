@@ -1,4 +1,4 @@
-use heck::{ToLowerCamelCase, ToUpperCamelCase};
+use heck::{ToSnakeCase, ToUpperCamelCase};
 use proc_macro2::{Span, TokenStream};
 use proc_macro_error::{abort, abort_call_site, set_dummy};
 use quote::quote;
@@ -90,7 +90,7 @@ fn gen_get_attributes(command_fields: &[CommandField]) -> TokenStream {
                 .any(|a| matches!(a, CommandFieldAttr::Attribute))
         })
         .map(|f| {
-            let name = f.ident.to_string().to_lower_camel_case();
+            let name = f.ident.to_string().to_snake_case();
             let ident = f.ident;
             quote! {
                 attributes.insert(#name.to_string(), self.#ident.clone().to_string());

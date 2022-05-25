@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::{
+    kv::Record,
     procedure::{self, Dependencies, Procedure, State, Step},
     process,
 };
@@ -74,9 +75,11 @@ impl Item {
     pub fn next<S: State>(
         &mut self,
         state: &Option<S>,
-        registry_keys: Vec<PathBuf>,
+        record: Option<Record>,
     ) -> Result<(), Error> {
-        self.registry_keys = registry_keys;
+        if let Some(record) = record {
+            self.registry_keys.extend(record.finish());
+        }
 
         if let Some(state) = state {
             if let Some(completed_step) = self.current.replace(Step::from_state(state)?) {

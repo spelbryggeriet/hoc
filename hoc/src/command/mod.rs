@@ -1,20 +1,13 @@
 use structopt::StructOpt;
 
-pub use self::{
-    download_image::DownloadImage, init::Init, prepare_cluster::PrepareCluster,
-    prepare_sd_card::PrepareSdCard,
-};
+pub use self::{deploy_node::DeployNode, prepare_cluster::PrepareCluster};
 
-mod download_image;
-mod init;
+mod deploy_node;
 mod prepare_cluster;
-mod prepare_sd_card;
 mod util;
 
 #[derive(StructOpt)]
 pub enum Command {
-    DownloadImage(DownloadImage),
-    Init(Init),
+    DeployNode(DeployNode),
     PrepareCluster(PrepareCluster),
-    PrepareSdCard(PrepareSdCard),
 }

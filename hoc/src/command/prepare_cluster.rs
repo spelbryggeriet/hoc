@@ -1,4 +1,4 @@
-use std::{fs::File, io::Write, net::IpAddr, os::unix::prelude::OpenOptionsExt};
+use std::{fs::File, io::Write, net::IpAddr};
 
 use hoc_core::kv;
 use hoc_log::{bail, hidden_input, info, status, LogErr, Result};
@@ -41,7 +41,7 @@ impl Run for PrepareClusterState {
     fn network_info(proc: &mut PrepareCluster, registry: &impl kv::WriteStore) -> Result<Self> {
         let cluster = &proc.cluster;
         let addresses = &proc.node_addresses;
-        let gateway = &proc.gateway;
+        let gateway = proc.gateway;
 
         if !addresses
             .contains(gateway)
@@ -51,10 +51,19 @@ impl Run for PrepareClusterState {
         }
 
         status!("Store network info").on(|| {
+            info!("Start address: {}", addresses.ip_addr);
             registry.put(
-                format!("clusters/{cluster}/network/addresses"),
-                addresses.to_string(),
+                format!("clusters/{cluster}/network/start_address"),
+                addresses.ip_addr.to_string(),
             )?;
+
+            info!("Prefix length: {}", addresses.prefix_len);
+            registry.put(
+                format!("clusters/{cluster}/network/prefix_len"),
+                addresses.prefix_len,
+            )?;
+
+            info!("Gateway: {gateway}");
             registry.put(
                 format!("clusters/{cluster}/network/gateway"),
                 gateway.to_string(),
@@ -74,8 +83,10 @@ impl Run for PrepareClusterState {
             .verify()
             .get();
 
-        status!("Store administrator username")
-            .on(|| registry.put(format!("clusters/{cluster}/admin/username"), username))?;
+        status!("Store administrator user").on(|| {
+            info!("Username: {username}");
+            registry.put(format!("clusters/{cluster}/admin/username"), username)
+        })?;
 
         let (pub_key, priv_key) = status!("Generate SSH keypair").on(|| {
             let mut key_pair = KeyPair::generate(KeyType::ED25519, 256).log_err()?;
@@ -101,12 +112,10 @@ impl Run for PrepareClusterState {
             let mut pub_file = File::options()
                 .write(true)
                 .create(true)
-                .mode(0o600)
                 .open(pub_ref.path())?;
             let mut priv_file = File::options()
                 .write(true)
                 .create(true)
-                .mode(0o600)
                 .open(priv_ref.path())?;
             pub_file.write_all(pub_key.as_bytes())?;
             priv_file.write_all(priv_key.as_bytes())?;

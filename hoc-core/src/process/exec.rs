@@ -41,7 +41,7 @@ pub fn exec<'a>(
             });
 
         let client = if let Some(ref client) = set.ssh_client {
-            client.host().blue()
+            client.options().host.as_deref().unwrap_or("unknown").blue()
         } else {
             "this computer".blue()
         };
@@ -122,16 +122,16 @@ fn exec_impl<'a>(
             cmd_str += &format!(" 1>{}", path.to_string_lossy().quotify());
         }
 
+        let mut env_str = String::new();
+        for (key, value) in set.env.iter() {
+            env_str += &format!("export {key}={} ; ", value.quotify());
+        }
+        cmd_str = format!("{env_str}{cmd_str}");
+
         let mut channel = client.spawn(&cmd_str, &pipe_input)?;
 
-        for (key, value) in set.env.iter() {
-            channel
-                .setenv(key, value)
-                .map_err(super::ssh::SshError::Ssh)?;
-        }
-
         (
-            channel.read_stderr_to_string(!set.hide_stdout, &set.secrets)?,
+            channel.read_stdout_to_string(!set.hide_stdout, &set.secrets)?,
             channel.read_stderr_to_string(!set.hide_stderr, &set.secrets)?,
             channel.finish()?,
         )

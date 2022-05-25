@@ -1,3 +1,5 @@
+#![feature(stmt_expr_attributes)]
+
 use std::{
     process,
     sync::{
@@ -11,6 +13,7 @@ use lazy_static::lazy_static;
 use structopt::StructOpt;
 
 use hoc_core::{
+    kv::{self, ReadStore},
     procedure::{self, Id, Key, Procedure, State},
     Context,
 };
@@ -244,9 +247,10 @@ fn run_step<P: Procedure>(
     proc: &mut P,
     history_item_key: &Key,
     state: P::State,
-) -> hoc_log::Result<()> {
+    mut record: Option<kv::Record>,
+) -> hoc_log::Result<Option<kv::Record>> {
     let registry = context.registry_mut();
-    let record = registry.record_accesses();
+    record.get_or_insert_with(|| registry.record_inserts());
 
     let halt = proc.run(state, registry)?;
     let state = match halt.state {
@@ -257,13 +261,13 @@ fn run_step<P: Procedure>(
     context
         .history_mut()
         .item_mut(&history_item_key)
-        .next(&state, record.finish())?;
+        .next(&state, if halt.persist { record.take() } else { None })?;
 
     if halt.persist {
         status!("Persist context").on(|| context.persist().log_context(ERR_MSG_PERSIST_CONTEXT))?;
     }
 
-    Ok(())
+    Ok(record)
 }
 
 fn run_loop<P: Procedure>(
@@ -272,6 +276,7 @@ fn run_loop<P: Procedure>(
     history_item_key: &Key,
 ) -> hoc_log::Result<()> {
     let mut step_index = get_step_index::<P>(context, history_item_key)?;
+    let mut record = None;
 
     loop {
         if INTERRUPT.load(Ordering::Relaxed) {
@@ -284,8 +289,8 @@ fn run_loop<P: Procedure>(
             let step_str = format!("Step {step_index}").yellow();
             let state_str = state_id.description();
 
-            status!("{step_str}: {state_str}")
-                .on(|| run_step(context, proc, &history_item_key, state))?;
+            record = status!("{step_str}: {state_str}")
+                .on(|| run_step(context, proc, &history_item_key, state, record))?;
 
             step_index += 1;
         } else {
@@ -310,11 +315,12 @@ fn run_procedure<P: Procedure>(
 
         if rerun {
             let state_id = P::State::default().id();
-            info!(
+            warning!(
                 "Rewinding back to {} ({})",
                 "Step 1".yellow(),
                 state_id.description(),
-            );
+            )
+            .get()?;
             rewind_history(context, &proc, &history_index)?;
         }
 
@@ -352,10 +358,8 @@ fn main() {
         let main_command = MainCommand::from_args();
         let rerun = main_command.rerun;
         match main_command.procedure {
-            Command::DownloadImage(proc) => run_procedure(&mut context, proc, rerun)?,
-            Command::Init(proc) => run_procedure(&mut context, proc, rerun)?,
+            Command::DeployNode(proc) => run_procedure(&mut context, proc, rerun)?,
             Command::PrepareCluster(proc) => run_procedure(&mut context, proc, rerun)?,
-            Command::PrepareSdCard(proc) => run_procedure(&mut context, proc, rerun)?,
         }
         Ok(())
     };

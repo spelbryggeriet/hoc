@@ -13,10 +13,10 @@ mod item;
 
 #[derive(Debug, Error)]
 pub enum Error {
-    #[error("item already exists: {_0}")]
+    #[error("item already exists: {0}")]
     ItemAlreadyExists(Key),
 
-    #[error("item does not exist: {_0}")]
+    #[error("item does not exist: {0}")]
     ItemDoesNotExist(Key),
 
     #[error("item: {0}")]

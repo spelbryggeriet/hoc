@@ -2,19 +2,22 @@ use std::{
     cell::RefCell,
     fmt::{self, Display, Formatter},
     fs, io, mem,
-    os::unix::prelude::OsStrExt,
+    os::unix::prelude::{OpenOptionsExt, OsStrExt},
     path::{Component, Path, PathBuf},
     rc::Rc,
 };
 
 use hoc_log::error;
 use indexmap::IndexMap;
+use regex::Regex;
 use serde::{de::Visitor, ser::SerializeMap, Deserialize, Deserializer, Serialize, Serializer};
 use thiserror::Error;
 
 pub use self::file::FileRef;
 
 mod file;
+
+pub const GLOBAL_PREFIX: &str = "$";
 
 #[derive(Debug, Error)]
 pub enum Error {
@@ -24,20 +27,17 @@ pub enum Error {
     #[error(r#"key does not exist: {0}""#)]
     KeyDoesNotExist(PathBuf),
 
-    #[error(r#"key prefix blocked: {0}""#)]
-    BlockedKey(PathBuf),
-
     #[error(r#"unexpected leading `/` in key: {0}""#)]
     LeadingForwardSlash(PathBuf),
+
+    #[error(r#"wildcard `*` in key: {0}""#)]
+    Wildcard(PathBuf),
 
     #[error(r#"unexpected `.` in key: {0}""#)]
     SingleDotComponent(PathBuf),
 
     #[error(r#"unexpected `..` in key: {0}""#)]
     DoubleDotComponent(PathBuf),
-
-    #[error("merging unrelated splits")]
-    UnrelatedSplits,
 
     #[error("mismatched value types: {0} ≠ {1}")]
     MismatchedTypes(TypeDescription, TypeDescription),
@@ -56,8 +56,11 @@ impl From<Error> for hoc_log::Error {
 }
 
 pub trait ReadStore {
-    #[must_use]
     fn get<Q: AsRef<Path>>(&self, key: Q) -> Result<Item, Error>;
+
+    fn get_matches<Q: AsRef<Path>>(&self, key: Q) -> Result<Vec<Item>, Error>;
+
+    fn get_keys(&self) -> Vec<PathBuf>;
 }
 
 pub trait WriteStore: ReadStore {
@@ -101,46 +104,40 @@ pub trait WriteStore: ReadStore {
 pub struct Store {
     map: Rc<RefCell<IndexMap<PathBuf, Item>>>,
     file_dir: PathBuf,
-    key_prefix: PathBuf,
-    blocked_key_prefixes: Vec<PathBuf>,
-    recordings: Rc<RefCell<Vec<PathBuf>>>,
+    record: Record,
 }
 
 impl Store {
     pub fn new<P: Into<PathBuf>>(file_dir: P) -> Self {
         Self {
-            map: Rc::new(RefCell::new(IndexMap::default())),
+            map: Rc::default(),
             file_dir: file_dir.into(),
-            key_prefix: PathBuf::new(),
-            blocked_key_prefixes: Vec::new(),
-            recordings: Rc::default(),
+            record: Record::default(),
         }
     }
 
-    fn validate_key<Q: AsRef<Path>>(&self, key: Q) -> Result<(), Error> {
-        let key = key.as_ref();
+    fn check_key<Q: AsRef<Path>>(&self, key: Q, allow_wildcard: bool) -> Result<Q, Error> {
+        let key_ref = key.as_ref();
 
-        if key.is_absolute() {
-            return Err(Error::LeadingForwardSlash(key.to_path_buf()));
+        if key_ref.is_absolute() {
+            return Err(Error::LeadingForwardSlash(key_ref.to_path_buf()));
         }
 
-        for comp in key.components() {
+        if !allow_wildcard && key_ref.to_string_lossy().contains("*") {
+            return Err(Error::Wildcard(key_ref.to_path_buf()));
+        }
+
+        for comp in key_ref.components() {
             match comp {
-                Component::CurDir => return Err(Error::SingleDotComponent(key.to_path_buf())),
-                Component::ParentDir => return Err(Error::DoubleDotComponent(key.to_path_buf())),
+                Component::CurDir => return Err(Error::SingleDotComponent(key_ref.to_path_buf())),
+                Component::ParentDir => {
+                    return Err(Error::DoubleDotComponent(key_ref.to_path_buf()))
+                }
                 _ => (),
             }
         }
 
-        if let Some(key_prefix) = self
-            .blocked_key_prefixes
-            .iter()
-            .find(|key_prefix| key.starts_with(key_prefix))
-        {
-            return Err(Error::BlockedKey(key_prefix.clone()));
-        }
-
-        Ok(())
+        Ok(key)
     }
 
     pub fn validate(&self) -> Result<Vec<(PathBuf, file::Change)>, Error> {
@@ -169,57 +166,22 @@ impl Store {
         Ok(())
     }
 
-    pub fn split<K: Into<PathBuf>>(&mut self, key_prefix: K) -> Result<Self, Error> {
-        let key_prefix = key_prefix.into();
-        self.validate_key(&key_prefix)?;
-
-        let blocked_key_prefixes;
-        (blocked_key_prefixes, self.blocked_key_prefixes) = self
-            .blocked_key_prefixes
-            .drain(..)
-            .partition(|kp| kp.starts_with(&key_prefix));
-        self.blocked_key_prefixes.push(key_prefix.clone());
-
-        Ok(Store {
-            map: Rc::clone(&self.map),
-            file_dir: self.file_dir.clone(),
-            key_prefix,
-            blocked_key_prefixes,
-            recordings: Rc::clone(&self.recordings),
-        })
-    }
-
-    pub fn merge(&mut self, other: Self) -> Result<(), Error> {
-        if let Some(index) = self
-            .blocked_key_prefixes
-            .iter()
-            .position(|key_prefix| *key_prefix == other.key_prefix)
-        {
-            self.blocked_key_prefixes.remove(index);
-            self.blocked_key_prefixes.extend(other.blocked_key_prefixes);
-            Ok(())
-        } else {
-            Err(Error::UnrelatedSplits)
-        }
-    }
-
-    pub fn record_accesses(&mut self) -> Record {
-        if !self.recordings.borrow().is_empty() {
+    pub fn record_inserts(&self) -> Record {
+        if !self.record.is_empty() {
             panic!("recording has not finished")
         }
 
-        Record::new(Rc::clone(&self.recordings))
+        Record::clone(&self.record)
     }
 
     pub fn remove<Q: AsRef<Path>>(&self, key: Q) -> Result<Option<Value>, Error> {
-        self.validate_key(key.as_ref())?;
-        let key = self.key_prefix.join(key);
+        let key = self.check_key(key, false)?;
 
         let item = self
             .map
             .borrow_mut()
-            .remove(&key)
-            .ok_or_else(|| Error::KeyDoesNotExist(key))?;
+            .remove(key.as_ref())
+            .ok_or_else(|| Error::KeyDoesNotExist(key.as_ref().into()))?;
 
         match item {
             Item::Value(value) => Ok(Some(value)),
@@ -230,16 +192,11 @@ impl Store {
             },
         }
     }
-
-    pub fn get_keys(&self) -> Vec<PathBuf> {
-        self.map.borrow().keys().cloned().collect()
-    }
 }
 
 impl ReadStore for Store {
     fn get<Q: AsRef<Path>>(&self, key: Q) -> Result<Item, Error> {
-        self.validate_key(key.as_ref())?;
-        let key = self.key_prefix.join(key);
+        let key = self.check_key(key, false)?.as_ref().to_path_buf();
 
         let res = self
             .map
@@ -247,16 +204,37 @@ impl ReadStore for Store {
             .get(&key)
             .cloned()
             .ok_or_else(|| Error::KeyDoesNotExist(key.clone()))?;
-        self.recordings.borrow_mut().push(key);
 
         Ok(res)
+    }
+
+    fn get_matches<Q: AsRef<Path>>(&self, key: Q) -> Result<Vec<Item>, Error> {
+        let key = self.check_key(key, true)?;
+
+        let regex_str: String = key
+            .as_ref()
+            .components()
+            .map(|c| regex::escape(&c.as_os_str().to_string_lossy()).replace(r#"\*"#, "[^/]*"))
+            .collect();
+        let regex = Regex::new(&format!("^{regex_str}$")).unwrap();
+        let matches = self
+            .map
+            .borrow()
+            .iter()
+            .filter_map(|(k, v)| regex.is_match(&k.to_string_lossy()).then(|| v.clone()))
+            .collect();
+
+        Ok(matches)
+    }
+
+    fn get_keys(&self) -> Vec<PathBuf> {
+        self.map.borrow().keys().cloned().collect()
     }
 }
 
 impl WriteStore for Store {
     fn put<Q: AsRef<Path>, V: Into<Value>>(&self, key: Q, value: V) -> Result<(), Error> {
-        self.validate_key(key.as_ref())?;
-        let key = self.key_prefix.join(key);
+        let key = self.check_key(key, false)?.as_ref().to_path_buf();
 
         if self.map.borrow().contains_key(&key) {
             return Err(Error::KeyAlreadyExists(key));
@@ -265,14 +243,13 @@ impl WriteStore for Store {
         self.map
             .borrow_mut()
             .insert(key.clone(), Item::Value(value.into()));
-        self.recordings.borrow_mut().push(key);
+        self.record.add(key, None);
 
         Ok(())
     }
 
     fn update<Q: AsRef<Path>, V: Into<Value>>(&self, key: Q, value: V) -> Result<Value, Error> {
-        self.validate_key(key.as_ref())?;
-        let key = self.key_prefix.join(key);
+        let key = self.check_key(key, false)?.as_ref().to_path_buf();
 
         let value = value.into();
         let value_desc = value.type_description();
@@ -283,7 +260,7 @@ impl WriteStore for Store {
 
                 if previous_desc == value_desc {
                     let res = mem::replace(previous, value);
-                    self.recordings.borrow_mut().push(key);
+                    self.record.add(key, None);
                     Ok(res)
                 } else {
                     Err(Error::MismatchedTypes(previous_desc, value_desc))
@@ -297,8 +274,7 @@ impl WriteStore for Store {
     }
 
     fn create_file<Q: AsRef<Path>>(&self, key: Q) -> Result<FileRef, Error> {
-        self.validate_key(key.as_ref())?;
-        let key = self.key_prefix.join(key);
+        let key = self.check_key(key, false)?.as_ref().to_path_buf();
 
         if self.map.borrow().contains_key(&key) {
             return Err(Error::KeyAlreadyExists(key));
@@ -317,12 +293,14 @@ impl WriteStore for Store {
         fs::File::options()
             .write(true)
             .create_new(true)
+            .mode(0o600)
             .open(&path)?;
         let file_ref = FileRef::new(path)?;
         self.map
             .borrow_mut()
             .insert(key.clone(), Item::File(file_ref.clone()));
-        self.recordings.borrow_mut().push(key);
+
+        self.record.add(key, Some(file_ref.path.to_path_buf()));
 
         Ok(file_ref)
     }
@@ -423,9 +401,7 @@ impl<'de> Deserialize<'de> for Store {
                 Ok(Store {
                     map: Rc::new(RefCell::new(store_map)),
                     file_dir,
-                    key_prefix: PathBuf::new(),
-                    blocked_key_prefixes: Vec::new(),
-                    recordings: Rc::default(),
+                    record: Record::default(),
                 })
             }
         }
@@ -552,17 +528,37 @@ impl_try_from_item!(Value::FloatingPointNumber for f64);
 impl_try_from_item!(Value::String for String);
 impl_try_from_item!(File::File for PathBuf);
 
+#[derive(Debug, Default, Clone)]
 pub struct Record {
-    recordings: Rc<RefCell<Vec<PathBuf>>>,
+    keys: Rc<RefCell<Vec<PathBuf>>>,
+    file_paths: Rc<RefCell<Vec<PathBuf>>>,
 }
 
 impl Record {
-    fn new(recordings: Rc<RefCell<Vec<PathBuf>>>) -> Self {
-        Self { recordings }
+    fn is_empty(&self) -> bool {
+        self.keys.borrow().is_empty() && self.file_paths.borrow().is_empty()
     }
 
-    pub fn finish(self) -> Vec<PathBuf> {
-        mem::take(&mut self.recordings.borrow_mut())
+    fn add(&self, key: PathBuf, file_path: Option<PathBuf>) {
+        if !key.starts_with(GLOBAL_PREFIX) {
+            self.keys.borrow_mut().push(key);
+        }
+        if let Some(file_path) = file_path {
+            self.file_paths.borrow_mut().push(file_path)
+        }
+    }
+
+    pub(crate) fn finish(self) -> Vec<PathBuf> {
+        self.file_paths.borrow_mut().clear();
+        mem::take(&mut self.keys.borrow_mut())
+    }
+}
+
+impl Drop for Record {
+    fn drop(&mut self) {
+        for file_path in &*self.file_paths.borrow() {
+            let _ = fs::remove_file(file_path);
+        }
     }
 }
 
@@ -607,6 +603,12 @@ impl From<String> for Value {
 impl From<&String> for Value {
     fn from(s: &String) -> Self {
         Self::String(s.clone())
+    }
+}
+
+impl From<u32> for Value {
+    fn from(i: u32) -> Self {
+        Self::UnsignedInteger(i as u64)
     }
 }
 

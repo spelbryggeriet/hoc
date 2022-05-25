@@ -12,7 +12,7 @@ path = "./src/main.rs"
 colored = "2.0.0"
 ctrlc = "3.2.1"
 derive_more = { version = "0.99.17", default_features = false, features = ["default"] }
-lazy-regex = "2.2.1"
+lazy-regex = "2.3.0"
 lazy_static = "1.4.0"
 osshkeys = "0.6.0"
 plist = "1.2.1"
@@ -25,8 +25,8 @@ structopt = "0.3.23"
 strum = { version = "0.21.0", features = ["derive"] }
 tempfile = "3.2.0"
 thiserror = "1.0.29"
-zip = "0.5.13"
 xz2 = "0.1.6"
+zip = "0.5.13"
 
 hoc-core = { path = "../hoc-core" }
 hoc-log = { path = "../hoc-log" }

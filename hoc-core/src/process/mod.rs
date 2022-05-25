@@ -10,15 +10,6 @@ use colored::Colorize;
 use hoc_log::{error, info};
 use thiserror::Error;
 
-#[doc(hidden)]
-#[macro_export]
-macro_rules! _with_dollar_sign {
-    ($($body:tt)*) => {
-        macro_rules! __with_dollar_sign { $($body)* }
-        __with_dollar_sign!($);
-    }
-}
-
 #[macro_export]
 macro_rules! cmd {
     ($program:expr $(, $args:expr)* $(,)?) => {
@@ -133,7 +124,7 @@ pub enum Error {
     Io(#[from] io::Error),
 
     #[error("ssh: {0}")]
-    Ssh(#[from] ssh::SshError),
+    Ssh(#[from] ssh::Error),
 
     #[error("{}", process_exit_err_msg(program, *status, stdout, stderr))]
     Exit {
@@ -187,7 +178,7 @@ impl<'proc> Process<'proc> {
         self
     }
 
-    pub fn ssh(mut self, client: &'proc ssh::SshClient) -> Self {
+    pub fn ssh(mut self, client: &'proc ssh::Client) -> Self {
         self.settings = self.settings.ssh(client);
         self
     }
@@ -317,7 +308,7 @@ trait ProcessOutput {
 pub struct Settings<'a> {
     env: HashMap<Cow<'a, str>, Cow<'a, str>>,
     sudo: Option<Option<Cow<'a, str>>>,
-    ssh_client: Option<&'a ssh::SshClient>,
+    ssh_client: Option<&'a ssh::Client>,
     pipe_input: Vec<Cow<'a, str>>,
     stdout: Option<&'a OsStr>,
     secrets: Vec<Cow<'a, str>>,
@@ -348,7 +339,7 @@ impl<'set> Settings<'set> {
         self
     }
 
-    pub fn ssh(mut self, client: &'set ssh::SshClient) -> Self {
+    pub fn ssh(mut self, client: &'set ssh::Client) -> Self {
         self.ssh_client = Some(client);
         self
     }
