@@ -149,6 +149,10 @@ write_files:
     content: |
       datacenter = "{cluster}"
       data_dir = "/opt/nomad"
+
+      acl {{
+        enabled = true
+      }}
   - path: /etc/nomad.d/server.hcl
     permissions: "0640"
     content: |

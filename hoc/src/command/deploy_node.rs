@@ -7,8 +7,8 @@ use std::{
 };
 
 use colored::Colorize;
-use lazy_regex::regex;
 use osshkeys::{keys::FingerprintHash, PublicKey, PublicParts};
+use regex::Regex;
 use serde::{Deserialize, Serialize};
 use structopt::StructOpt;
 
@@ -171,6 +171,7 @@ pub enum DeployNodeState {
 
     InstallDependencies,
     InitializeNomad,
+    SetUpNomadAcl,
     InitializeConsul,
     #[state(finish)]
     SetUpConsulAcl,
@@ -773,6 +774,58 @@ impl Run for DeployNodeState {
         cmd!("systemctl", "enable", "nomad").run_with(&sudo_set)?;
         cmd!("systemctl", "start", "nomad").run_with(&sudo_set)?;
 
+        Ok(SetUpNomadAcl)
+    }
+
+    fn set_up_nomad_acl(proc: &mut DeployNode, registry: &impl WriteStore) -> Result<Self> {
+        let cluster = &proc.cluster;
+
+        let client = proc.connect(registry, ssh::Options::default())?;
+        let mut common_set = process::Settings::default().ssh(&client);
+
+        // Set up ACL.
+        let mgmt_token_key = format!("$/clusters/{cluster}/tokens/nomad/management");
+        let access_token_key = format!("$/clusters/{cluster}/tokens/nomad/accessor");
+        match registry.get(&mgmt_token_key) {
+            Ok(_) => (),
+            Err(kv::Error::KeyDoesNotExist(_)) => {
+                // Bootstrap ACL.
+                let (_, output) = cmd!("nomad", "acl", "bootstrap")
+                    .settings(&common_set)
+                    .hide_stdout()
+                    .run()?;
+                let mgmt_token = Self::get_id("Secret ID", &output);
+                let access_token = Self::get_id("Accessor ID", &output);
+
+                common_set = common_set.secret(mgmt_token);
+
+                // Create ACL policy.
+                cmd!("cat")
+                    .settings(&common_set)
+                    .stdin_lines(include_str!("../../config/nomad/anonymous-policy.hcl").lines())
+                    .stdout(&"anonymous-policy.hcl")
+                    .run()?;
+                cmd!(
+                    "nomad",
+                    "acl",
+                    "policy",
+                    "apply",
+                    "-description",
+                    "Anonymous policy (full-access)",
+                    "-token",
+                    mgmt_token,
+                    "anonymous",
+                    "@anonymous-policy.hcl",
+                )
+                .run_with(&common_set)?;
+                cmd!("rm", "anonymous-policy.hcl").run_with(&common_set)?;
+
+                registry.put(mgmt_token_key, mgmt_token)?;
+                registry.put(access_token_key, access_token)?;
+            }
+            Err(err) => return Err(err.into()),
+        };
+
         Ok(InitializeConsul)
     }
 
@@ -928,8 +981,8 @@ impl Run for DeployNodeState {
         let mut common_set = process::Settings::default().ssh(&client);
 
         // Set up ACL.
-        let mgmt_token_key = format!("$/clusters/{cluster}/tokens/management");
-        let node_token_key = format!("$/clusters/{cluster}/tokens/node");
+        let mgmt_token_key = format!("$/clusters/{cluster}/tokens/consul/management");
+        let node_token_key = format!("$/clusters/{cluster}/tokens/consul/node");
         let (mgmt_token, node_token) =
             match registry.get(&mgmt_token_key).and_then(String::try_from) {
                 Ok(token) => (
@@ -937,30 +990,19 @@ impl Run for DeployNodeState {
                     registry.get(node_token_key).and_then(String::try_from)?,
                 ),
                 Err(kv::Error::KeyDoesNotExist(_)) => {
-                    let secret_id_regex = regex!(r"SecretID: *([\w-]*)");
-                    let get_secret_id = |output| {
-                        secret_id_regex
-                            .captures(output)
-                            .unwrap()
-                            .get(1)
-                            .unwrap()
-                            .as_str()
-                            .to_string()
-                    };
-
                     // Bootstrap ACL.
                     let (_, output) = cmd!("consul", "acl", "bootstrap")
                         .settings(&common_set)
                         .hide_stdout()
                         .run()?;
-                    let mgmt_token = get_secret_id(&output);
+                    let mgmt_token = Self::get_id("SecretID", &output).to_string();
 
                     common_set = common_set.secret(mgmt_token.clone());
 
                     // Create ACL policy.
                     cmd!("cat")
                         .settings(&common_set)
-                        .stdin_lines(include_str!("../../config/node-policy.hcl").lines())
+                        .stdin_lines(include_str!("../../config/consul/node-policy.hcl").lines())
                         .stdout(&"node-policy.hcl")
                         .run()?;
 
@@ -969,7 +1011,8 @@ impl Run for DeployNodeState {
                         "acl",
                         "policy",
                         "create",
-                        format!("-token={mgmt_token}"),
+                        "-token",
+                        mgmt_token,
                         "-name",
                         "node-policy",
                         "-rules",
@@ -985,7 +1028,8 @@ impl Run for DeployNodeState {
                         "acl",
                         "token",
                         "create",
-                        format!("-token={mgmt_token}"),
+                        "-token",
+                        mgmt_token,
                         "-description",
                         "node token",
                         "-policy-name",
@@ -994,7 +1038,7 @@ impl Run for DeployNodeState {
                     .settings(&common_set)
                     .hide_stdout()
                     .run()?;
-                    let node_token = get_secret_id(&output);
+                    let node_token = Self::get_id("SecretID", &output).to_string();
 
                     common_set = common_set.secret(node_token.clone());
 
@@ -1011,12 +1055,25 @@ impl Run for DeployNodeState {
             "consul",
             "acl",
             "set-agent-token",
-            format!("-token={mgmt_token}"),
+            "-token",
+            mgmt_token,
             "agent",
             node_token,
         )
         .run_with(&common_set)?;
 
         Ok(())
+    }
+}
+
+impl DeployNodeState {
+    fn get_id<'a>(key: &str, output: &'a str) -> &'a str {
+        Regex::new(&format!(r"{}: *([\w-]*)", regex::escape(key)))
+            .unwrap()
+            .captures(output)
+            .unwrap()
+            .get(1)
+            .unwrap()
+            .as_str()
     }
 }
