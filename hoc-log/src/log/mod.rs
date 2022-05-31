@@ -98,7 +98,7 @@ impl Log {
 
     pub fn create_line_prefix(&self, flag: impl AsRef<str>) -> String {
         let print_context = self.print_context.lock().unwrap();
-        print_context.create_line_prefix(PrefixPrefs::in_status_overflow().flag(flag.as_ref()))
+        print_context.create_line_prefix(PrefixPrefs::in_status().flag(flag.as_ref()))
     }
 
     pub fn stream(&self) -> Stream {

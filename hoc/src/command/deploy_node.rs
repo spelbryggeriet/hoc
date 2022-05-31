@@ -1,9 +1,11 @@
 use std::{
+    borrow::Cow,
     cell::RefCell,
+    ffi::OsStr,
     fs::{self, File},
     io::{Read, Seek, SeekFrom, Write},
     net::IpAddr,
-    path::PathBuf,
+    path::{Path, PathBuf},
 };
 
 use colored::Colorize;
@@ -25,15 +27,33 @@ use zip::ZipArchive;
 use crate::command::util::{cidr::Cidr, disk, os::OperatingSystem};
 
 const NOMAD_URL: &str = "https://releases.hashicorp.com/nomad/1.2.6/nomad_1.2.6_linux_arm64.zip";
-const NOMAD_VERSION: &str = "1.2.6";
-
 const CONSUL_URL: &str =
     "https://releases.hashicorp.com/consul/1.11.4/consul_1.11.4_linux_arm64.zip";
-const CONSUL_VERSION: &str = "1.11.4";
-
 const ENVOY_URL: &str =
     "https://archive.tetratelabs.io/envoy/download/v1.22.0/envoy-v1.22.0-linux-arm64.tar.xz";
+const GO_URL: &str = "https://go.dev/dl/go1.18.2.linux-arm64.tar.gz";
+const CFSSL_PKG_PATH: &str = "github.com/cloudflare/cfssl/cmd/cfssl";
+const CFSSLJSON_PKG_PATH: &str = "github.com/cloudflare/cfssl/cmd/cfssljson";
+
+const NOMAD_VERSION: &str = "1.2.6";
+const CONSUL_VERSION: &str = "1.11.4";
 const ENVOY_VERSION: &str = "1.22.0";
+const GO_VERSION: &str = "1.18.2";
+const CFSSL_VERSION: &str = "v1.6.1";
+
+const NOMAD_CERTS_DIR: &str = "/etc/nomad.d/certs";
+const NOMAD_CA_PUB_FILENAME: &str = "nomad-ca.pem";
+const NOMAD_CA_PRIV_FILENAME: &str = "nomad-ca-key.pem";
+const NOMAD_SERVER_PUB_FILENAME: &str = "server.pem";
+const NOMAD_SERVER_PRIV_FILENAME: &str = "server-key.pem";
+const NOMAD_CLIENT_PUB_FILENAME: &str = "client.pem";
+const NOMAD_CLIENT_PRIV_FILENAME: &str = "client-key.pem";
+const NOMAD_CLI_PUB_FILENAME: &str = "cli.pem";
+const NOMAD_CLI_PRIV_FILENAME: &str = "cli-key.pem";
+
+const CONSUL_CERTS_DIR: &str = "/etc/consul.d/certs";
+const CONSUL_CA_PUB_FILENAME: &str = "consul-agent-ca.pem";
+const CONSUL_CA_PRIV_FILENAME: &str = "consul-agent-ca-key.pem";
 
 #[derive(Procedure, StructOpt)]
 #[procedure(dependencies(PrepareCluster(cluster=cluster)))]
@@ -59,7 +79,7 @@ pub struct DeployNode {
 impl DeployNode {
     fn get_os_image_path(&self, registry: &impl ReadStore) -> Result<PathBuf> {
         Ok(registry
-            .get(format!("$/cache/images/{}", self.node_os))?
+            .get(format!("$/images/{}", self.node_os))?
             .try_into()?)
     }
 
@@ -181,7 +201,7 @@ impl Run for DeployNodeState {
     fn download_image(proc: &mut DeployNode, registry: &impl WriteStore) -> Result<Self> {
         let os = proc.node_os;
 
-        let file_ref = match registry.create_file(format!("$/cache/images/{os}")) {
+        let file_ref = match registry.create_file(format!("$/images/{os}")) {
             Ok(file_ref) => status!("Download image").on(|| {
                 let image_url = os.image_url();
                 info!("URL: {}", image_url);
@@ -324,6 +344,11 @@ impl Run for DeployNodeState {
                 break;
             }
         }
+        let inc = Self::numeral(used_addresses.len() as u64 + 1);
+        registry.put(
+            format!("clusters/{cluster}/nodes/{node}/nomad/name"),
+            format!("server.{inc}"),
+        )?;
 
         Ok(FlashImage)
     }
@@ -430,6 +455,7 @@ impl Run for DeployNodeState {
         disk_partition_id: String,
     ) -> Result<Self> {
         let cluster = &proc.cluster;
+        let node = &proc.node_name;
         let username = proc.get_user(registry)?;
         let pub_key_path = proc.get_pub_key_path(registry)?;
         let address = proc.get_address(registry)?;
@@ -439,6 +465,9 @@ impl Run for DeployNodeState {
             .and_then(String::try_from)?
             .parse()
             .log_err()?;
+        let nomad_name: String = registry
+            .get(format!("clusters/{cluster}/nodes/{node}/nomad/name"))?
+            .try_into()?;
 
         let pub_key = status!("Read SSH keypair").on(|| {
             let pub_key = fs::read_to_string(pub_key_path)?;
@@ -461,6 +490,7 @@ impl Run for DeployNodeState {
                 admin_username = username,
                 cluster = cluster,
                 hostname = proc.node_name,
+                nomad_name = nomad_name,
                 ip_address = address,
                 ssh_pub_key = pub_key,
             ))
@@ -540,7 +570,11 @@ impl Run for DeployNodeState {
 
         let state = match os {
             OperatingSystem::RaspberryPiOs { .. } => AddNewUser,
-            OperatingSystem::Ubuntu { .. } => ChangePassword,
+            OperatingSystem::Ubuntu { .. } => {
+                let client = proc.connect(registry, ssh::Options::default())?;
+                cmd!("cloud-init", "status", "--wait").ssh(&client).run()?;
+                ChangePassword
+            }
         };
 
         Ok(state)
@@ -648,10 +682,9 @@ impl Run for DeployNodeState {
                 .run()?;
             if status_code == 1 {
                 // Create the authorized keys file.
-                cmd!("cat")
+                cmd!("tee", authorized_keys_path)
                     .settings(&common_set)
                     .stdin_line(&username)
-                    .stdout(&authorized_keys_path)
                     .run()?;
                 cmd!("chmod", "644", authorized_keys_path).run_with(&common_set)?;
             }
@@ -719,58 +752,265 @@ impl Run for DeployNodeState {
     fn install_dependencies(proc: &mut DeployNode, registry: &impl ReadStore) -> Result<Self> {
         let password = proc.get_password()?;
         let client = proc.connect(registry, ssh::Options::default())?;
-        let sudo_set = process::Settings::default()
-            .ssh(&client)
-            .sudo_password(&*password);
+        let common_set = process::Settings::default().ssh(&client);
+        let sudo_set = common_set.clone().sudo_password(&*password);
 
+        let local_dir = "/usr/local";
         let bin_dir = "/usr/local/bin";
-        let nomad_dir = "/run/nomad";
-        let consul_dir = "/run/consul";
-        let envoy_dir = "/run/envoy";
-        let nomad_path = format!("{nomad_dir}/{NOMAD_VERSION}.zip");
-        let consul_path = format!("{consul_dir}/{CONSUL_VERSION}.zip");
-        let envoy_path = format!("{envoy_dir}/{ENVOY_VERSION}.tar.xz");
+        let nomad_path = format!("/run/nomad/{NOMAD_VERSION}.zip");
+        let consul_path = format!("/run/consul/{CONSUL_VERSION}.zip");
+        let envoy_path = format!("/run/envoy/{ENVOY_VERSION}.tar.xz");
+        let go_path = format!("/run/go/{GO_VERSION}.tar.xz");
 
-        // Nomad.
-        cmd!("mkdir", "-p", nomad_dir).run_with(&sudo_set)?;
-        cmd!("wget", "--no-verbose", NOMAD_URL, "-O", nomad_path).run_with(&sudo_set)?;
-        cmd!("unzip", "-o", nomad_path, "-d", bin_dir).run_with(&sudo_set)?;
+        status!("Nomad").on(|| {
+            cmd!("wget", "--no-verbose", NOMAD_URL, "-O", nomad_path).run_with(&sudo_set)?;
+            cmd!("unzip", "-o", nomad_path, "-d", bin_dir).run_with(&sudo_set)
+        })?;
 
-        // Consul.
-        cmd!("mkdir", "-p", consul_dir).run_with(&sudo_set)?;
-        cmd!("wget", "--no-verbose", CONSUL_URL, "-O", consul_path).run_with(&sudo_set)?;
-        cmd!("unzip", "-o", consul_path, "-d", bin_dir).run_with(&sudo_set)?;
+        status!("Consul").on(|| {
+            cmd!("wget", "--no-verbose", CONSUL_URL, "-O", consul_path).run_with(&sudo_set)?;
+            cmd!("unzip", "-o", consul_path, "-d", bin_dir).run_with(&sudo_set)
+        })?;
 
-        // Envoy.
-        cmd!("mkdir", "-p", envoy_dir).run_with(&sudo_set)?;
-        cmd!("wget", "--no-verbose", ENVOY_URL, "-O", envoy_path).run_with(&sudo_set)?;
-        cmd!("xz", "-d", envoy_path).run_with(&sudo_set)?;
-        cmd!(
-            "tar",
-            "-xf",
-            envoy_path.trim_end_matches(".xz"),
-            "--overwrite",
-            "--strip-components",
-            "2",
-            "-C",
-            "/usr/local/bin"
-        )
-        .run_with(&sudo_set)?;
+        status!("Envoy").on(|| {
+            cmd!("wget", "--no-verbose", ENVOY_URL, "-O", envoy_path).run_with(&sudo_set)?;
+            cmd!(
+                "tar",
+                "-xJf",
+                envoy_path,
+                "--strip-components",
+                "2",
+                "-C",
+                bin_dir,
+            )
+            .run_with(&sudo_set)
+        })?;
+
+        status!("Go").on(|| {
+            cmd!("wget", "--no-verbose", GO_URL, "-O", go_path).run_with(&sudo_set)?;
+            cmd!("tar", "-xzf", go_path, "-C", local_dir).run_with(&sudo_set)
+        })?;
+
+        status!("cfssl").on(|| {
+            cmd!("go", "install", format!("{CFSSL_PKG_PATH}@{CFSSL_VERSION}"))
+                .run_with(&common_set)?;
+            cmd!(
+                "go",
+                "install",
+                format!("{CFSSLJSON_PKG_PATH}@{CFSSL_VERSION}")
+            )
+            .run_with(&common_set)?;
+            cmd!("mv", "go/bin/cfssl", "go/bin/cfssljson", bin_dir).run_with(&sudo_set)
+        })?;
 
         Ok(InitializeNomad)
     }
 
-    fn initialize_nomad(proc: &mut DeployNode, registry: &impl ReadStore) -> Result<Self> {
+    fn initialize_nomad(proc: &mut DeployNode, registry: &impl WriteStore) -> Result<Self> {
+        let cluster = &proc.cluster;
         let password = proc.get_password()?;
         let client = proc.connect(registry, ssh::Options::default())?;
         let common_set = process::Settings::default().ssh(&client);
         let sudo_set = common_set.clone().sudo_password(&*password);
+        let nomad_set = sudo_set.clone().sudo_user(&"nomad");
 
+        // Set up command autocomplete.
         cmd!("nomad", "-autocomplete-install")
             .settings(&common_set)
             .success_codes([0, 1])
             .run()?;
         cmd!("complete", "-C", "/usr/local/bin/nomad", "nomad").run_with(&common_set)?;
+
+        cmd!("mkdir", "-p", NOMAD_CERTS_DIR).run_with(&sudo_set)?;
+
+        // Generate common cluster key.
+        let registry_key = format!("$/clusters/{cluster}/nomad/key");
+        let encrypt_key: String = match registry.get(&registry_key).and_then(String::try_from) {
+            Ok(key) => key,
+            Err(kv::Error::KeyDoesNotExist(_)) => {
+                let (_, key) = cmd!("nomad", "operator", "keygen")
+                    .settings(&common_set)
+                    .hide_stdout()
+                    .run()?;
+                registry.put(&registry_key, key.clone())?;
+                key
+            }
+            Err(err) => return Err(err.into()),
+        };
+
+        // Create or distribute certificate authority certificate.
+        let ca_pub_key = format!("$/clusters/{cluster}/nomad/certs/ca_pub");
+        let ca_priv_key = format!("$/clusters/{cluster}/nomad/certs/ca_priv");
+        let ca_pub_path = format!("{NOMAD_CERTS_DIR}/{NOMAD_CA_PUB_FILENAME}");
+        let ca_priv_path = format!("{NOMAD_CERTS_DIR}/{NOMAD_CA_PRIV_FILENAME}");
+        match registry.get(&ca_pub_key).and_then(kv::FileRef::try_from) {
+            Ok(ca_pub_file_ref) => {
+                Self::upload_certificates(
+                    client,
+                    &*password,
+                    ca_pub_file_ref.path(),
+                    &ca_pub_path,
+                    registry
+                        .get(ca_priv_key)
+                        .and_then(kv::FileRef::try_from)?
+                        .path(),
+                    &ca_priv_path,
+                )?;
+            }
+            Err(kv::Error::KeyDoesNotExist(_)) => {
+                // Create CA certificate.
+                let (_, csr) = cmd!("cfssl", "print-defaults", "csr").run_with(&common_set)?;
+                let (_, json_cert) = cmd!("cfssl", "gencert", "-initca", "-")
+                    .settings(&common_set)
+                    .stdin_lines(csr.lines())
+                    .hide_stdout()
+                    .run()?;
+                cmd!("cfssljson", "-bare", "nomad-ca")
+                    .settings(&common_set)
+                    .stdin_lines(json_cert.lines())
+                    .run()?;
+                cmd!(
+                    "mv",
+                    NOMAD_CA_PUB_FILENAME,
+                    NOMAD_CA_PRIV_FILENAME,
+                    NOMAD_CERTS_DIR
+                )
+                .run_with(&sudo_set)?;
+
+                // Remove extraneous files.
+                cmd!("rm", "nomad-ca.csr").run_with(&sudo_set)?;
+
+                // Download certificate and key.
+                Self::download_certificates(
+                    registry,
+                    client,
+                    &*password,
+                    &ca_pub_path,
+                    &ca_priv_path,
+                    &ca_pub_key,
+                    &ca_priv_key,
+                )?;
+            }
+            Err(err) => return Err(err.into()),
+        }
+        cmd!("chown", "-R", "nomad:nomad", NOMAD_CERTS_DIR).run_with(&sudo_set)?;
+
+        cmd!("tee", "cfssl.json")
+            .settings(&common_set)
+            .stdin_lines(include_str!("../../config/nomad/cfssl.json").lines())
+            .run()?;
+
+        // Create server certificates.
+        let (_, json_cert) = cmd!(
+            "cfssl",
+            "gencert",
+            "-ca",
+            ca_pub_path,
+            "-ca-key",
+            ca_priv_path,
+            "-config",
+            "cfssl.json",
+            "-hostname",
+            "server.global.nomad,localhost,127.0.0.1",
+            "-"
+        )
+        .settings(&nomad_set)
+        .stdin_line("{}")
+        .hide_stdout()
+        .run()?;
+        cmd!("cfssljson", "-bare", "server")
+            .settings(&sudo_set)
+            .stdin_lines(json_cert.lines())
+            .run()?;
+        cmd!(
+            "mv",
+            NOMAD_SERVER_PUB_FILENAME,
+            NOMAD_SERVER_PRIV_FILENAME,
+            NOMAD_CERTS_DIR,
+        )
+        .run_with(&sudo_set)?;
+        cmd!("chown", "-R", "nomad:nomad", NOMAD_CERTS_DIR).run_with(&sudo_set)?;
+
+        // Create client certificates.
+        let (_, json_cert) = cmd!(
+            "cfssl",
+            "gencert",
+            "-ca",
+            ca_pub_path,
+            "-ca-key",
+            ca_priv_path,
+            "-config",
+            "cfssl.json",
+            "-hostname",
+            "client.global.nomad,localhost,127.0.0.1",
+            "-"
+        )
+        .settings(&nomad_set)
+        .stdin_line("{}")
+        .hide_stdout()
+        .run()?;
+        cmd!("cfssljson", "-bare", "client")
+            .settings(&sudo_set)
+            .stdin_lines(json_cert.lines())
+            .run()?;
+        cmd!(
+            "mv",
+            NOMAD_CLIENT_PUB_FILENAME,
+            NOMAD_CLIENT_PRIV_FILENAME,
+            NOMAD_CERTS_DIR,
+        )
+        .run_with(&sudo_set)?;
+        cmd!("chown", "-R", "nomad:nomad", NOMAD_CERTS_DIR).run_with(&sudo_set)?;
+
+        // Create CLI certificates.
+        let (_, json_cert) = cmd!(
+            "cfssl",
+            "gencert",
+            "-ca",
+            ca_pub_path,
+            "-ca-key",
+            ca_priv_path,
+            "-profile",
+            "client",
+            "-"
+        )
+        .settings(&nomad_set)
+        .stdin_line("{}")
+        .hide_stdout()
+        .run()?;
+        cmd!("cfssljson", "-bare", "cli")
+            .settings(&sudo_set)
+            .stdin_lines(json_cert.lines())
+            .run()?;
+        cmd!(
+            "mv",
+            NOMAD_CLI_PUB_FILENAME,
+            NOMAD_CLI_PRIV_FILENAME,
+            NOMAD_CERTS_DIR
+        )
+        .run_with(&sudo_set)?;
+        cmd!("chown", "-R", "nomad:nomad", NOMAD_CERTS_DIR).run_with(&sudo_set)?;
+
+        // Remove extraneous files.
+        cmd!(
+            "rm",
+            ca_priv_path,
+            "cfssl.json",
+            "server.csr",
+            "client.csr",
+            "cli.csr"
+        )
+        .run_with(&sudo_set)?;
+
+        // Update Nomad configuration file
+        let encrypt_sed = format!(
+            r#"s/^( *encrypt = ")temporary_key(")$/\1{}\2/"#,
+            encrypt_key.replace("/", r"\/")
+        );
+        let server_config_path = "/etc/nomad.d/server.hcl";
+        cmd!("sed", "-ri", encrypt_sed, server_config_path).run_with(&nomad_set)?;
+
+        // Start Nomad service.
         cmd!("systemctl", "enable", "nomad").run_with(&sudo_set)?;
         cmd!("systemctl", "start", "nomad").run_with(&sudo_set)?;
 
@@ -779,31 +1019,51 @@ impl Run for DeployNodeState {
 
     fn set_up_nomad_acl(proc: &mut DeployNode, registry: &impl WriteStore) -> Result<Self> {
         let cluster = &proc.cluster;
+        let password = proc.get_password()?;
 
         let client = proc.connect(registry, ssh::Options::default())?;
         let mut common_set = process::Settings::default().ssh(&client);
+        let mut nomad_set = common_set
+            .clone()
+            .env("NOMAD_ADDR", "https://localhost:4646")
+            .env(
+                "NOMAD_CACERT",
+                format!("{NOMAD_CERTS_DIR}/{NOMAD_CA_PUB_FILENAME}"),
+            )
+            .env(
+                "NOMAD_CLIENT_CERT",
+                format!("{NOMAD_CERTS_DIR}/{NOMAD_CLI_PUB_FILENAME}"),
+            )
+            .env(
+                "NOMAD_CLIENT_KEY",
+                format!("{NOMAD_CERTS_DIR}/{NOMAD_CLI_PRIV_FILENAME}"),
+            )
+            .sudo_user(&"nomad")
+            .sudo_password(&*password);
 
         // Set up ACL.
-        let mgmt_token_key = format!("$/clusters/{cluster}/tokens/nomad/management");
-        let access_token_key = format!("$/clusters/{cluster}/tokens/nomad/accessor");
+        let mgmt_token_key = format!("$/clusters/{cluster}/nomad/tokens/management");
+        let access_token_key = format!("$/clusters/{cluster}/nomad/tokens/accessor");
         match registry.get(&mgmt_token_key) {
             Ok(_) => (),
             Err(kv::Error::KeyDoesNotExist(_)) => {
                 // Bootstrap ACL.
                 let (_, output) = cmd!("nomad", "acl", "bootstrap")
-                    .settings(&common_set)
+                    .settings(&nomad_set)
                     .hide_stdout()
                     .run()?;
                 let mgmt_token = Self::get_id("Secret ID", &output);
                 let access_token = Self::get_id("Accessor ID", &output);
 
                 common_set = common_set.secret(mgmt_token);
+                common_set = common_set.secret(access_token);
+                nomad_set = nomad_set.secret(mgmt_token);
+                nomad_set = nomad_set.secret(access_token);
 
                 // Create ACL policy.
-                cmd!("cat")
+                cmd!("tee", "anonymous-policy.hcl")
                     .settings(&common_set)
                     .stdin_lines(include_str!("../../config/nomad/anonymous-policy.hcl").lines())
-                    .stdout(&"anonymous-policy.hcl")
                     .run()?;
                 cmd!(
                     "nomad",
@@ -815,9 +1075,9 @@ impl Run for DeployNodeState {
                     "-token",
                     mgmt_token,
                     "anonymous",
-                    "@anonymous-policy.hcl",
+                    "anonymous-policy.hcl",
                 )
-                .run_with(&common_set)?;
+                .run_with(&nomad_set)?;
                 cmd!("rm", "anonymous-policy.hcl").run_with(&common_set)?;
 
                 registry.put(mgmt_token_key, mgmt_token)?;
@@ -839,18 +1099,18 @@ impl Run for DeployNodeState {
 
         // Set up command autocomplete.
         cmd!("consul", "-autocomplete-install")
-            .settings(&common_set)
+            .settings(&consul_set)
             .success_codes([0, 1])
             .run()?;
         cmd!("complete", "-C", "/usr/local/bin/consul", "consul").run_with(&common_set)?;
 
         // Generate common cluster key.
-        let registry_key = format!("$/clusters/{cluster}/key");
+        let registry_key = format!("$/clusters/{cluster}/consul/key");
         let encrypt_key: String = match registry.get(&registry_key).and_then(String::try_from) {
             Ok(key) => key,
             Err(kv::Error::KeyDoesNotExist(_)) => {
                 let (_, key) = cmd!("consul", "keygen")
-                    .settings(&common_set)
+                    .settings(&consul_set)
                     .hide_stdout()
                     .run()?;
                 registry.put(&registry_key, key.clone())?;
@@ -859,62 +1119,52 @@ impl Run for DeployNodeState {
             Err(err) => return Err(err.into()),
         };
 
-        cmd!("mkdir", "-p", "/etc/consul.d/certs").run_with(&sudo_set)?;
+        cmd!("mkdir", "-p", CONSUL_CERTS_DIR).run_with(&sudo_set)?;
 
         // Create or distribute certificate authority certificate.
-        let ca_pub_key = format!("$/clusters/{cluster}/certs/ca_pub");
-        let ca_priv_key = format!("$/clusters/{cluster}/certs/ca_priv");
-        let certs_dir = "/etc/consul.d/certs";
-        let ca_pub_filename = "consul-agent-ca.pem";
-        let ca_priv_filename = "consul-agent-ca-key.pem";
-        let ca_pub_path = format!("{certs_dir}/{ca_pub_filename}");
-        let ca_priv_path = format!("{certs_dir}/{ca_priv_filename}");
+        let ca_pub_key = format!("$/clusters/{cluster}/consul/certs/ca_pub");
+        let ca_priv_key = format!("$/clusters/{cluster}/consul/certs/ca_priv");
+        let ca_pub_path = format!("{CONSUL_CERTS_DIR}/{CONSUL_CA_PUB_FILENAME}");
+        let ca_priv_path = format!("{CONSUL_CERTS_DIR}/{CONSUL_CA_PRIV_FILENAME}");
         match registry.get(&ca_pub_key).and_then(kv::FileRef::try_from) {
             Ok(ca_pub_file_ref) => {
-                // Read certificate and key files.
-                let ca_priv_file_ref: kv::FileRef = registry.get(ca_priv_key)?.try_into()?;
-                let mut ca_pub_file = File::open(ca_pub_file_ref.path())?;
-                let mut ca_priv_file = File::open(ca_priv_file_ref.path())?;
-                let mut ca_pub = String::new();
-                let mut ca_priv = String::new();
-                ca_pub_file.read_to_string(&mut ca_pub)?;
-                ca_priv_file.read_to_string(&mut ca_priv)?;
-
-                // Send certificate and key to server.
-                cmd!("cat")
-                    .settings(&sudo_set)
-                    .stdin_lines(ca_pub.lines())
-                    .stdout(&ca_pub_path)
-                    .run()?;
-                cmd!("cat")
-                    .settings(&sudo_set)
-                    .stdin_lines(ca_priv.lines())
-                    .stdout(&ca_priv_path)
-                    .run()?;
+                Self::upload_certificates(
+                    client,
+                    &*password,
+                    ca_pub_file_ref.path(),
+                    &ca_pub_path,
+                    registry
+                        .get(ca_priv_key)
+                        .and_then(kv::FileRef::try_from)?
+                        .path(),
+                    &ca_priv_path,
+                )?;
             }
             Err(kv::Error::KeyDoesNotExist(_)) => {
                 // Create CA certificate.
-                cmd!("consul", "tls", "ca", "create").run_with(&common_set)?;
-                cmd!("mv", ca_pub_filename, ca_priv_filename, certs_dir).run_with(&sudo_set)?;
+                cmd!("consul", "tls", "ca", "create").run_with(&sudo_set)?;
+                cmd!(
+                    "mv",
+                    CONSUL_CA_PUB_FILENAME,
+                    CONSUL_CA_PRIV_FILENAME,
+                    CONSUL_CERTS_DIR
+                )
+                .run_with(&sudo_set)?;
 
                 // Download certificate and key.
-                let (_, ca_pub) = cmd!("cat", ca_pub_path).run_with(&sudo_set)?;
-                let (_, ca_priv) = cmd!("cat", ca_priv_path)
-                    .settings(&sudo_set)
-                    .hide_stdout()
-                    .run()?;
-
-                // Store certificate and key in registry.
-                let ca_pub_file_ref = registry.create_file(ca_pub_key)?;
-                let ca_priv_file_ref = registry.create_file(ca_priv_key)?;
-                let mut ca_pub_file = File::options().write(true).open(ca_pub_file_ref.path())?;
-                let mut ca_priv_file = File::options().write(true).open(ca_priv_file_ref.path())?;
-                ca_pub_file.write_all(ca_pub.as_bytes())?;
-                ca_priv_file.write_all(ca_priv.as_bytes())?;
+                Self::download_certificates(
+                    registry,
+                    client,
+                    &*password,
+                    &ca_pub_path,
+                    &ca_priv_path,
+                    &ca_pub_key,
+                    &ca_priv_key,
+                )?;
             }
             Err(err) => return Err(err.into()),
         }
-        cmd!("chown", "-R", "consul:consul", certs_dir).run_with(&sudo_set)?;
+        cmd!("chown", "-R", "consul:consul", CONSUL_CERTS_DIR).run_with(&sudo_set)?;
 
         // Create server certificates.
         let cert_filename = format!("{cluster}-server-consul-0.pem");
@@ -934,12 +1184,12 @@ impl Run for DeployNodeState {
             "-key",
             ca_priv_path,
         )
-        .run_with(&consul_set)?;
-        cmd!("mv", cert_filename, key_filename, certs_dir).run_with(&sudo_set)?;
-        cmd!("chown", "-R", "consul:consul", certs_dir).run_with(&sudo_set)?;
+        .run_with(&sudo_set)?;
+        cmd!("mv", cert_filename, key_filename, CONSUL_CERTS_DIR).run_with(&sudo_set)?;
+        cmd!("chown", "-R", "consul:consul", CONSUL_CERTS_DIR).run_with(&sudo_set)?;
 
         // Remove CA key.
-        cmd!("rm", ca_priv_path).run_with(&common_set)?;
+        cmd!("rm", ca_priv_path).run_with(&sudo_set)?;
 
         // Set or get auto-join address.
         let auto_join_key = format!("$/clusters/{cluster}/auto_join_address");
@@ -979,10 +1229,11 @@ impl Run for DeployNodeState {
 
         let client = proc.connect(registry, ssh::Options::default())?;
         let mut common_set = process::Settings::default().ssh(&client);
+        let mut consul_set = process::Settings::default().ssh(&client);
 
         // Set up ACL.
-        let mgmt_token_key = format!("$/clusters/{cluster}/tokens/consul/management");
-        let node_token_key = format!("$/clusters/{cluster}/tokens/consul/node");
+        let mgmt_token_key = format!("$/clusters/{cluster}/consul/tokens/management");
+        let node_token_key = format!("$/clusters/{cluster}/consul/tokens/node");
         let (mgmt_token, node_token) =
             match registry.get(&mgmt_token_key).and_then(String::try_from) {
                 Ok(token) => (
@@ -992,18 +1243,18 @@ impl Run for DeployNodeState {
                 Err(kv::Error::KeyDoesNotExist(_)) => {
                     // Bootstrap ACL.
                     let (_, output) = cmd!("consul", "acl", "bootstrap")
-                        .settings(&common_set)
+                        .settings(&consul_set)
                         .hide_stdout()
                         .run()?;
                     let mgmt_token = Self::get_id("SecretID", &output).to_string();
 
                     common_set = common_set.secret(mgmt_token.clone());
+                    consul_set = consul_set.secret(mgmt_token.clone());
 
                     // Create ACL policy.
-                    cmd!("cat")
+                    cmd!("tee", "node-policy.hcl")
                         .settings(&common_set)
                         .stdin_lines(include_str!("../../config/consul/node-policy.hcl").lines())
-                        .stdout(&"node-policy.hcl")
                         .run()?;
 
                     cmd!(
@@ -1018,7 +1269,7 @@ impl Run for DeployNodeState {
                         "-rules",
                         "@node-policy.hcl"
                     )
-                    .run_with(&common_set)?;
+                    .run_with(&consul_set)?;
 
                     cmd!("rm", "node-policy.hcl").run_with(&common_set)?;
 
@@ -1035,12 +1286,12 @@ impl Run for DeployNodeState {
                         "-policy-name",
                         "node-policy"
                     )
-                    .settings(&common_set)
+                    .settings(&consul_set)
                     .hide_stdout()
                     .run()?;
                     let node_token = Self::get_id("SecretID", &output).to_string();
 
-                    common_set = common_set.secret(node_token.clone());
+                    consul_set = consul_set.secret(node_token.clone());
 
                     registry.put(mgmt_token_key, mgmt_token.clone())?;
                     registry.put(node_token_key, node_token.clone())?;
@@ -1060,7 +1311,7 @@ impl Run for DeployNodeState {
             "agent",
             node_token,
         )
-        .run_with(&common_set)?;
+        .run_with(&consul_set)?;
 
         Ok(())
     }
@@ -1068,12 +1319,147 @@ impl Run for DeployNodeState {
 
 impl DeployNodeState {
     fn get_id<'a>(key: &str, output: &'a str) -> &'a str {
-        Regex::new(&format!(r"{}: *([\w-]*)", regex::escape(key)))
+        Regex::new(&format!(r"{} *(:|=) *([\w-]*)", regex::escape(key)))
             .unwrap()
             .captures(output)
             .unwrap()
-            .get(1)
+            .get(2)
             .unwrap()
             .as_str()
+    }
+
+    fn upload_certificates(
+        client: &ssh::Client,
+        password: &str,
+        cert_pub_source: &Path,
+        cert_pub_dest: &impl AsRef<OsStr>,
+        cert_priv_source: &Path,
+        cert_priv_dest: &impl AsRef<OsStr>,
+    ) -> Result<()> {
+        // Read certificate and key files.
+        let mut cert_pub_file = File::open(cert_pub_source)?;
+        let mut cert_priv_file = File::open(cert_priv_source)?;
+        let mut cert_pub = String::new();
+        let mut cert_priv = String::new();
+        cert_pub_file.read_to_string(&mut cert_pub)?;
+        cert_priv_file.read_to_string(&mut cert_priv)?;
+
+        // Send certificate and key to server.
+        cmd!("tee", cert_pub_dest)
+            .stdin_lines(cert_pub.lines())
+            .sudo_password(password)
+            .ssh(client)
+            .run()?;
+        cmd!("tee", cert_priv_dest)
+            .stdin_lines(cert_priv.lines())
+            .sudo_password(password)
+            .hide_stdout()
+            .ssh(client)
+            .run()?;
+
+        Ok(())
+    }
+
+    fn download_certificates(
+        registry: &impl WriteStore,
+        client: &ssh::Client,
+        password: &str,
+        cert_pub_path: &str,
+        cert_priv_path: &str,
+        cert_pub_key: &str,
+        cert_priv_key: &str,
+    ) -> Result<()> {
+        // Download certificate and key.
+        let (_, cert_pub) = cmd!("cat", cert_pub_path)
+            .sudo_password(password)
+            .ssh(client)
+            .run()?;
+        let (_, cert_priv) = cmd!("cat", cert_priv_path)
+            .hide_stdout()
+            .sudo_password(password)
+            .ssh(client)
+            .run()?;
+
+        // Store certificate and key in registry.
+        let cert_pub_file_ref = registry.create_file(cert_pub_key)?;
+        let cert_priv_file_ref = registry.create_file(cert_priv_key)?;
+        let mut cert_pub_file = File::options().write(true).open(cert_pub_file_ref.path())?;
+        let mut cert_priv_file = File::options()
+            .write(true)
+            .open(cert_priv_file_ref.path())?;
+        cert_pub_file.write_all(cert_pub.as_bytes())?;
+        cert_priv_file.write_all(cert_priv.as_bytes())?;
+
+        Ok(())
+    }
+
+    fn numeral(n: u64) -> Cow<'static, str> {
+        match n {
+            0 => "zero".into(),
+            1 => "one".into(),
+            2 => "two".into(),
+            3 => "three".into(),
+            4 => "four".into(),
+            5 => "five".into(),
+            6 => "six".into(),
+            7 => "seven".into(),
+            8 => "eight".into(),
+            9 => "nine".into(),
+            10 => "ten".into(),
+            11 => "eleven".into(),
+            12 => "twelve".into(),
+            13 => "thirteen".into(),
+            14 => "fourteen".into(),
+            15 => "fifteen".into(),
+            16 => "sixteen".into(),
+            17 => "seventeen".into(),
+            18 => "eighteen".into(),
+            19 => "nineteen".into(),
+            20 => "twenty".into(),
+            30 => "thirty".into(),
+            40 => "fourty".into(),
+            50 => "fifty".into(),
+            60 => "sixty".into(),
+            70 => "seventy".into(),
+            80 => "eighty".into(),
+            90 => "ninety".into(),
+            100 => "hundred".into(),
+            1000 => "thousand".into(),
+            1_000_000 => "million".into(),
+            n if n <= 99 => {
+                format!("{}-{}", Self::numeral(n - n % 10), Self::numeral(n % 10)).into()
+            }
+            n if n <= 199 => format!("hundred-{}", Self::numeral(n % 100)).into(),
+            n if n <= 999 && n % 100 == 0 => format!("{}-hundred", Self::numeral(n / 100),).into(),
+            n if n <= 999 => {
+                format!("{}-{}", Self::numeral(n - n % 100), Self::numeral(n % 100)).into()
+            }
+            n if n <= 1999 => format!("thousand-{}", Self::numeral(n % 1000)).into(),
+            n if n <= 999_999 && n % 1000 == 0 => {
+                format!("{}-thousand", Self::numeral(n / 1000)).into()
+            }
+            n if n <= 999_999 => format!(
+                "{}-{}",
+                Self::numeral(n - n % 1000),
+                Self::numeral(n % 1000)
+            )
+            .into(),
+            n if n <= 1_999_999 => format!("million-{}", Self::numeral(n % 1_000_000)).into(),
+            n if n % 1_000_000 == 0 => format!("{}-million", Self::numeral(n / 1_000_000)).into(),
+
+            mut n => {
+                let mut list = Vec::new();
+                loop {
+                    list.push(Self::numeral(n % 1_000_000));
+                    n /= 1_000_000;
+                    if n == 0 {
+                        break;
+                    }
+                    list.push("million".into());
+                }
+                list.reverse();
+                list.join("-".into()).into()
+            }
+        }
     }
 }

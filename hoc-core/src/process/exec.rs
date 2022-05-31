@@ -99,20 +99,36 @@ fn exec_impl<'args, 'a: 'args>(
             Cow::Borrowed(mem::replace(&mut program, OsStr::new("sudo"))),
         );
 
-        if let Some(user) = user {
-            args.insert(0, Cow::Borrowed(OsStr::new("-H")));
-            args.insert(1, Cow::Borrowed(OsStr::new("-u")));
-            args.insert(2, Cow::Borrowed(user));
-        }
-
+        let mut start_index = 0;
         if let Some(password) = password {
-            args.insert(3, Cow::Borrowed(OsStr::new("-kSp")));
-            args.insert(4, Cow::Borrowed(OsStr::new("")));
+            args.insert(start_index, OsStr::new("-kSp").into());
+            args.insert(start_index + 1, OsStr::new("").into());
             pipe_input.insert(0, password.clone());
         } else {
-            let line_prefix = OsString::from(hoc_log::LOG.create_line_prefix("[sudo] Password:"));
-            args.insert(3, Cow::Borrowed(OsStr::new("-p")));
-            args.insert(4, Cow::Owned(line_prefix));
+            let line_prefix = OsString::from(hoc_log::LOG.create_line_prefix("> [sudo] Password:"));
+            args.insert(start_index, OsStr::new("-p").into());
+            args.insert(start_index + 1, line_prefix.into());
+        }
+        start_index += 2;
+
+        if let Some(user) = user.as_ref().copied() {
+            args.insert(start_index, OsStr::new("-H").into());
+            args.insert(start_index + 1, OsStr::new("-u").into());
+            args.insert(start_index + 2, user.into());
+            start_index += 3;
+        }
+
+        if !set.env.is_empty() {
+            let env_list = set
+                .env
+                .keys()
+                .map(Cow::as_ref)
+                .collect::<Vec<_>>()
+                .join(",");
+            args.insert(
+                start_index,
+                OsString::from(format!("--preserve-env={env_list}")).into(),
+            );
         }
     };
 

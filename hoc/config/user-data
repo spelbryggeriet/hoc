@@ -1,4 +1,5 @@
-hostname: {hostname}
+fqdn: {hostname}
+prefer_fgdn_over_hostname: true
 manage_etc_hosts: true
 
 apt:
@@ -73,6 +74,7 @@ apt:
 package_update: true
 package_upgrade: false
 packages:
+  - [build-essential, 12.8ubuntu1]
   - [unzip, 6.0-25ubuntu1]
   - [docker-ce, 5:20.10.13~3-0~ubuntu-focal] 
   - [docker-ce-cli, 5:20.10.13~3-0~ubuntu-focal]
@@ -149,16 +151,52 @@ write_files:
     content: |
       datacenter = "{cluster}"
       data_dir = "/opt/nomad"
-
-      acl {{
-        enabled = true
-      }}
+      name = "{nomad_name}"
   - path: /etc/nomad.d/server.hcl
     permissions: "0640"
     content: |
       server {{
         enabled = true
         bootstrap_expect = 1
+        encrypt = "temporary_key"
+      }}
+
+      acl {{
+        enabled = true
+      }}
+
+      tls {{
+        http = true
+        rpc = true
+
+        ca_file = "/etc/nomad.d/certs/nomad-ca.pem"
+        cert_file = "/etc/nomad.d/certs/server.pem"
+        key_file = "/etc/nomad.d/certs/server-key.pem"
+      
+        verify_server_hostname = true
+        verify_https_client = true
+      }}
+  - path: /etc/nomad.d/client.hcl
+    permissions: "0640"
+    content: |
+      client {{
+        enabled = true
+      }}
+
+      ports {{
+        http = 5656
+      }}
+
+      tls {{
+        http = true
+        rpc = true
+
+        ca_file = "/etc/nomad.d/certs/nomad-ca.pem"
+        cert_file = "/etc/nomad.d/certs/client.pem"
+        key_file = "/etc/nomad.d/certs/client-key.pem"
+      
+        verify_server_hostname = true
+        verify_https_client = true
       }}
 
   # Consul
@@ -241,12 +279,19 @@ write_files:
 
 runcmd:
   # Nomad
-  - [ mkdir, /opt/nomad ]
+  - [ mkdir, /opt/nomad, /run/nomad ]
   - [ chown, -R, "nomad:nomad", /etc/nomad.d, /opt/nomad ]
   - [ chmod, 0700, /etc/nomad.d ]
 
   # Consul
-  - [ mkdir, /opt/consul ]
+  - [ mkdir, /opt/consul, /run/consul ]
   - [ chown, -R, "consul:consul", /etc/consul.d, /opt/consul ]
   - [ chmod, 0700, /etc/consul.d ]
 
+  # Envoy
+  - [ mkdir, /run/envoy ]
+
+  # Go
+  - [ mkdir, /run/go ]
+  - [ sed, -i, -r, 's/^PATH="(.*):\/usr\/local\/go\/bin(.*)"$/PATH="\1\2"/', /etc/environment ]
+  - [ sed, -i, -r, 's/^PATH="(.*)"$/PATH="\1:\/usr\/local\/go\/bin"/', /etc/environment ]
