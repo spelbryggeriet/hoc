@@ -1,15 +1,14 @@
 use std::{
-    ffi::OsStr,
     fmt::{self, Display, Formatter},
     path::{Path, PathBuf},
 };
 
-use hoc_core::cmd;
 use hoc_log::{error, info, status, Result};
+use hoc_macros::cmd;
 use serde::Deserialize;
 
 pub fn get_attached_disks() -> Result<impl Iterator<Item = AttachedDiskInfo>> {
-    let (_, stdout) = cmd!("diskutil", "list", "-plist", "external", Type::Physical)
+    let (_, stdout) = cmd!("diskutil", "list -plist external {}", Type::Physical)
         .hide_output()
         .run()?;
 
@@ -57,10 +56,10 @@ pub enum Type {
     Physical,
 }
 
-impl AsRef<OsStr> for Type {
-    fn as_ref(&self) -> &OsStr {
+impl Display for Type {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
         match self {
-            Self::Physical => OsStr::new("physical"),
+            Self::Physical => write!(f, "physical"),
         }
     }
 }

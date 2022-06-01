@@ -10,19 +10,11 @@ use colored::Colorize;
 use hoc_log::{error, info};
 use thiserror::Error;
 
-#[macro_export]
-macro_rules! cmd {
-    ($program:expr $(, $args:expr)* $(,)?) => {
-        $crate::process::Process::cmd(&$program)
-            $(.arg(&($args)))*
-    };
-}
-
 mod exec;
 pub mod ssh;
 
 pub fn reset_sudo_privileges() -> Result<(), Error> {
-    cmd!("sudo", "-k").silent().run().map(|_| ())
+    Process::cmd("sudo", "-k").silent().run().map(|_| ())
 }
 
 fn process_exit_err_msg(program: &str, status: i32, stdout: &str, stderr: &str) -> String {
@@ -66,7 +58,7 @@ impl<'a> Obfuscate<'a> for &'a str {
     }
 }
 
-trait Quotify<'a> {
+pub trait Quotify<'a> {
     fn needs_quotes(&self) -> bool;
     fn quotify(self) -> Cow<'a, str>;
 }
@@ -145,23 +137,22 @@ impl From<Error> for hoc_log::Error {
 }
 
 pub struct Process<'a> {
-    program: &'a OsStr,
-    args: Vec<Cow<'a, OsStr>>,
+    program: Cow<'a, str>,
+    args: Cow<'a, str>,
     settings: Settings<'a>,
 }
 
 impl<'proc> Process<'proc> {
-    pub fn cmd<S: AsRef<OsStr>>(program: &'proc S) -> Self {
+    pub fn cmd<P, A>(program: P, args: A) -> Self
+    where
+        P: Into<Cow<'proc, str>>,
+        A: Into<Cow<'proc, str>>,
+    {
         Self {
-            program: program.as_ref(),
-            args: Vec::new(),
+            program: program.into(),
+            args: args.into(),
             settings: Settings::default(),
         }
-    }
-
-    pub fn arg<S: AsRef<OsStr>>(mut self, arg: &'proc S) -> Self {
-        self.args.push(Cow::Borrowed(arg.as_ref()));
-        self
     }
 
     pub fn settings(mut self, settings: &'proc Settings) -> Self {
@@ -193,7 +184,7 @@ impl<'proc> Process<'proc> {
         self
     }
 
-    pub fn sudo_user<S: AsRef<OsStr>>(mut self, user: &'proc S) -> Self {
+    pub fn sudo_user<S: Into<Cow<'proc, str>>>(mut self, user: S) -> Self {
         self.settings = self.settings.sudo_user(user);
         self
     }
@@ -320,7 +311,7 @@ pub struct Settings<'a> {
     ssh_client: Option<&'a ssh::Client>,
     stdout: Option<&'a OsStr>,
     success_codes: Option<Vec<i32>>,
-    sudo: Option<(Option<Cow<'a, str>>, Option<&'a OsStr>)>,
+    sudo: Option<(Option<Cow<'a, str>>, Option<Cow<'a, str>>)>,
 }
 
 impl<'set> Settings<'set> {
@@ -350,9 +341,9 @@ impl<'set> Settings<'set> {
         self
     }
 
-    pub fn sudo_user<S: AsRef<OsStr>>(mut self, user: &'set S) -> Self {
+    pub fn sudo_user<S: Into<Cow<'set, str>>>(mut self, user: S) -> Self {
         let password = self.sudo.map_or(None, |(password, _)| password);
-        let user = Some(user.as_ref());
+        let user = Some(user.into());
         self.sudo = Some((password, user));
         self
     }

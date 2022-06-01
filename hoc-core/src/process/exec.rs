@@ -1,52 +1,29 @@
-use std::{
-    borrow::Cow,
-    ffi::{OsStr, OsString},
-    fs::File,
-    io::Write,
-    mem,
-    process::Stdio,
-};
+use std::{borrow::Cow, fs::File, io::Write, process::Stdio};
 
 use colored::Colorize;
 use hoc_log::{info, status};
 
-use super::{Error, Obfuscate, ProcessOutput, Quotify, Settings};
+use super::{Error, ProcessOutput, Quotify, Settings};
 
 pub const SUCCESS_CODE: i32 = 0;
 
-pub fn exec(
-    program: &OsStr,
-    args: Vec<Cow<OsStr>>,
-    set: &Settings,
-) -> Result<(i32, String), Error> {
+pub fn exec(program: Cow<str>, args: Cow<str>, set: &Settings) -> Result<(i32, String), Error> {
     if !set.silent {
-        let sudo_str = if set.sudo.is_some() {
-            "sudo ".green().to_string()
-        } else {
-            String::new()
-        };
+        let client = set.ssh_client.map_or_else(
+            || "this computer".blue(),
+            |client| client.options().host.as_deref().unwrap_or("unknown").blue(),
+        );
+        let sudo_str = set
+            .sudo
+            .is_some()
+            .then(|| "sudo ".green().to_string())
+            .unwrap_or_default();
+        let program_str = program.green();
+        let args_str = (!args.is_empty())
+            .then(|| format!(" {args}"))
+            .unwrap_or_default();
 
-        let command_str = args
-            .iter()
-            .map(|arg| {
-                let arg = arg.to_string_lossy().obfuscate(&set.secrets);
-                if arg.needs_quotes() {
-                    Cow::Owned(arg.quotify().yellow().to_string())
-                } else {
-                    arg.quotify()
-                }
-            })
-            .fold(program.to_string_lossy().green().to_string(), |out, arg| {
-                out + " " + &arg
-            });
-
-        let client = if let Some(ref client) = set.ssh_client {
-            client.options().host.as_deref().unwrap_or("unknown").blue()
-        } else {
-            "this computer".blue()
-        };
-
-        let cmd_status = status!("Run ({client}): {sudo_str}{command_str}",);
+        let cmd_status = status!("Run ({client}): {sudo_str}{program_str}{args_str}",);
 
         match exec_impl(program, args, set) {
             Ok((status, output)) => {
@@ -85,59 +62,44 @@ pub fn exec(
     }
 }
 
-fn exec_impl<'args, 'a: 'args>(
-    mut program: &'a OsStr,
-    mut args: Vec<Cow<'args, OsStr>>,
-    set: &'a Settings,
-) -> Result<(i32, String), Error> {
-    let program_str = program.to_string_lossy().into_owned();
+fn exec_impl(program: Cow<str>, args: Cow<str>, set: &Settings) -> Result<(i32, String), Error> {
     let mut pipe_input = set.pipe_input.clone();
-
+    let mut cmd_str = String::new();
     if let Some((ref password, ref user)) = set.sudo {
-        args.insert(
-            0,
-            Cow::Borrowed(mem::replace(&mut program, OsStr::new("sudo"))),
-        );
+        cmd_str += "sudo ";
 
-        let mut start_index = 0;
         if let Some(password) = password {
-            args.insert(start_index, OsStr::new("-kSp").into());
-            args.insert(start_index + 1, OsStr::new("").into());
+            cmd_str += "-kSp '' ";
             pipe_input.insert(0, password.clone());
         } else {
-            let line_prefix = OsString::from(hoc_log::LOG.create_line_prefix("> [sudo] Password:"));
-            args.insert(start_index, OsStr::new("-p").into());
-            args.insert(start_index + 1, line_prefix.into());
+            cmd_str += "-p ";
+            cmd_str += &hoc_log::LOG
+                .create_line_prefix("> [sudo] Password:")
+                .quotify();
+            cmd_str += " ";
         }
-        start_index += 2;
 
-        if let Some(user) = user.as_ref().copied() {
-            args.insert(start_index, OsStr::new("-H").into());
-            args.insert(start_index + 1, OsStr::new("-u").into());
-            args.insert(start_index + 2, user.into());
-            start_index += 3;
+        if let Some(user) = user.as_ref() {
+            cmd_str += "-H -u ";
+            cmd_str += user;
+            cmd_str += " "
         }
 
         if !set.env.is_empty() {
-            let env_list = set
+            cmd_str += "--preserve-env=";
+            cmd_str += &set
                 .env
                 .keys()
                 .map(Cow::as_ref)
                 .collect::<Vec<_>>()
                 .join(",");
-            args.insert(
-                start_index,
-                OsString::from(format!("--preserve-env={env_list}")).into(),
-            );
+            cmd_str += " ";
         }
     };
 
-    let mut cmd_str = args
-        .iter()
-        .map(|arg| arg.to_string_lossy().quotify())
-        .fold(program.to_string_lossy().into_owned(), |out, arg| {
-            out + " " + &arg
-        });
+    cmd_str += &program;
+    cmd_str += " ";
+    cmd_str += &args;
 
     let (stdout, stderr, status) = if let Some(client) = set.ssh_client {
         if let Some(path) = set.stdout {
@@ -146,7 +108,7 @@ fn exec_impl<'args, 'a: 'args>(
 
         let mut env_str = String::new();
         for (key, value) in set.env.iter() {
-            env_str += &format!("export {key}={} ; ", value.quotify());
+            env_str += &format!("{key}={} ", value.quotify());
         }
         cmd_str = format!("{env_str}{cmd_str}");
 
@@ -212,7 +174,7 @@ fn exec_impl<'args, 'a: 'args>(
             Ok((status, stdout))
         } else {
             Err(Error::Exit {
-                program: program_str,
+                program: program.into_owned(),
                 status,
                 stdout,
                 stderr,
@@ -220,7 +182,7 @@ fn exec_impl<'args, 'a: 'args>(
         }
     } else {
         Err(Error::Aborted {
-            program: program_str,
+            program: program.into_owned(),
         })
     }
 }

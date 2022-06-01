@@ -3,6 +3,7 @@ use proc_macro_error::{abort, proc_macro_error, ResultExt};
 use quote::ToTokens;
 use syn::{parse::Parse, parse_macro_input, punctuated::Punctuated, Attribute, Token};
 
+mod cmd;
 mod procedure;
 mod procedure_state;
 
@@ -16,6 +17,12 @@ pub fn procedure(item: proc_macro::TokenStream) -> proc_macro::TokenStream {
 #[proc_macro_derive(ProcedureState, attributes(state))]
 pub fn procedure_state(item: proc_macro::TokenStream) -> proc_macro::TokenStream {
     procedure_state::impl_procedure_state(parse_macro_input!(item)).into()
+}
+
+#[proc_macro_error]
+#[proc_macro]
+pub fn cmd(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
+    cmd::impl_cmd(parse_macro_input!(input with Punctuated::parse_terminated)).into()
 }
 
 fn to_title_lower_case<S: AsRef<str>>(s: S) -> String {
