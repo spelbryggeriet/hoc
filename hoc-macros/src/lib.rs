@@ -25,6 +25,15 @@ pub fn cmd(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     cmd::impl_cmd(parse_macro_input!(input with Punctuated::parse_terminated)).into()
 }
 
+#[proc_macro_error]
+#[proc_macro_attribute]
+pub fn define_commands(
+    attrs: proc_macro::TokenStream,
+    item: proc_macro::TokenStream,
+) -> proc_macro::TokenStream {
+    cmd::impl_define_commands(parse_macro_input!(attrs), parse_macro_input!(item)).into()
+}
+
 fn to_title_lower_case<S: AsRef<str>>(s: S) -> String {
     let uppercase_title = s.as_ref().to_title_case();
     let mut title = String::with_capacity(uppercase_title.capacity());
