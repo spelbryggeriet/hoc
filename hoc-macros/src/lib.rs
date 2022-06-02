@@ -4,6 +4,7 @@ use quote::ToTokens;
 use syn::{parse::Parse, parse_macro_input, punctuated::Punctuated, Attribute, Token};
 
 mod cmd;
+mod define_commands;
 mod procedure;
 mod procedure_state;
 
@@ -31,7 +32,8 @@ pub fn define_commands(
     attrs: proc_macro::TokenStream,
     item: proc_macro::TokenStream,
 ) -> proc_macro::TokenStream {
-    cmd::impl_define_commands(parse_macro_input!(attrs), parse_macro_input!(item)).into()
+    define_commands::impl_define_commands(parse_macro_input!(attrs), parse_macro_input!(item))
+        .into()
 }
 
 fn to_title_lower_case<S: AsRef<str>>(s: S) -> String {
