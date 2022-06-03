@@ -18,8 +18,8 @@ use hoc_core::{
     kv::{self, ReadStore, WriteStore},
     process::{self, ssh},
 };
-use hoc_log::{bail, choose, error, hidden_input, info, prompt, status, LogErr, Result};
-use hoc_macros::{define_commands, Procedure, ProcedureState};
+use hoc_log::{bail, choose, error, hidden_input, info, prompt, LogErr, Result};
+use hoc_macros::{define_commands, doc_status, Procedure, ProcedureState};
 use xz2::read::XzDecoder;
 use zip::ZipArchive;
 
@@ -196,13 +196,15 @@ pub enum DeployNodeState {
     SetUpConsulAcl,
 }
 
+#[doc_status]
 impl Run for DeployNodeState {
     #[define_commands(bsd_file = "file")]
     fn download_image(proc: &mut DeployNode, registry: &impl WriteStore) -> Result<Self> {
         let os = proc.node_os;
 
         let file_ref = match registry.create_file(format!("$/images/{os}")) {
-            Ok(file_ref) => status!("Download image").on(|| {
+            /// Download image
+            Ok(file_ref) => {
                 let image_url = os.image_url();
                 info!("URL: {}", image_url);
 
@@ -213,34 +215,40 @@ impl Run for DeployNodeState {
                     .copy_to(&mut file)
                     .log_err()?;
 
-                Result::Ok(file_ref)
-            })?,
+                file_ref
+            }
+
             Err(kv::Error::KeyAlreadyExists(_)) => {
                 info!("Using cached file");
                 return Ok(FlashImage);
             }
+
             Err(error) => return Err(error.into()),
         };
 
-        status!("Determine file type").on(|| {
+        /// Determine file type
+        let state = {
             let output = bsd_file!("{}", file_ref.path().to_string_lossy())
                 .run()?
                 .1
                 .to_lowercase();
             if output.contains("zip archive") {
                 info!("Zip archive file type detected");
-                Ok(DecompressZipArchive)
+                DecompressZipArchive
             } else if output.contains("xz compressed data") {
                 info!("XZ compressed data file type detected");
-                Ok(DecompressXzFile)
+                DecompressXzFile
             } else {
                 error!("Unsupported file type")?.into()
             }
-        })
+        };
+
+        Ok(state)
     }
 
     fn decompress_zip_archive(proc: &mut DeployNode, registry: &impl ReadStore) -> Result<Self> {
-        let (image_data, mut image_file) = status!("Read ZIP archive").on(|| {
+        /// Read ZIP archive
+        let (image_data, mut image_file) = {
             let archive_path = proc.get_os_image_path(registry)?;
             let file = File::options().read(true).write(true).open(&archive_path)?;
 
@@ -257,60 +265,59 @@ impl Run for DeployNodeState {
                     info!("Found image at index {} among {} items.", i, archive_len);
 
                     let mut data = Vec::new();
-                    status!("Decompress image").on(|| {
+                    {
+                        //! Decompress image
+
                         archive_file
                             .read_to_end(&mut data)
                             .log_context("Failed to read image in ZIP archive")?;
                         buf.replace(data);
-
-                        Result::Ok(())
-                    })?;
+                    }
                     break;
                 }
             }
 
             if let Some(data) = buf {
-                Result::Ok((data, file))
+                (data, file)
             } else {
                 bail!("Image not found within ZIP archive");
             }
-        })?;
+        };
 
-        status!("Save decompressed image to file").on(|| {
+        /// Save decompressed image to file
+        {
             image_file.seek(SeekFrom::Start(0))?;
             image_file.set_len(0)?;
             image_file.write_all(&image_data)?;
-
-            Result::Ok(())
-        })?;
+        }
 
         Ok(FlashImage)
     }
 
     fn decompress_xz_file(proc: &mut DeployNode, registry: &impl ReadStore) -> Result<Self> {
-        let (image_data, mut image_file) = status!("Read XZ file").on(|| {
+        /// Read XZ file
+        let (image_data, mut image_file) = {
             let file_path = proc.get_os_image_path(registry)?;
             let file = File::options().read(true).write(true).open(&file_path)?;
 
             let mut decompressor = XzDecoder::new(&file);
 
             let mut buf = Vec::new();
-            status!("Decompress image").on(|| {
-                decompressor
-                    .read_to_end(&mut buf)
-                    .log_context("Failed to read image in XZ file")
-            })?;
 
-            Result::Ok((buf, file))
-        })?;
+            /// Decompress image
+            decompressor
+                .read_to_end(&mut buf)
+                .log_context("Failed to read image in XZ file")?;
 
-        status!("Save decompressed image to file").on(|| {
+            (buf, file)
+        };
+
+        /// Save decompressed image to file
+        {
             image_file.seek(SeekFrom::Start(0))?;
             image_file.set_len(0)?;
             image_file.write_all(&image_data)?;
-
-            Result::Ok(())
-        })?;
+        }
 
         Ok(AssignIpAddress)
     }
@@ -360,20 +367,26 @@ impl Run for DeployNodeState {
     fn flash_image(proc: &mut DeployNode, registry: &impl ReadStore) -> Result<Self> {
         let os = proc.node_os;
 
-        let mut disks: Vec<_> = disk::get_attached_disks()
-            .log_context("Failed to get attached disks")?
-            .collect();
+        /// Choose SD card
+        let disk = {
+            let mut disks: Vec<_> = disk::get_attached_disks()
+                .log_context("Failed to get attached disks")?
+                .collect();
 
-        let index = if disks.len() == 1 {
-            0
-        } else {
-            choose!("Which disk is your SD card?").items(&disks).get()?
+            let index = if disks.len() == 1 {
+                0
+            } else {
+                choose!("Which disk is your SD card?").items(&disks).get()?
+            };
+
+            disks.remove(index)
         };
 
-        let disk = disks.remove(index);
-        status!("Unmount SD card").on(|| diskutil!("unmountDisk {}", disk.id).run())?;
+        /// Unmount SD card
+        diskutil!("unmountDisk {}", disk.id).run()?;
 
-        status!("Flash SD card").on(|| {
+        /// Flash SD card
+        {
             let image_path = proc.get_os_image_path(registry)?;
 
             prompt!(
@@ -389,9 +402,7 @@ impl Run for DeployNodeState {
             )
             .sudo()
             .run()?;
-
-            Result::Ok(())
-        })?;
+        }
 
         Ok(Mount)
     }
@@ -405,7 +416,8 @@ impl Run for DeployNodeState {
             OperatingSystem::Ubuntu { .. } => "system-boot",
         };
 
-        let disk_partition_id = status!("Mount boot partition").on(|| {
+        /// Mount boot partition
+        let disk_partition_id = {
             let mut partitions: Vec<_> = disk::get_attached_disk_partitions()
                 .log_context("Failed to get attached disks")?
                 .filter(|p| p.name == boot_partition_name)
@@ -429,8 +441,8 @@ impl Run for DeployNodeState {
 
             diskutil!("mount {}", disk_partition.id).run()?;
 
-            Result::Ok(disk_partition.id)
-        })?;
+            disk_partition.id
+        };
 
         let state = match os {
             OperatingSystem::RaspberryPiOs { .. } => ModifyRaspberryPiOsImage { disk_partition_id },
@@ -447,8 +459,9 @@ impl Run for DeployNodeState {
     ) -> Result<Self> {
         let mount_dir = disk::find_mount_dir(&disk_partition_id)?;
 
-        status!("Configure image")
-            .on(|| status!("Create SSH file").on(|| File::create(mount_dir.join("ssh"))))?;
+        /// Configure image
+        /// Create SSH file
+        File::create(mount_dir.join("ssh"))?;
 
         Ok(Unmount { disk_partition_id })
     }
@@ -473,7 +486,8 @@ impl Run for DeployNodeState {
             .get(format!("clusters/{cluster}/nodes/{node}/nomad/name"))?
             .try_into()?;
 
-        let pub_key = status!("Read SSH keypair").on(|| {
+        /// Read SSH keypair
+        let pub_key = {
             let pub_key = fs::read_to_string(pub_key_path)?;
             info!(
                 "SSH public key fingerprint randomart:\n{}",
@@ -483,12 +497,13 @@ impl Run for DeployNodeState {
                     .log_err()?
             );
 
-            Result::Ok(pub_key)
-        })?;
+            pub_key
+        };
 
         let mount_dir = disk::find_mount_dir(&disk_partition_id)?;
 
-        status!("Prepare image initialization").on(|| {
+        /// Prepare image initialization
+        {
             let data_map: serde_yaml::Value = serde_yaml::from_str(&format!(
                 include_str!("../../config/user-data"),
                 admin_username = username,
@@ -503,9 +518,8 @@ impl Run for DeployNodeState {
             let data = serde_yaml::to_string(&data_map).log_err()?;
             let data = "#cloud-config".to_string() + data.strip_prefix("---").unwrap_or(&data);
             info!(
-                "Updating {} with the following configuration:\n{}",
+                "Updating {} with the following configuration:\n{data}",
                 "/user-data".blue(),
-                data
             );
 
             let user_data_path = mount_dir.join("user-data");
@@ -541,9 +555,7 @@ impl Run for DeployNodeState {
 
             let network_config_path = mount_dir.join("network-config");
             fs::write(&network_config_path, &data)?;
-
-            Result::Ok(())
-        })?;
+        }
 
         Ok(Unmount { disk_partition_id })
     }
@@ -554,8 +566,11 @@ impl Run for DeployNodeState {
         _registry: &impl ReadStore,
         disk_partition_id: String,
     ) -> Result<Self> {
-        status!("Sync image disk writes").on(|| sync!().run())?;
-        status!("Unmount image disk").on(|| diskutil!("unmount {disk_partition_id}").run())?;
+        /// Sync image disk writes
+        sync!().run()?;
+
+        /// Unmount image disk
+        diskutil!("unmount {disk_partition_id}").run()?;
 
         Ok(AwaitNode)
     }
@@ -661,7 +676,8 @@ impl Run for DeployNodeState {
         let common_set = process::Settings::default().ssh(&client);
         let sudo_set = common_set.clone().sudo_password(&*password);
 
-        let pub_key = status!("Read SSH keypair").on(|| {
+        /// Read SSH keypair
+        let pub_key = {
             let pub_key = fs::read_to_string(&pub_path)?;
             info!(
                 "SSH public key fingerprint randomart:\n{}",
@@ -671,10 +687,11 @@ impl Run for DeployNodeState {
                     .log_err()?
             );
 
-            Result::Ok(pub_key)
-        })?;
+            pub_key
+        };
 
-        status!("Send SSH public key").on(|| {
+        /// Send SSH public key
+        {
             // Create the `.ssh` directory.
             mkdir!("-p -m 700 /home/{username}/.ssh").run_with(&common_set)?;
 
@@ -702,20 +719,19 @@ impl Run for DeployNodeState {
             .settings(&common_set)
             .secret(&key)
             .run()?;
+        }
 
-            Result::Ok(())
-        })?;
-
-        status!("Initialize SSH server").on(|| {
+        /// Initialize SSH server
+        {
             let sshd_config_path = "/etc/ssh/sshd_config";
 
             // Set `PasswordAuthentication` to `no`.
             let key = "PasswordAuthentication";
-            sed!(
-                "-i '0,/{key}/{{h;s/^.*{key}.*$/{key} no/}};${{x;/^$/{{s//{key} no/;H}};x}}' {sshd_config_path}",
-            )
-            .settings(&common_set)
-            .run()?;
+            let pass_auth_sed =
+                format!("0,/{key}/{{h;s/^.*{key}.*$/{key} no/}};${{x;/^$/{{s//{key} no/;H}};x}}");
+            sed!("-i {pass_auth_sed} {sshd_config_path}",)
+                .settings(&common_set)
+                .run()?;
 
             // Verify sshd config and restart the SSH server.
             sshd!("-t").run_with(&sudo_set)?;
@@ -725,9 +741,7 @@ impl Run for DeployNodeState {
             let client = proc.connect(registry, ssh::Options::default())?;
 
             sshd!("-t").settings(&sudo_set).ssh(&client).run()?;
-
-            Result::Ok(())
-        })?;
+        }
 
         Ok(InstallDependencies)
     }
@@ -761,31 +775,36 @@ impl Run for DeployNodeState {
         let envoy_path = format!("/run/envoy/{ENVOY_VERSION}.tar.xz");
         let go_path = format!("/run/go/{GO_VERSION}.tar.xz");
 
-        status!("Nomad").on(|| {
+        /// Nomad
+        {
             wget!("--no-verbose {NOMAD_URL} -O {nomad_path}").run_with(&sudo_set)?;
-            unzip!("-o {nomad_path} -d {bin_dir}").run_with(&sudo_set)
-        })?;
+            unzip!("-o {nomad_path} -d {bin_dir}").run_with(&sudo_set)?;
+        }
 
-        status!("Consul").on(|| {
+        /// Consul
+        {
             wget!("--no-verbose {CONSUL_URL} -O {consul_path}").run_with(&sudo_set)?;
-            unzip!("-o {consul_path} -d {bin_dir}").run_with(&sudo_set)
-        })?;
+            unzip!("-o {consul_path} -d {bin_dir}").run_with(&sudo_set)?;
+        }
 
-        status!("Envoy").on(|| {
+        /// Envoy
+        {
             wget!("--no-verbose {ENVOY_URL} -O {envoy_path}").run_with(&sudo_set)?;
-            tar!("-xJf {envoy_path} --strip-components 2 -C {bin_dir}").run_with(&sudo_set)
-        })?;
+            tar!("-xJf {envoy_path} --strip-components 2 -C {bin_dir}").run_with(&sudo_set)?;
+        }
 
-        status!("Go").on(|| {
+        /// Go
+        {
             wget!("--no-verbose {GO_URL} -O {go_path}").run_with(&sudo_set)?;
-            tar!("-xzf {go_path} -C {local_dir}").run_with(&sudo_set)
-        })?;
+            tar!("-xzf {go_path} -C {local_dir}").run_with(&sudo_set)?;
+        }
 
-        status!("cfssl").on(|| {
+        /// cfssl
+        {
             go!("install {CFSSL_PKG_PATH}@{CFSSL_VERSION}").run_with(&common_set)?;
             go!("install {CFSSLJSON_PKG_PATH}@{CFSSL_VERSION}").run_with(&common_set)?;
-            mv!("go/bin/cfssl go/bin/cfssljson {bin_dir}").run_with(&sudo_set)
-        })?;
+            mv!("go/bin/cfssl go/bin/cfssljson {bin_dir}").run_with(&sudo_set)?;
+        }
 
         Ok(InitializeNomad)
     }
@@ -1009,7 +1028,7 @@ impl Run for DeployNodeState {
                 registry.put(access_token_key, access_token)?;
             }
             Err(err) => return Err(err.into()),
-        };
+        }
 
         Ok(InitializeConsul)
     }

@@ -5,6 +5,7 @@ use syn::{parse::Parse, parse_macro_input, punctuated::Punctuated, Attribute, To
 
 mod cmd;
 mod define_commands;
+mod doc_status;
 mod procedure;
 mod procedure_state;
 
@@ -34,6 +35,15 @@ pub fn define_commands(
 ) -> proc_macro::TokenStream {
     define_commands::impl_define_commands(parse_macro_input!(attrs), parse_macro_input!(item))
         .into()
+}
+
+#[proc_macro_error]
+#[proc_macro_attribute]
+pub fn doc_status(
+    attrs: proc_macro::TokenStream,
+    item: proc_macro::TokenStream,
+) -> proc_macro::TokenStream {
+    doc_status::impl_doc_status(attrs.into(), parse_macro_input!(item)).into()
 }
 
 fn to_title_lower_case<S: AsRef<str>>(s: S) -> String {

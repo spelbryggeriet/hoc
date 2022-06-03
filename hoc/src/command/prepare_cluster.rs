@@ -1,8 +1,8 @@
 use std::{fs::File, io::Write, net::IpAddr};
 
 use hoc_core::kv;
-use hoc_log::{bail, hidden_input, info, status, LogErr, Result};
-use hoc_macros::{Procedure, ProcedureState};
+use hoc_log::{bail, hidden_input, info, LogErr, Result};
+use hoc_macros::{doc_status, Procedure, ProcedureState};
 use osshkeys::{cipher::Cipher, keys::FingerprintHash, KeyPair, KeyType, PublicParts};
 use serde::{Deserialize, Serialize};
 use structopt::StructOpt;
@@ -37,6 +37,7 @@ pub enum PrepareClusterState {
     ClusterAdministrator,
 }
 
+#[doc_status]
 impl Run for PrepareClusterState {
     fn network_info(proc: &mut PrepareCluster, registry: &impl kv::WriteStore) -> Result<Self> {
         let cluster = &proc.cluster;
@@ -50,7 +51,9 @@ impl Run for PrepareClusterState {
             bail!("gateway is outside of the subnet");
         }
 
-        status!("Store network info").on(|| {
+        {
+            //! Store network info
+
             info!("Start address: {}", addresses.ip_addr);
             registry.put(
                 format!("clusters/{cluster}/network/start_address"),
@@ -67,8 +70,8 @@ impl Run for PrepareClusterState {
             registry.put(
                 format!("clusters/{cluster}/network/gateway"),
                 gateway.to_string(),
-            )
-        })?;
+            )?;
+        }
 
         Ok(ClusterAdministrator)
     }
@@ -83,12 +86,16 @@ impl Run for PrepareClusterState {
             .verify()
             .get();
 
-        status!("Store administrator user").on(|| {
-            info!("Username: {username}");
-            registry.put(format!("clusters/{cluster}/admin/username"), username)
-        })?;
+        {
+            //! Store administrator user
 
-        let (pub_key, priv_key) = status!("Generate SSH keypair").on(|| {
+            info!("Username: {username}");
+            registry.put(format!("clusters/{cluster}/admin/username"), username)?;
+        }
+
+        let (pub_key, priv_key) = {
+            //! Generate SSH keypair
+
             let mut key_pair = KeyPair::generate(KeyType::ED25519, 256).log_err()?;
             *key_pair.comment_mut() = username.clone();
 
@@ -103,10 +110,12 @@ impl Run for PrepareClusterState {
 
             info!("Fingerprint randomart:\n{}", randomart);
 
-            hoc_log::Result::Ok((pub_key, priv_key))
-        })?;
+            (pub_key, priv_key)
+        };
 
-        status!("Store SSH keypair").on(|| {
+        {
+            //! Store SSH keypair
+
             let pub_ref = registry.create_file(format!("clusters/{cluster}/admin/ssh/pub"))?;
             let priv_ref = registry.create_file(format!("clusters/{cluster}/admin/ssh/priv"))?;
             let mut pub_file = File::options()
@@ -119,9 +128,7 @@ impl Run for PrepareClusterState {
                 .open(priv_ref.path())?;
             pub_file.write_all(pub_key.as_bytes())?;
             priv_file.write_all(priv_key.as_bytes())?;
-
-            hoc_log::Result::Ok(())
-        })?;
+        }
 
         Ok(())
     }
