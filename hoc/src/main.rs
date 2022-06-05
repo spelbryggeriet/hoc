@@ -1,5 +1,3 @@
-#![feature(stmt_expr_attributes)]
-
 use std::{
     process,
     sync::{
@@ -35,8 +33,8 @@ struct MainCommand {
     #[structopt(flatten)]
     procedure: Command,
 
-    #[structopt(long)]
-    rerun: bool,
+    #[structopt(long = "continue")]
+    cont: bool,
 }
 
 fn list_string<T>(
@@ -159,6 +157,14 @@ fn get_history_item_key<P: Procedure>(context: &mut Context, proc: &P) -> hoc_lo
         context.persist().log_context(ERR_MSG_PERSIST_CONTEXT)?;
         Ok(history_index)
     }
+}
+
+fn needs_rewind(context: &Context, history_item_key: &Key) -> bool {
+    !context
+        .history()
+        .item(history_item_key)
+        .completed()
+        .is_empty()
 }
 
 fn rewind_history<P: Procedure>(
@@ -302,10 +308,10 @@ fn run_loop<P: Procedure>(
 fn run_procedure<P: Procedure>(
     context: &mut Context,
     mut proc: P,
-    rerun: bool,
+    cont: bool,
 ) -> hoc_log::Result<()> {
-    let history_index = status!("Check environment").on(|| {
-        let history_index = get_history_item_key(context, &proc)?;
+    let history_item_key = status!("Check environment").on(|| {
+        let history_item_key = get_history_item_key(context, &proc)?;
 
         info!("Validating registry state");
         validate_registry_state(context)?;
@@ -313,7 +319,7 @@ fn run_procedure<P: Procedure>(
         info!("Checking dependencies");
         check_dependencies(context, &proc)?;
 
-        if rerun {
+        if !cont && needs_rewind(context, &history_item_key) {
             let state_id = P::State::default().id();
             warning!(
                 "Rewinding back to {} ({})",
@@ -321,22 +327,22 @@ fn run_procedure<P: Procedure>(
                 state_id.description(),
             )
             .get()?;
-            rewind_history(context, &proc, &history_index)?;
+            rewind_history(context, &proc, &history_item_key)?;
         }
 
-        hoc_log::Result::Ok(history_index)
+        hoc_log::Result::Ok(history_item_key)
     })?;
 
-    let proc_name = history_index.name().blue();
+    let proc_name = history_item_key.name().blue();
     status!("Run procedure {proc_name}").on(|| {
-        let attrs_list = list_string(history_index.attributes().iter(), |(k, v)| {
+        let attrs_list = list_string(history_item_key.attributes().iter(), |(k, v)| {
             format!("{}: {}", k, v)
         });
         if let Some(attrs_list) = attrs_list {
             info!("Attributes:\n{}", attrs_list);
         }
 
-        run_loop(context, &mut proc, &history_index)
+        run_loop(context, &mut proc, &history_item_key)
     })
 }
 
@@ -356,12 +362,20 @@ fn main() {
         let mut context = Context::load().log_context("Loading context")?;
 
         let main_command = MainCommand::from_args();
-        let rerun = main_command.rerun;
-        match main_command.procedure {
-            Command::DeployNode(proc) => run_procedure(&mut context, proc, rerun)?,
-            Command::PrepareCluster(proc) => run_procedure(&mut context, proc, rerun)?,
+        let cont = main_command.cont;
+        let res = match main_command.procedure {
+            Command::DeployNode(proc) => run_procedure(&mut context, proc, cont),
+            Command::PrepareCluster(proc) => run_procedure(&mut context, proc, cont),
+        };
+
+        match res {
+            Err(_) if !cont => {
+                info!("Pass the flag `--continue` to continue from the failed step.")
+            }
+            _ => (),
         }
-        Ok(())
+
+        res
     };
 
     let _ = wrapper();

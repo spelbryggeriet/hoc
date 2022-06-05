@@ -9,6 +9,7 @@ use std::{
 };
 
 use colored::Colorize;
+use lazy_regex::regex;
 use osshkeys::{keys::FingerprintHash, PublicKey, PublicParts};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -39,6 +40,13 @@ const CONSUL_VERSION: &str = "1.11.4";
 const ENVOY_VERSION: &str = "1.22.0";
 const GO_VERSION: &str = "1.18.2";
 const CFSSL_VERSION: &str = "v1.6.1";
+
+const LOCAL_DIR: &str = "/usr/local";
+const BIN_DIR: &str = "/usr/local/bin";
+const NOMAD_TMP_DIR: &str = "/run/nomad";
+const CONSUL_TMP_DIR: &str = "/run/consul";
+const ENVOY_TMP_DIR: &str = "/run/envoy";
+const GO_TMP_DIR: &str = "/run/go";
 
 const NOMAD_CERTS_DIR: &str = "/etc/nomad.d/certs";
 const NOMAD_CA_PUB_FILENAME: &str = "nomad-ca.pem";
@@ -105,13 +113,13 @@ impl DeployNode {
             .try_into()?)
     }
 
-    fn get_password(&self) -> Result<String> {
+    fn get_password(&self) -> String {
         if self.password.borrow().is_none() {
             let password = hidden_input!("[admin] Password").get();
             self.password.replace(Some(password));
         }
 
-        Ok(self.password.borrow().clone().unwrap())
+        self.password.borrow().clone().unwrap()
     }
 
     fn get_pub_key_path(&self, registry: &impl ReadStore) -> Result<PathBuf> {
@@ -141,7 +149,7 @@ impl DeployNode {
         }
 
         if options.password.is_none() {
-            options.password.replace(self.get_password()?);
+            options.password.replace(self.get_password());
         }
 
         if options.auth.is_none() {
@@ -168,7 +176,7 @@ pub enum DeployNodeState {
     AssignIpAddress,
     FlashImage,
     #[state(transient)]
-    Mount,
+    MountSdCard,
     #[state(transient)]
     ModifyRaspberryPiOsImage {
         disk_partition_id: String,
@@ -177,7 +185,7 @@ pub enum DeployNodeState {
     ModifyUbuntuImage {
         disk_partition_id: String,
     },
-    Unmount {
+    UnmountSdCard {
         disk_partition_id: String,
     },
     AwaitNode,
@@ -186,7 +194,9 @@ pub enum DeployNodeState {
     AssignSudoPrivileges,
     DeletePiUser,
     SetUpSshAccess,
+
     ChangePassword,
+    MountStorage,
 
     InstallDependencies,
     InitializeNomad,
@@ -369,7 +379,7 @@ impl Run for DeployNodeState {
 
         /// Choose SD card
         let disk = {
-            let mut disks: Vec<_> = disk::get_attached_disks()
+            let mut disks: Vec<_> = disk::get_attached_disks(None)
                 .log_context("Failed to get attached disks")?
                 .collect();
 
@@ -404,11 +414,11 @@ impl Run for DeployNodeState {
             .run()?;
         }
 
-        Ok(Mount)
+        Ok(MountSdCard)
     }
 
     #[define_commands(diskutil)]
-    fn mount(proc: &mut DeployNode, _registry: &impl ReadStore) -> Result<Self> {
+    fn mount_sd_card(proc: &mut DeployNode, _registry: &impl ReadStore) -> Result<Self> {
         let os = proc.node_os;
 
         let boot_partition_name = match os {
@@ -418,7 +428,7 @@ impl Run for DeployNodeState {
 
         /// Mount boot partition
         let disk_partition_id = {
-            let mut partitions: Vec<_> = disk::get_attached_disk_partitions()
+            let mut partitions: Vec<_> = disk::get_attached_disk_partitions(None)
                 .log_context("Failed to get attached disks")?
                 .filter(|p| p.name == boot_partition_name)
                 .collect();
@@ -463,7 +473,7 @@ impl Run for DeployNodeState {
         /// Create SSH file
         File::create(mount_dir.join("ssh"))?;
 
-        Ok(Unmount { disk_partition_id })
+        Ok(UnmountSdCard { disk_partition_id })
     }
 
     fn modify_ubuntu_image(
@@ -557,11 +567,11 @@ impl Run for DeployNodeState {
             fs::write(&network_config_path, &data)?;
         }
 
-        Ok(Unmount { disk_partition_id })
+        Ok(UnmountSdCard { disk_partition_id })
     }
 
     #[define_commands(diskutil, sync)]
-    fn unmount(
+    fn unmount_sd_card(
         _proc: &mut DeployNode,
         _registry: &impl ReadStore,
         disk_partition_id: String,
@@ -603,7 +613,7 @@ impl Run for DeployNodeState {
     #[define_commands(adduser)]
     fn add_new_user(proc: &mut DeployNode, registry: &impl ReadStore) -> Result<Self> {
         let username: String = proc.get_user(registry)?;
-        let password = proc.get_password()?;
+        let password = proc.get_password();
         let client = proc.connect(
             registry,
             ssh::Options::default().user("pi").password("raspberry"),
@@ -649,7 +659,7 @@ impl Run for DeployNodeState {
 
     #[define_commands(deluser, pkill)]
     fn delete_pi_user(proc: &mut DeployNode, registry: &impl ReadStore) -> Result<Self> {
-        let password = proc.get_password()?;
+        let password = proc.get_password();
         let client = proc.connect(registry, ssh::Options::default().password_auth())?;
         let common_set = process::Settings::default()
             .sudo_password(&*password)
@@ -670,7 +680,7 @@ impl Run for DeployNodeState {
     #[define_commands(bsd_test = "test", chmod, mkdir, sed, sshd, systemctl, tee)]
     fn set_up_ssh_access(proc: &mut DeployNode, registry: &impl ReadStore) -> Result<Self> {
         let username = proc.get_user(registry)?;
-        let password = proc.get_password()?;
+        let password = proc.get_password();
         let pub_path = proc.get_pub_key_path(registry)?;
         let client = proc.connect(registry, ssh::Options::default().password_auth())?;
         let common_set = process::Settings::default().ssh(&client);
@@ -713,12 +723,13 @@ impl Run for DeployNodeState {
 
             // Copy the public key to the authorized keys file.
             let key = pub_key.replace("/", r"\/");
-            sed!(
-                "-i '0,/{username}$/{{h;s/^.*{username}$/{key}/}};${{x;/^$/{{s//{key}/;H}};x}}' {authorized_keys_path}",
-            )
-            .settings(&common_set)
-            .secret(&key)
-            .run()?;
+            let auth_keys_sed = format!(
+                "0,/{username}$/{{h;s/^.*{username}$/{key}/}};${{x;/^$/{{s//{key}/;H}};x}}"
+            );
+            sed!("-i {auth_keys_sed} {authorized_keys_path}",)
+                .settings(&common_set)
+                .secret(&key)
+                .run()?;
         }
 
         /// Initialize SSH server
@@ -749,7 +760,7 @@ impl Run for DeployNodeState {
     #[define_commands(chpasswd)]
     fn change_password(proc: &mut DeployNode, registry: &impl ReadStore) -> Result<Self> {
         let username = proc.get_user(registry)?;
-        let password = proc.get_password()?;
+        let password = proc.get_password();
         let client = proc.connect(registry, ssh::Options::default())?;
 
         chpasswd!()
@@ -758,52 +769,107 @@ impl Run for DeployNodeState {
             .ssh(&client)
             .run()?;
 
-        Ok(InstallDependencies)
+        Ok(MountStorage)
     }
 
-    #[define_commands(go, mv, tar, unzip, wget)]
-    fn install_dependencies(proc: &mut DeployNode, registry: &impl ReadStore) -> Result<Self> {
-        let password = proc.get_password()?;
+    #[define_commands(blkid, sed, cat)]
+    fn mount_storage(proc: &mut DeployNode, registry: &impl WriteStore) -> Result<Self> {
+        let os = proc.node_os;
+        let password = proc.get_password();
         let client = proc.connect(registry, ssh::Options::default())?;
         let common_set = process::Settings::default().ssh(&client);
         let sudo_set = common_set.clone().sudo_password(&*password);
 
-        let local_dir = "/usr/local";
-        let bin_dir = "/usr/local/bin";
-        let nomad_path = format!("/run/nomad/{NOMAD_VERSION}.zip");
-        let consul_path = format!("/run/consul/{CONSUL_VERSION}.zip");
-        let envoy_path = format!("/run/envoy/{ENVOY_VERSION}.tar.xz");
-        let go_path = format!("/run/go/{GO_VERSION}.tar.xz");
+        let boot_partition_name = match os {
+            OperatingSystem::RaspberryPiOs { .. } => "boot",
+            OperatingSystem::Ubuntu { .. } => "system-boot",
+        };
+
+        let mut disks: Vec<_> = disk::get_attached_disks(Some(client))?
+            .filter(|disk| {
+                disk.partitions
+                    .iter()
+                    .all(|part| part.name != boot_partition_name)
+            })
+            .flat_map(|disk| disk.partitions)
+            .collect();
+
+        if disks.is_empty() {
+            return Ok(InstallDependencies);
+        }
+
+        let selection = choose!("Which storage do you want to mount?")
+            .items(&disks)
+            .get()?;
+        let id = disks.remove(selection).id;
+
+        let (_, output) = blkid!("/dev/{id}").run_with(&common_set)?;
+        let uuid = regex!(r#"^.*UUID="([^"]*)".*$"#)
+            .captures(&output)
+            .unwrap()
+            .get(1)
+            .unwrap()
+            .as_str();
+
+        let fstab_line = format!("UUID={uuid} /media auto nosuid,nodev,nofail 0 0");
+        let fstab_line = fstab_line.replace("/", r"\/");
+        let fstab_sed = format!("/^UUID={uuid}/{{h;s/^UUID={uuid}.*$/{fstab_line}/}};${{x;/^$/{{s//{fstab_line}/;H}};x}}");
+        sed!("-i {fstab_sed} /etc/fstab").run_with(&sudo_set)?;
+
+        cat!("/etc/fstab").run_with(&common_set)?;
+
+        Ok(InstallDependencies)
+    }
+
+    #[define_commands(go, mkdir, mv, rm, tar, unzip, wget)]
+    fn install_dependencies(proc: &mut DeployNode, registry: &impl ReadStore) -> Result<Self> {
+        let password = proc.get_password();
+        let client = proc.connect(registry, ssh::Options::default())?;
+        let common_set = process::Settings::default().ssh(&client);
+        let sudo_set = common_set.clone().sudo_password(&*password);
+
+        let nomad_path = format!("{NOMAD_TMP_DIR}/{NOMAD_VERSION}.zip");
+        let consul_path = format!("{CONSUL_TMP_DIR}/{CONSUL_VERSION}.zip");
+        let envoy_path = format!("{ENVOY_TMP_DIR}/{ENVOY_VERSION}.tar.xz");
+        let go_path = format!("{GO_TMP_DIR}/{GO_VERSION}.tar.xz");
 
         /// Nomad
         {
+            mkdir!("{NOMAD_TMP_DIR}").run_with(&sudo_set)?;
             wget!("--no-verbose {NOMAD_URL} -O {nomad_path}").run_with(&sudo_set)?;
-            unzip!("-o {nomad_path} -d {bin_dir}").run_with(&sudo_set)?;
+            unzip!("-o {nomad_path} -d {BIN_DIR}").run_with(&sudo_set)?;
+            rm!("-fr {NOMAD_TMP_DIR}").run_with(&sudo_set)?;
         }
 
         /// Consul
         {
+            mkdir!("{CONSUL_TMP_DIR}").run_with(&sudo_set)?;
             wget!("--no-verbose {CONSUL_URL} -O {consul_path}").run_with(&sudo_set)?;
-            unzip!("-o {consul_path} -d {bin_dir}").run_with(&sudo_set)?;
+            unzip!("-o {consul_path} -d {BIN_DIR}").run_with(&sudo_set)?;
+            rm!("-fr {CONSUL_TMP_DIR}").run_with(&sudo_set)?;
         }
 
         /// Envoy
         {
+            mkdir!("{ENVOY_TMP_DIR}").run_with(&sudo_set)?;
             wget!("--no-verbose {ENVOY_URL} -O {envoy_path}").run_with(&sudo_set)?;
-            tar!("-xJf {envoy_path} --strip-components 2 -C {bin_dir}").run_with(&sudo_set)?;
+            tar!("-xJf {envoy_path} --strip-components 2 -C {BIN_DIR}").run_with(&sudo_set)?;
+            rm!("-fr {ENVOY_TMP_DIR}").run_with(&sudo_set)?;
         }
 
         /// Go
         {
+            mkdir!("{GO_TMP_DIR}").run_with(&sudo_set)?;
             wget!("--no-verbose {GO_URL} -O {go_path}").run_with(&sudo_set)?;
-            tar!("-xzf {go_path} -C {local_dir}").run_with(&sudo_set)?;
+            tar!("-xzf {go_path} -C {LOCAL_DIR}").run_with(&sudo_set)?;
+            rm!("-fr {GO_TMP_DIR}").run_with(&sudo_set)?;
         }
 
         /// cfssl
         {
             go!("install {CFSSL_PKG_PATH}@{CFSSL_VERSION}").run_with(&common_set)?;
             go!("install {CFSSLJSON_PKG_PATH}@{CFSSL_VERSION}").run_with(&common_set)?;
-            mv!("go/bin/cfssl go/bin/cfssljson {bin_dir}").run_with(&sudo_set)?;
+            mv!("go/bin/cfssl go/bin/cfssljson {BIN_DIR}").run_with(&sudo_set)?;
         }
 
         Ok(InitializeNomad)
@@ -814,7 +880,7 @@ impl Run for DeployNodeState {
     )]
     fn initialize_nomad(proc: &mut DeployNode, registry: &impl WriteStore) -> Result<Self> {
         let cluster = &proc.cluster;
-        let password = proc.get_password()?;
+        let password = proc.get_password();
         let client = proc.connect(registry, ssh::Options::default())?;
         let common_set = process::Settings::default().ssh(&client);
         let sudo_set = common_set.clone().sudo_password(&*password);
@@ -825,7 +891,7 @@ impl Run for DeployNodeState {
             .settings(&common_set)
             .success_codes([0, 1])
             .run()?;
-        complete!("-C /usr/local/bin/nomad nomad").run_with(&common_set)?;
+        complete!("-C {BIN_DIR}/nomad nomad").run_with(&common_set)?;
 
         mkdir!("-p {NOMAD_CERTS_DIR}").run_with(&sudo_set)?;
 
@@ -910,7 +976,7 @@ impl Run for DeployNodeState {
         .stdin_line("{}")
         .hide_stdout()
         .run()?;
-        cfssljson!("-bare=server")
+        cfssljson!("-bare server")
             .settings(&sudo_set)
             .stdin_lines(json_cert.lines())
             .run()?;
@@ -927,7 +993,7 @@ impl Run for DeployNodeState {
         .stdin_line("{}")
         .hide_stdout()
         .run()?;
-        cfssljson!("-bare=client")
+        cfssljson!("-bare client")
             .settings(&sudo_set)
             .stdin_lines(json_cert.lines())
             .run()?;
@@ -942,7 +1008,7 @@ impl Run for DeployNodeState {
                 .stdin_line("{}")
                 .hide_stdout()
                 .run()?;
-        cfssljson!("-bare=cli")
+        cfssljson!("-bare cli")
             .settings(&sudo_set)
             .stdin_lines(json_cert.lines())
             .run()?;
@@ -971,7 +1037,7 @@ impl Run for DeployNodeState {
     #[define_commands(nomad, rm, tee)]
     fn set_up_nomad_acl(proc: &mut DeployNode, registry: &impl WriteStore) -> Result<Self> {
         let cluster = &proc.cluster;
-        let password = proc.get_password()?;
+        let password = proc.get_password();
 
         let client = proc.connect(registry, ssh::Options::default())?;
         let mut common_set = process::Settings::default().ssh(&client);
@@ -1036,7 +1102,7 @@ impl Run for DeployNodeState {
     #[define_commands(chown, complete, consul, mkdir, mv, rm, sed, systemctl)]
     fn initialize_consul(proc: &mut DeployNode, registry: &impl WriteStore) -> Result<Self> {
         let cluster = &proc.cluster;
-        let password = proc.get_password()?;
+        let password = proc.get_password();
         let client = proc.connect(registry, ssh::Options::default())?;
         let common_set = process::Settings::default().ssh(&client);
         let sudo_set = common_set.clone().sudo_password(&*password);
@@ -1047,7 +1113,7 @@ impl Run for DeployNodeState {
             .settings(&consul_set)
             .success_codes([0, 1])
             .run()?;
-        complete!("-C /usr/local/bin/consul consul").run_with(&common_set)?;
+        complete!("-C {BIN_DIR}/consul consul").run_with(&common_set)?;
 
         // Generate common cluster key.
         let registry_key = format!("$/clusters/{cluster}/consul/key");
@@ -1109,7 +1175,7 @@ impl Run for DeployNodeState {
         // Create server certificates.
         let cert_filename = format!("{cluster}-server-consul-0.pem");
         let key_filename = format!("{cluster}-server-consul-0-key.pem");
-        consul!("tls cert create -server -dc=cluster -domain=consul -ca={ca_pub_path} -key={ca_priv_path}",
+        consul!("tls cert create -server -dc={cluster} -domain=consul -ca={ca_pub_path} -key={ca_priv_path}",
         )
         .run_with(&sudo_set)?;
         mv!("{cert_filename} {key_filename} {CONSUL_CERTS_DIR}").run_with(&sudo_set)?;

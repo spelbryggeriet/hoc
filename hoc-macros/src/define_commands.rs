@@ -1,9 +1,10 @@
-use proc_macro2::{Ident, Span, TokenStream};
+use proc_macro2::{Ident, TokenStream};
 use proc_macro_error::{abort, emit_warning, set_dummy};
-use quote::quote;
+use quote::quote_spanned;
 use syn::{
     parse::Parser,
     punctuated::Punctuated,
+    spanned::Spanned,
     visit_mut::{self, VisitMut},
     AttributeArgs, Expr, Item, Lit, Meta, MetaNameValue, NestedMeta, PathArguments, PathSegment,
     Token,
@@ -16,16 +17,17 @@ struct MacroVisitor<'a> {
 impl VisitMut for MacroVisitor<'_> {
     fn visit_macro_mut(&mut self, m: &mut syn::Macro) {
         for (i, (name, _, used)) in self.name_values.iter_mut().enumerate() {
-            if m.path.is_ident(*name) {
-                m.path.leading_colon = Some(Token![::](Span::call_site()));
+            if let Some(old_ident) = m.path.get_ident().filter(|i| i == name) {
+                let span = old_ident.span();
+                m.path.leading_colon = Some(Token![::](span));
                 m.path.segments.insert(
                     0,
                     PathSegment {
-                        ident: Ident::new("hoc_macros", Span::call_site()),
+                        ident: Ident::new("hoc_macros", span),
                         arguments: PathArguments::None,
                     },
                 );
-                m.path.segments[1].ident = Ident::new("cmd", Span::call_site());
+                m.path.segments[1].ident = Ident::new("cmd", span);
                 if let Ok(mut args) = Parser::parse(
                     Punctuated::<Expr, Token![,]>::parse_terminated,
                     m.tokens.clone().into(),
@@ -35,7 +37,7 @@ impl VisitMut for MacroVisitor<'_> {
                         visit_mut::visit_expr_mut(self, arg);
                     }
                     let value = &self.name_values[i].1;
-                    m.tokens = quote!(#value, #args);
+                    m.tokens = quote_spanned!(m.tokens.span()=> #value, #args);
                     return;
                 }
             }
@@ -44,7 +46,7 @@ impl VisitMut for MacroVisitor<'_> {
 }
 
 pub fn impl_define_commands(args: AttributeArgs, mut item: Item) -> TokenStream {
-    set_dummy(quote!(#item));
+    set_dummy(quote_spanned!(item.span()=> #item));
 
     let name_values: Vec<_> = args
         .iter()
@@ -80,5 +82,5 @@ pub fn impl_define_commands(args: AttributeArgs, mut item: Item) -> TokenStream 
         emit_warning!(name, "unused command");
     }
 
-    quote!(#item)
+    quote_spanned!(item.span()=> #item)
 }
