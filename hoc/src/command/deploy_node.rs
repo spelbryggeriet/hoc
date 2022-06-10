@@ -26,6 +26,7 @@ use zip::ZipArchive;
 
 use crate::command::util::{cidr::Cidr, disk, os::OperatingSystem};
 
+const VAULT_URL: &str = "https://releases.hashicorp.com/vault/1.10.3/vault_1.10.3_linux_arm64.zip";
 const NOMAD_URL: &str = "https://releases.hashicorp.com/nomad/1.2.6/nomad_1.2.6_linux_arm64.zip";
 const CONSUL_URL: &str =
     "https://releases.hashicorp.com/consul/1.11.4/consul_1.11.4_linux_arm64.zip";
@@ -35,6 +36,7 @@ const GO_URL: &str = "https://go.dev/dl/go1.18.2.linux-arm64.tar.gz";
 const CFSSL_PKG_PATH: &str = "github.com/cloudflare/cfssl/cmd/cfssl";
 const CFSSLJSON_PKG_PATH: &str = "github.com/cloudflare/cfssl/cmd/cfssljson";
 
+const VAULT_VERSION: &str = "1.10.3";
 const NOMAD_VERSION: &str = "1.2.6";
 const CONSUL_VERSION: &str = "1.11.4";
 const ENVOY_VERSION: &str = "1.22.0";
@@ -43,10 +45,17 @@ const CFSSL_VERSION: &str = "v1.6.1";
 
 const LOCAL_DIR: &str = "/usr/local";
 const BIN_DIR: &str = "/usr/local/bin";
+const VAULT_TMP_DIR: &str = "/run/vault";
 const NOMAD_TMP_DIR: &str = "/run/nomad";
 const CONSUL_TMP_DIR: &str = "/run/consul";
 const ENVOY_TMP_DIR: &str = "/run/envoy";
 const GO_TMP_DIR: &str = "/run/go";
+
+const VAULT_CERTS_DIR: &str = "/etc/vault.d/certs";
+const VAULT_CA_PUB_FILENAME: &str = "vault-ca.pem";
+const VAULT_CA_PRIV_FILENAME: &str = "vault-ca-key.pem";
+const VAULT_SERVER_PUB_FILENAME: &str = "server.pem";
+const VAULT_SERVER_PRIV_FILENAME: &str = "server-key.pem";
 
 const NOMAD_CERTS_DIR: &str = "/etc/nomad.d/certs";
 const NOMAD_CA_PUB_FILENAME: &str = "nomad-ca.pem";
@@ -199,6 +208,7 @@ pub enum DeployNodeState {
     MountStorage,
 
     InstallDependencies,
+    InitializeVault,
     InitializeNomad,
     SetUpNomadAcl,
     InitializeConsul,
@@ -828,10 +838,19 @@ impl Run for DeployNodeState {
         let common_set = process::Settings::default().ssh(&client);
         let sudo_set = common_set.clone().sudo_password(&*password);
 
+        let vault_path = format!("{VAULT_TMP_DIR}/{VAULT_VERSION}.zip");
         let nomad_path = format!("{NOMAD_TMP_DIR}/{NOMAD_VERSION}.zip");
         let consul_path = format!("{CONSUL_TMP_DIR}/{CONSUL_VERSION}.zip");
         let envoy_path = format!("{ENVOY_TMP_DIR}/{ENVOY_VERSION}.tar.xz");
         let go_path = format!("{GO_TMP_DIR}/{GO_VERSION}.tar.xz");
+
+        /// Vault
+        {
+            mkdir!("{VAULT_TMP_DIR}").run_with(&sudo_set)?;
+            wget!("--no-verbose {VAULT_URL} -O {vault_path}").run_with(&sudo_set)?;
+            unzip!("-o {vault_path} -d {BIN_DIR}").run_with(&sudo_set)?;
+            rm!("-fr {VAULT_TMP_DIR}").run_with(&sudo_set)?;
+        }
 
         /// Nomad
         {
@@ -871,6 +890,119 @@ impl Run for DeployNodeState {
             go!("install {CFSSLJSON_PKG_PATH}@{CFSSL_VERSION}").run_with(&common_set)?;
             mv!("go/bin/cfssl go/bin/cfssljson {BIN_DIR}").run_with(&sudo_set)?;
         }
+
+        Ok(InitializeVault)
+    }
+
+    #[define_commands(chown, complete, mkdir, mv, openssl, rm, tee, vault)]
+    fn initialize_vault(proc: &mut DeployNode, registry: &impl WriteStore) -> Result<Self> {
+        let cluster = &proc.cluster;
+        let node_name = &proc.node_name;
+        let password = proc.get_password();
+        let client = proc.connect(registry, ssh::Options::default())?;
+        let common_set = process::Settings::default().ssh(&client);
+        let sudo_set = common_set.clone().sudo_password(&*password);
+
+        /// Set up command autocomplete
+        {
+            vault!("-autocomplete-install")
+                .settings(&common_set)
+                .success_codes([0, 1])
+                .run()?;
+            complete!("-C {BIN_DIR}/vault vault").run_with(&common_set)?;
+        }
+
+        mkdir!("-p {VAULT_CERTS_DIR}").run_with(&sudo_set)?;
+
+        // Create or distribute certificate authority certificate.
+        let ca_pub_key = format!("$/clusters/{cluster}/vault/certs/ca_pub");
+        let ca_priv_key = format!("$/clusters/{cluster}/vault/certs/ca_priv");
+        let ca_pub_path = format!("{VAULT_CERTS_DIR}/{VAULT_CA_PUB_FILENAME}");
+        let ca_priv_path = format!("{VAULT_CERTS_DIR}/{VAULT_CA_PRIV_FILENAME}");
+        match registry.get(&ca_pub_key).and_then(kv::FileRef::try_from) {
+            Ok(ca_pub_file_ref) => {
+                Self::upload_certificates(
+                    client,
+                    &*password,
+                    ca_pub_file_ref.path(),
+                    &ca_pub_path,
+                    registry
+                        .get(ca_priv_key)
+                        .and_then(kv::FileRef::try_from)?
+                        .path(),
+                    &ca_priv_path,
+                )?;
+            }
+            Err(kv::Error::KeyDoesNotExist(_)) => {
+                // Create CA certificate.
+                openssl!("ecparam -genkey -name prime256v1 -noout -out {VAULT_CA_PRIV_FILENAME}")
+                    .settings(&common_set)
+                    .hide_stdout()
+                    .run()?;
+                openssl!(
+                    "req -x509 -new -nodes -key {VAULT_CA_PRIV_FILENAME} -sha256 -days 1825 \
+                    -subj '/C=US/ST=CA/L=San Francisco/CN=example.net' \
+                    -addext keyUsage=critical,keyCertSign,cRLSign \
+                    -out {VAULT_CA_PUB_FILENAME}"
+                )
+                .run_with(&common_set)?;
+                mv!("{VAULT_CA_PUB_FILENAME} {VAULT_CA_PRIV_FILENAME} {VAULT_CERTS_DIR}")
+                    .run_with(&sudo_set)?;
+
+                // Download certificate and key.
+                Self::download_certificates(
+                    registry,
+                    client,
+                    &*password,
+                    &ca_pub_path,
+                    &ca_priv_path,
+                    &ca_pub_key,
+                    &ca_priv_key,
+                )?;
+            }
+            Err(err) => return Err(err.into()),
+        }
+        chown!("-R vault:vault {VAULT_CERTS_DIR}").run_with(&sudo_set)?;
+
+        tee!("csr.conf")
+            .settings(&common_set)
+            .stdin_lines(
+                format!(
+                    include_str!("../../config/vault/csr.conf"),
+                    common_name = node_name,
+                )
+                .lines(),
+            )
+            .run()?;
+        tee!("cert.conf")
+            .settings(&common_set)
+            .stdin_lines(include_str!("../../config/vault/cert.conf").lines())
+            .run()?;
+
+        // Create server certificates.
+        openssl!("ecparam -genkey -name prime256v1 -noout -out {VAULT_SERVER_PRIV_FILENAME}")
+            .settings(&common_set)
+            .hide_stdout()
+            .run()?;
+        openssl!(
+            "req -new -key {VAULT_SERVER_PRIV_FILENAME} -config csr.conf -subj '/' -out server.csr"
+        )
+        .run_with(&common_set)?;
+        openssl!(
+            "x509 -req -in server.csr -CA {ca_pub_path} -CAkey {ca_priv_path} -CAcreateserial \
+                -sha256 -days 1825 -extfile cert.conf -out {VAULT_SERVER_PUB_FILENAME}"
+        )
+        .run_with(&common_set)?;
+        mv!("{VAULT_SERVER_PUB_FILENAME} {VAULT_SERVER_PRIV_FILENAME} {VAULT_CERTS_DIR}")
+            .run_with(&sudo_set)?;
+        chown!("-R vault:vault {VAULT_CERTS_DIR}").run_with(&sudo_set)?;
+
+        // Remove extraneous files.
+        rm!(
+            "{ca_priv_path} {} csr.conf cert.conf server.csr",
+            VAULT_CA_PUB_FILENAME.replace(".pem", ".srl"),
+        )
+        .run_with(&sudo_set)?;
 
         Ok(InitializeNomad)
     }

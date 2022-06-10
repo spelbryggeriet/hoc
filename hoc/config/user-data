@@ -101,6 +101,10 @@ users:
       - {ssh_pub_key}
     sudo: 'ALL=(ALL) PASSWD:ALL'
     shell: /bin/bash
+  - name: vault
+    system: true
+    homedir: /etc/vault.d
+    shell: /bin/false
   - name: nomad
     system: true
     homedir: /etc/nomad.d
@@ -116,6 +120,45 @@ chpasswd:
   expire: false
 
 write_files:
+  # Vault
+  - path: /etc/systemd/system/vault.service
+    content: |
+      [Unit]
+      Description=Vault
+      Documentation=https://www.vaultproject.io/docs/
+      Requires=network-online.target
+      After=network-online.target
+      ConditionFileNotEmpty=/etc/vault.d/vault.hcl
+      StartLimitIntervalSec=60
+      StartLimitBurst=3
+
+      [Service]
+      User=vault
+      Group=vault
+
+      Type=notify
+      EnvironmentFile=/etc/vault.d/vault.env
+      ProtectSystem=full
+      ProtectHome=read-only
+      PrivateTmp=yes
+      PrivateDevices=yes
+      SecureBits=keep-caps
+      AmbientCapabilities=CAP_IPC_LOCK
+      CapabilityBoundingSet=CAP_SYSLOG CAP_IPC_LOCK
+      NoNewPrivileges=yes
+      ExecStart=/usr/bin/vault server -config=/etc/vault.d/vault.hcl
+      ExecReload=/bin/kill --signal HUP $MAINPID
+      KillMode=process
+      KillSignal=SIGINT
+      Restart=on-failure
+      RestartSec=5
+      TimeoutStopSec=30
+      LimitNOFILE=65536
+      LimitMEMLOCK=infinity
+
+      [Install]
+      WantedBy=multi-user.target
+  
   # Nomad
   - path: /etc/systemd/system/nomad.service
     content: |
@@ -274,6 +317,11 @@ write_files:
       }}
 
 runcmd:
+  # Nomad
+  - [ mkdir, /opt/vault ]
+  - [ chown, -R, "vault:vault", /etc/vault.d, /opt/vault ]
+  - [ chmod, 0700, /etc/vault.d ]
+
   # Nomad
   - [ mkdir, /opt/nomad ]
   - [ chown, -R, "nomad:nomad", /etc/nomad.d, /opt/nomad ]

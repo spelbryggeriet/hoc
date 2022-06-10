@@ -1,5 +1,5 @@
 use proc_macro2::{Ident, TokenStream};
-use proc_macro_error::{abort, emit_warning, set_dummy};
+use proc_macro_error::{abort, emit_error, set_dummy};
 use quote::quote_spanned;
 use syn::{
     parse::Parser,
@@ -79,7 +79,7 @@ pub fn impl_define_commands(args: AttributeArgs, mut item: Item) -> TokenStream 
     visitor.visit_item_mut(&mut item);
 
     for (name, _, _) in visitor.name_values.iter().filter(|(_, _, used)| !used) {
-        emit_warning!(name, "unused command");
+        emit_error!(name, "unused command");
     }
 
     quote_spanned!(item.span()=> #item)
