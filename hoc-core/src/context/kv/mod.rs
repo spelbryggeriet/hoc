@@ -1,14 +1,17 @@
 use std::{
+    borrow::Cow,
     cell::RefCell,
+    convert::Infallible,
+    ffi::OsStr,
     fmt::{self, Display, Formatter},
-    fs, io, mem,
+    fs, io, iter, mem,
     os::unix::prelude::{OpenOptionsExt, OsStrExt},
     path::{Component, Path, PathBuf},
     rc::Rc,
 };
 
 use hoc_log::error;
-use indexmap::IndexMap;
+use indexmap::{IndexMap, IndexSet};
 use regex::Regex;
 use serde::{de::Visitor, ser::SerializeMap, Deserialize, Deserializer, Serialize, Serializer};
 use thiserror::Error;
@@ -29,9 +32,6 @@ pub enum Error {
 
     #[error(r#"unexpected leading `/` in key: {0}""#)]
     LeadingForwardSlash(PathBuf),
-
-    #[error(r#"wildcard `*` in key: {0}""#)]
-    Wildcard(PathBuf),
 
     #[error(r#"unexpected `.` in key: {0}""#)]
     SingleDotComponent(PathBuf),
@@ -55,10 +55,14 @@ impl From<Error> for hoc_log::Error {
     }
 }
 
+impl From<Infallible> for Error {
+    fn from(x: Infallible) -> Self {
+        x.into()
+    }
+}
+
 pub trait ReadStore {
     fn get<Q: AsRef<Path>>(&self, key: Q) -> Result<Item, Error>;
-
-    fn get_matches<Q: AsRef<Path>>(&self, key: Q) -> Result<Vec<Item>, Error>;
 
     fn get_keys(&self) -> Vec<PathBuf>;
 }
@@ -90,7 +94,7 @@ pub trait WriteStore: ReadStore {
         let key_prefix = key_prefix.into();
         for (key, value) in map.into_iter() {
             let map_key = key_prefix.join(key);
-            self.put(map_key, value.into())?;
+            self.put(map_key, value)?;
         }
         Ok(())
     }
@@ -98,6 +102,11 @@ pub trait WriteStore: ReadStore {
     fn update<Q: AsRef<Path>, V: Into<Value>>(&self, key: Q, value: V) -> Result<Value, Error>;
 
     fn create_file<Q: AsRef<Path>>(&self, key: Q) -> Result<FileRef, Error>;
+}
+
+enum Branch<'a> {
+    Array(usize, &'a mut Vec<Item>),
+    Map(&'a str, &'a mut IndexMap<String, Item>),
 }
 
 #[derive(Debug)]
@@ -116,15 +125,11 @@ impl Store {
         }
     }
 
-    fn check_key<Q: AsRef<Path>>(&self, key: Q, allow_wildcard: bool) -> Result<Q, Error> {
+    fn check_key<Q: AsRef<Path>>(&self, key: Q) -> Result<Q, Error> {
         let key_ref = key.as_ref();
 
         if key_ref.is_absolute() {
             return Err(Error::LeadingForwardSlash(key_ref.to_path_buf()));
-        }
-
-        if !allow_wildcard && key_ref.to_string_lossy().contains("*") {
-            return Err(Error::Wildcard(key_ref.to_path_buf()));
         }
 
         for comp in key_ref.components() {
@@ -175,7 +180,7 @@ impl Store {
     }
 
     pub fn remove<Q: AsRef<Path>>(&self, key: Q) -> Result<Option<Value>, Error> {
-        let key = self.check_key(key, false)?;
+        let key = self.check_key(key)?;
 
         let item = self
             .map
@@ -190,41 +195,246 @@ impl Store {
                 Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(None),
                 Err(err) => Err(err.into()),
             },
+            _ => unreachable!(),
+        }
+    }
+
+    fn traverse(
+        &self,
+        key: &Path,
+        leaf_handler: impl FnOnce(&Path) -> Result<Option<Item>, Error> + Copy,
+        branch_handler: impl FnOnce(Branch, Item, Option<usize>) -> Result<(), Error> + Copy,
+    ) -> Result<Option<Item>, Error> {
+        let key = self.check_key(key)?;
+
+        let escape_component = |comp: Component| {
+            if comp.as_os_str() == "**" {
+                ".*".to_string()
+            } else {
+                regex::escape(&comp.as_os_str().to_string_lossy()).replace(r#"\*"#, "[^/]*")
+            }
+        };
+
+        fn nested_suffix(suffix: &Path) -> Cow<Path> {
+            if suffix.components().count() == 1 {
+                Cow::Borrowed(suffix)
+            } else {
+                Cow::Owned(
+                    suffix
+                        .components()
+                        .take(1)
+                        .chain(Some(Component::Normal(OsStr::new("**"))))
+                        .collect::<PathBuf>(),
+                )
+            }
+        }
+
+        if !key.as_os_str().as_bytes().contains(&b'*') {
+            leaf_handler(key)
+        } else if !matches!(key.components().last(), Some(comp) if comp.as_os_str() == "**") {
+            let regex_str = key
+                .components()
+                .map(escape_component)
+                .collect::<Vec<_>>()
+                .join("/");
+            let regex = Regex::new(&format!("^{regex_str}$")).unwrap();
+
+            let keys: Vec<_> = self
+                .map
+                .borrow()
+                .keys()
+                .map(|k| k.to_string_lossy().into_owned())
+                .collect();
+
+            let mut array = Vec::new();
+            for k in keys {
+                if let Some(captures) = regex.captures(&k) {
+                    if let Some(key_match) = captures.get(0) {
+                        if let Some(item) = self.traverse(
+                            Path::new(key_match.as_str()),
+                            leaf_handler,
+                            branch_handler,
+                        )? {
+                            branch_handler(Branch::Array(array.len(), &mut array), item, None)?;
+                        };
+                    }
+                }
+            }
+
+            Ok(Some(Item::Array(array)))
+        } else {
+            let mut comps = key.components();
+            comps.next_back();
+
+            let regex_str = comps.map(escape_component).collect::<Vec<_>>().join("/");
+            let regex = if regex_str.is_empty() {
+                Regex::new(&format!("^()(.*)$")).unwrap()
+            } else {
+                Regex::new(&format!("^({regex_str})/(.*)$")).unwrap()
+            };
+
+            let keys: Vec<_> = self
+                .map
+                .borrow()
+                .keys()
+                .map(|k| k.to_string_lossy().into_owned())
+                .collect();
+            let mut key_map = IndexMap::new();
+            for k in &keys {
+                if let Some(captures) = regex.captures(k) {
+                    if let (Some(prefix), Some(suffix)) = (captures.get(1), captures.get(2)) {
+                        key_map
+                            .entry(Path::new(prefix.as_str()))
+                            .and_modify(|suffixes: &mut IndexSet<_>| {
+                                suffixes.insert(nested_suffix(Path::new(suffix.as_str())));
+                            })
+                            .or_insert_with(|| {
+                                let mut set = IndexSet::new();
+                                set.insert(nested_suffix(Path::new(suffix.as_str())));
+                                set
+                            });
+                    }
+                }
+            }
+
+            let mut result = Vec::new();
+            for (prefix, suffixes) in key_map {
+                let indices = suffixes
+                    .iter()
+                    .map(|suffix| {
+                        suffix
+                            .components()
+                            .next()
+                            .unwrap()
+                            .as_os_str()
+                            .to_str()
+                            .unwrap()
+                            .parse::<usize>()
+                    })
+                    .collect::<Result<Vec<_>, _>>();
+
+                if let Ok(indices) = indices {
+                    let mut validated = vec![false; indices.len()];
+                    for (index, suffix) in indices.iter().zip(suffixes.iter()) {
+                        validated
+                            .get_mut(*index)
+                            .map(|v| *v = suffix.components().count() >= 1);
+                    }
+
+                    if validated.into_iter().all(|v| v) {
+                        let mut array = Vec::new();
+                        let capacity = indices.len();
+                        for (index, suffix) in indices.into_iter().zip(suffixes) {
+                            let nested_key = prefix.join(suffix);
+                            if let Some(item) =
+                                self.traverse(&nested_key, leaf_handler, branch_handler)?
+                            {
+                                branch_handler(
+                                    Branch::Array(index, &mut array),
+                                    item,
+                                    Some(capacity),
+                                )?;
+                            }
+                        }
+
+                        branch_handler(
+                            Branch::Array(result.len(), &mut result),
+                            Item::Array(array),
+                            None,
+                        )?;
+                        continue;
+                    }
+                }
+
+                let mut map = IndexMap::new();
+
+                let capacity = suffixes.len();
+                for suffix in suffixes {
+                    let field = suffix
+                        .components()
+                        .next()
+                        .unwrap()
+                        .as_os_str()
+                        .to_string_lossy();
+                    let nested_key = prefix.join(&suffix);
+                    if let Some(item) = self.traverse(&nested_key, leaf_handler, branch_handler)? {
+                        branch_handler(Branch::Map(&field, &mut map), item, Some(capacity))?;
+                    };
+                }
+
+                branch_handler(
+                    Branch::Array(result.len(), &mut result),
+                    Item::Map(map),
+                    None,
+                )?;
+            }
+
+            if result.len() == 1 {
+                Ok(Some(result.remove(0)))
+            } else if result.len() > 1 {
+                Ok(Some(Item::Array(result)))
+            } else {
+                Err(Error::KeyDoesNotExist(key.to_path_buf()))
+            }
         }
     }
 }
 
 impl ReadStore for Store {
     fn get<Q: AsRef<Path>>(&self, key: Q) -> Result<Item, Error> {
-        let key = self.check_key(key, false)?.as_ref().to_path_buf();
+        let map_borrow = self.map.borrow();
+        self.traverse(
+            key.as_ref(),
+            |key_match| {
+                map_borrow
+                    .get(key_match)
+                    .map(|item| Some(item.clone()))
+                    .ok_or_else(|| Error::KeyDoesNotExist(key.as_ref().to_path_buf()))
+            },
+            |branch, item, count| {
+                let capacity = match &branch {
+                    Branch::Array(_, array) => array.capacity(),
+                    Branch::Map(_, map) => map.capacity(),
+                };
 
-        let res = self
-            .map
-            .borrow()
-            .get(&key)
-            .cloned()
-            .ok_or_else(|| Error::KeyDoesNotExist(key.clone()))?;
+                let count = if let Some(count) = count {
+                    count
+                } else {
+                    capacity + 1
+                };
 
-        Ok(res)
-    }
+                match branch {
+                    Branch::Array(index, array) => {
+                        if capacity < count {
+                            array.reserve(count - capacity);
+                        }
 
-    fn get_matches<Q: AsRef<Path>>(&self, key: Q) -> Result<Vec<Item>, Error> {
-        let key = self.check_key(key, true)?;
+                        if index >= array.len() {
+                            array.extend(
+                                iter::repeat_with(|| Item::Value(Value::Bool(false)))
+                                    .take(index - array.len()),
+                            );
 
-        let regex_str: String = key
-            .as_ref()
-            .components()
-            .map(|c| regex::escape(&c.as_os_str().to_string_lossy()).replace(r#"\*"#, "[^/]*"))
-            .collect();
-        let regex = Regex::new(&format!("^{regex_str}$")).unwrap();
-        let matches = self
-            .map
-            .borrow()
-            .iter()
-            .filter_map(|(k, v)| regex.is_match(&k.to_string_lossy()).then(|| v.clone()))
-            .collect();
+                            array.push(item);
+                        } else {
+                            array[index] = item;
+                        }
 
-        Ok(matches)
+                        Ok(())
+                    }
+                    Branch::Map(field, map) => {
+                        if capacity < count {
+                            map.reserve(count - capacity);
+                        }
+
+                        map.insert(field.to_string(), item);
+
+                        Ok(())
+                    }
+                }
+            },
+        )
+        .map(|item| item.unwrap())
     }
 
     fn get_keys(&self) -> Vec<PathBuf> {
@@ -234,7 +444,7 @@ impl ReadStore for Store {
 
 impl WriteStore for Store {
     fn put<Q: AsRef<Path>, V: Into<Value>>(&self, key: Q, value: V) -> Result<(), Error> {
-        let key = self.check_key(key, false)?.as_ref().to_path_buf();
+        let key = self.check_key(key)?.as_ref().to_path_buf();
 
         if self.map.borrow().contains_key(&key) {
             return Err(Error::KeyAlreadyExists(key));
@@ -249,7 +459,7 @@ impl WriteStore for Store {
     }
 
     fn update<Q: AsRef<Path>, V: Into<Value>>(&self, key: Q, value: V) -> Result<Value, Error> {
-        let key = self.check_key(key, false)?.as_ref().to_path_buf();
+        let key = self.check_key(key)?.as_ref().to_path_buf();
 
         let value = value.into();
         let value_desc = value.type_description();
@@ -269,12 +479,13 @@ impl WriteStore for Store {
             Some(Item::File { .. }) => {
                 Err(Error::MismatchedTypes(TypeDescription::File, value_desc))
             }
+            Some(_) => unreachable!(),
             None => Err(Error::KeyDoesNotExist(key)),
         }
     }
 
     fn create_file<Q: AsRef<Path>>(&self, key: Q) -> Result<FileRef, Error> {
-        let key = self.check_key(key, false)?.as_ref().to_path_buf();
+        let key = self.check_key(key)?.as_ref().to_path_buf();
 
         if self.map.borrow().contains_key(&key) {
             return Err(Error::KeyAlreadyExists(key));
@@ -446,7 +657,50 @@ impl TryFrom<Item> for Value {
     }
 }
 
-macro_rules! impl_try_from_integer {
+impl<T> TryFrom<Item> for Vec<T>
+where
+    T: TryFrom<Item>,
+    <T as TryFrom<Item>>::Error: Into<Error>,
+{
+    type Error = Error;
+
+    fn try_from(item: Item) -> Result<Self, Self::Error> {
+        match item {
+            Item::Array(arr) => arr
+                .into_iter()
+                .map(T::try_from)
+                .collect::<Result<_, _>>()
+                .map_err(Into::into),
+            item => Err(Error::MismatchedTypes(
+                item.type_description(),
+                TypeDescription::Array(Vec::new()),
+            )),
+        }
+    }
+}
+
+impl<T> TryFrom<Item> for IndexMap<String, T>
+where
+    T: TryFrom<Item>,
+    <T as TryFrom<Item>>::Error: Into<Error>,
+{
+    type Error = Error;
+
+    fn try_from(item: Item) -> Result<Self, Self::Error> {
+        match item {
+            Item::Map(map) => map
+                .into_iter()
+                .map(|(k, v)| Ok((k, T::try_from(v).map_err(Into::into)?)))
+                .collect(),
+            item => Err(Error::MismatchedTypes(
+                item.type_description(),
+                TypeDescription::Array(Vec::new()),
+            )),
+        }
+    }
+}
+
+macro_rules! impl_try_from_value_integer {
     ($variant:ident for $impl_type:ty) => {
         impl TryFrom<Value> for $impl_type {
             type Error = Error;
@@ -465,7 +719,7 @@ macro_rules! impl_try_from_integer {
     };
 }
 
-macro_rules! impl_try_from_non_integer {
+macro_rules! impl_try_from_value_non_integer {
     ($variant:ident for $impl_type:ty) => {
         impl TryFrom<Value> for $impl_type {
             type Error = Error;
@@ -501,18 +755,18 @@ macro_rules! impl_try_from_item {
     };
 }
 
-impl_try_from_non_integer!(Bool for bool);
-impl_try_from_integer!(UnsignedInteger for u8);
-impl_try_from_integer!(UnsignedInteger for u16);
-impl_try_from_integer!(UnsignedInteger for u32);
-impl_try_from_integer!(UnsignedInteger for u64);
-impl_try_from_integer!(SignedInteger for i8);
-impl_try_from_integer!(SignedInteger for i16);
-impl_try_from_integer!(SignedInteger for i32);
-impl_try_from_integer!(SignedInteger for i64);
-impl_try_from_non_integer!(FloatingPointNumber for f32);
-impl_try_from_non_integer!(FloatingPointNumber for f64);
-impl_try_from_non_integer!(String for String);
+impl_try_from_value_non_integer!(Bool for bool);
+impl_try_from_value_integer!(UnsignedInteger for u8);
+impl_try_from_value_integer!(UnsignedInteger for u16);
+impl_try_from_value_integer!(UnsignedInteger for u32);
+impl_try_from_value_integer!(UnsignedInteger for u64);
+impl_try_from_value_integer!(SignedInteger for i8);
+impl_try_from_value_integer!(SignedInteger for i16);
+impl_try_from_value_integer!(SignedInteger for i32);
+impl_try_from_value_integer!(SignedInteger for i64);
+impl_try_from_value_non_integer!(FloatingPointNumber for f32);
+impl_try_from_value_non_integer!(FloatingPointNumber for f64);
+impl_try_from_value_non_integer!(String for String);
 
 impl_try_from_item!(Value::Bool for bool);
 impl_try_from_item!(Value::UnsignedInteger for u8);
@@ -562,10 +816,12 @@ impl Drop for Record {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(untagged)]
 pub enum Item {
     Value(Value),
+    Array(Vec<Item>),
+    Map(IndexMap<String, Item>),
     File(FileRef),
 }
 
@@ -573,12 +829,18 @@ impl Item {
     fn type_description(&self) -> TypeDescription {
         match self {
             Self::Value(value) => value.type_description(),
+            Self::Array(arr) => {
+                TypeDescription::Array(arr.iter().map(Self::type_description).collect())
+            }
+            Self::Map(map) => {
+                TypeDescription::Map(map.iter().map(|(_, i)| i.type_description()).collect())
+            }
             Self::File(_) => TypeDescription::File,
         }
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(untagged)]
 pub enum Value {
     Bool(bool),
@@ -588,29 +850,50 @@ pub enum Value {
     String(String),
 }
 
-impl From<&str> for Value {
-    fn from(s: &str) -> Self {
-        Self::String(s.to_string())
-    }
+macro_rules! impl_from_for_value_and_item {
+    ($ty:ty as $variant:ident) => {
+        impl From<$ty> for Value {
+            fn from(v: $ty) -> Self {
+                Self::$variant(v)
+            }
+        }
+
+        impl From<$ty> for Item {
+            fn from(v: $ty) -> Self {
+                Self::Value(Value::$variant(v))
+            }
+        }
+    };
+
+    ($ty:ty as $variant:ident => |$val:ident| $conversion:expr) => {
+        impl From<$ty> for Value {
+            fn from($val: $ty) -> Self {
+                Self::$variant($conversion)
+            }
+        }
+
+        impl From<$ty> for Item {
+            fn from($val: $ty) -> Self {
+                Self::Value(Value::$variant($conversion))
+            }
+        }
+    };
 }
 
-impl From<String> for Value {
-    fn from(s: String) -> Self {
-        Self::String(s)
-    }
-}
-
-impl From<&String> for Value {
-    fn from(s: &String) -> Self {
-        Self::String(s.clone())
-    }
-}
-
-impl From<u32> for Value {
-    fn from(i: u32) -> Self {
-        Self::UnsignedInteger(i as u64)
-    }
-}
+impl_from_for_value_and_item!(String as String);
+impl_from_for_value_and_item!(&str as String => |s| s.to_string());
+impl_from_for_value_and_item!(&String as String => |s| s.clone());
+impl_from_for_value_and_item!(u64 as UnsignedInteger);
+impl_from_for_value_and_item!(u32 as UnsignedInteger => |i| i as u64);
+impl_from_for_value_and_item!(u16 as UnsignedInteger => |i| i as u64);
+impl_from_for_value_and_item!(u8 as UnsignedInteger => |i| i as u64);
+impl_from_for_value_and_item!(i64 as SignedInteger);
+impl_from_for_value_and_item!(i32 as SignedInteger => |i| i as i64);
+impl_from_for_value_and_item!(i16 as SignedInteger => |i| i as i64);
+impl_from_for_value_and_item!(i8 as SignedInteger => |i| i as i64);
+impl_from_for_value_and_item!(f64 as FloatingPointNumber);
+impl_from_for_value_and_item!(f32 as FloatingPointNumber => |f| f as f64);
+impl_from_for_value_and_item!(bool as Bool);
 
 impl Value {
     fn type_description(&self) -> TypeDescription {
@@ -633,6 +916,8 @@ pub enum TypeDescription {
     String,
     File,
     Value,
+    Array(Vec<Self>),
+    Map(Vec<Self>),
 }
 
 impl Display for TypeDescription {
@@ -645,6 +930,305 @@ impl Display for TypeDescription {
             Self::String => write!(f, "string"),
             Self::File => write!(f, "file"),
             Self::Value => write!(f, "value"),
+            Self::Array(col) | Self::Map(col) => {
+                let col_ty = if matches!(self, Self::Array(_)) {
+                    "array"
+                } else {
+                    "map"
+                };
+
+                if col.is_empty() {
+                    write!(f, "{col_ty}")
+                } else {
+                    write!(
+                        f,
+                        "{col_ty} of {}",
+                        col.iter()
+                            .map(Self::to_string)
+                            .collect::<Vec<_>>()
+                            .join(" and ")
+                    )
+                }
+            }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fmt::Debug;
+
+    use super::*;
+
+    macro_rules! item_map {
+        ($map:ident => @impl $key:literal map=> $value:expr, $($rest:tt)*) => {
+            $map.insert($key.to_string(), Item::Map($value));
+            item_map!($map => @impl $($rest)*);
+        };
+
+        ($map:ident => @impl $key:literal array=> $value:expr, $($rest:tt)*) => {
+            $map.insert($key.to_string(), Item::Array($value));
+            item_map!($map => @impl $($rest)*);
+        };
+
+        ($map:ident => @impl $key:literal => $value:expr, $($rest:tt)*) => {
+            $map.insert($key.to_string(), Item::from($value));
+            item_map!($map => @impl $($rest)*);
+        };
+
+        ($map:ident => @impl $(,)?) => {};
+
+        ($($input:tt)*) => {{
+            let mut map = IndexMap::<String, Item>::new();
+            item_map!(map => @impl $($input)*,);
+            map
+        }};
+    }
+
+    macro_rules! item_array {
+        ($array:ident => @impl map=> $value:expr, $($rest:tt)*) => {
+            $array.push(Item::Map($value));
+            item_array!($array => @impl $($rest)*);
+        };
+
+        ($array:ident => @impl array=> $value:expr, $($rest:tt)*) => {
+            $array.push(Item::Array($value));
+            item_array!($array => @impl $($rest)*);
+        };
+
+        ($array:ident => @impl $value:expr, $($rest:tt)*) => {
+            $array.push(Item::from($value));
+            item_array!($array => @impl $($rest)*);
+        };
+
+        ($array:ident => @impl $(,)?) => {};
+
+        ($($input:tt)*) => {{
+            let mut array = Vec::<Item>::new();
+            item_array!(array => @impl $($input)*,);
+            array
+        }};
+
+    }
+
+    macro_rules! value_map {
+        ($($key:literal => $value:expr),* $(,)?) => { {
+            let mut map = IndexMap::<String, Value>::new();
+            $(map.insert($key.to_string(), {$value}.into());)*
+            map
+        }};
+    }
+
+    trait ExpectValue
+    where
+        Self: Sized + PartialEq + Debug,
+    {
+        #[track_caller]
+        fn expect_val(self, v: Self) {
+            assert_eq!(self, v)
+        }
+    }
+
+    impl<T> ExpectValue for T where T: Sized + PartialEq + Debug {}
+
+    fn store() -> Result<Store, Error> {
+        let store = Store::new(Path::new("fakedir"));
+        let ttokens = ["t1", "t2", "t3", "t4"];
+        let rtokens = ["r1", "r2", "r3", "r4"];
+        let alpha = value_map! {
+            "string" => "hello",
+            "int" => 1u32,
+        };
+        let alpha2 = value_map! {
+            "string" => "hello",
+            "int" => 2u32,
+        };
+        let extra = value_map! {
+            "bool" => false,
+            "i64" => i64::MIN,
+        };
+        let two = ["t1", "t2", "t3", "t4", "r1", "r2", "r3", "r4"];
+        store.put("unsigned", 1u32)?;
+        store.put("signed", -1)?;
+        store.put("float", 1.0)?;
+        store.put("u64", u64::MAX)?;
+        store.put("bool", false)?;
+        store.put("string", "hello")?;
+        store.put("nested/one", true)?;
+        store.put("nested/two/adam", false)?;
+        store.put("nested/two/betsy/alpha/token", ttokens[0])?;
+        store.put("nested/two/betsy/beta/token", ttokens[1])?;
+        store.put("nested/two/betsy/delta/token", ttokens[2])?;
+        store.put("nested/two/betsy/gamma/token", ttokens[3])?;
+        store.put_array("array/one", ttokens)?;
+        store.put_array("array/two", rtokens.clone())?;
+        store.put_map("map/one/adam/alpha", alpha)?;
+        store.put_array("map/one/adam/beta", rtokens)?;
+        store.put_map("map/one/betsy/alpha", alpha2)?;
+        store.put_map("map/one/betsy/alpha/extra", extra)?;
+        store.put_array("map/two", two)?;
+        Ok(store)
+    }
+
+    fn get_joined_vec(store: &impl ReadStore, key: &str) -> Result<String, Error> {
+        Ok(Vec::<String>::try_from(store.get(key)?)?.join(","))
+    }
+
+    #[test]
+    fn get_single_leaf() -> Result<(), Error> {
+        let s = store()?;
+        u32::try_from(s.get("unsigned")?)?.expect_val(1);
+        i32::try_from(s.get("signed")?)?.expect_val(-1);
+        f32::try_from(s.get("float")?)?.expect_val(1.0);
+        u64::try_from(s.get("u64")?)?.expect_val(u64::MAX);
+        bool::try_from(s.get("bool")?)?.expect_val(false);
+        String::try_from(s.get("string")?)?.expect_val("hello".to_string());
+        bool::try_from(s.get("nested/one")?)?.expect_val(true);
+        bool::try_from(s.get("nested/two/adam")?)?.expect_val(false);
+        Ok(())
+    }
+
+    #[test]
+    fn get_multiple_leafs() -> Result<(), Error> {
+        let s = store()?;
+        get_joined_vec(&s, "nested/two/betsy/*/token")?.expect_val("t1,t2,t3,t4".to_string());
+        get_joined_vec(&s, "nested/two/betsy/*ta/token")?.expect_val("t2,t3".to_string());
+        get_joined_vec(&s, "nested/two/*/*/token")?.expect_val("t1,t2,t3,t4".to_string());
+        get_joined_vec(&s, "nested/*/*/*/token")?.expect_val("t1,t2,t3,t4".to_string());
+        get_joined_vec(&s, "nested/*/*/*a*a/token")?.expect_val("t1,t4".to_string());
+        get_joined_vec(&s, "nested/**/token")?.expect_val("t1,t2,t3,t4".to_string());
+        get_joined_vec(&s, "nested/**/**/token")?.expect_val("t1,t2,t3,t4".to_string());
+        get_joined_vec(&s, "nested/**/betsy/*l*/token")?.expect_val("t1,t3".to_string());
+        Ok(())
+    }
+
+    #[test]
+    fn get_single_array() -> Result<(), Error> {
+        use Value::*;
+
+        let s = store()?;
+        Vec::<Value>::try_from(s.get("*")?)?.expect_val(vec![
+            UnsignedInteger(1),
+            SignedInteger(-1),
+            FloatingPointNumber(1.0),
+            UnsignedInteger(u64::MAX),
+            Bool(false),
+            String("hello".into()),
+        ]);
+        Vec::<bool>::try_from(s.get("nested/*")?)?.expect_val(vec![true]);
+        Vec::<bool>::try_from(s.get("nested/*/*")?)?.expect_val(vec![false]);
+        get_joined_vec(&s, "array/one/*")?.expect_val("t1,t2,t3,t4".to_string());
+        get_joined_vec(&s, "array/one/**")?.expect_val("t1,t2,t3,t4".to_string());
+        get_joined_vec(&s, "array/*/*")?.expect_val("t1,t2,t3,t4,r1,r2,r3,r4".to_string());
+        Ok(())
+    }
+
+    #[test]
+    fn get_multiple_arrays() -> Result<(), Error> {
+        let s = store()?;
+        Vec::<Vec<String>>::try_from(s.get("array/*/**")?)?.expect_val(vec![
+            vec![
+                "t1".to_string(),
+                "t2".to_string(),
+                "t3".to_string(),
+                "t4".to_string(),
+            ],
+            vec![
+                "r1".to_string(),
+                "r2".to_string(),
+                "r3".to_string(),
+                "r4".to_string(),
+            ],
+        ]);
+        Ok(())
+    }
+
+    #[test]
+    fn get_single_map() -> Result<(), Error> {
+        let s = store()?;
+        let alpha = item_map! {
+            "string" => "hello",
+            "int" => 1u32,
+        };
+        let adam = item_map! {
+            "alpha" map=> alpha.clone(),
+            "beta" array=> item_array!["r1", "r2", "r3", "r4"],
+        };
+        let one = item_map! {
+            "adam" map=> adam.clone(),
+            "betsy" map=> item_map! {
+                "alpha" map=> item_map! {
+                    "string" => "hello",
+                    "int" => 2u32,
+                    "extra" map=> item_map! {
+                        "bool" => false,
+                        "i64" => i64::MIN,
+                    },
+                },
+            },
+        };
+        let map = item_map! {
+            "one" map=> one.clone(),
+            "two" array=> item_array!["t1", "t2", "t3", "t4", "r1", "r2", "r3", "r4"],
+        };
+        let root = item_map! {
+            "unsigned" => 1u32,
+            "signed" => -1,
+            "float" => 1.0,
+            "u64" => u64::MAX,
+            "bool" => false,
+            "string" => "hello",
+            "nested" map=> item_map! {
+                "one" => true,
+                "two" map=> item_map! {
+                    "adam" => false,
+                    "betsy" map=> item_map! {
+                        "alpha" map=> item_map! {
+                            "token" => "t1",
+                        },
+                        "beta" map=> item_map! {
+                            "token" => "t2",
+                        },
+                        "delta" map=> item_map! {
+                            "token" => "t3",
+                        },
+                        "gamma" map=> item_map! {
+                            "token" => "t4",
+                        },
+                    },
+                },
+            },
+            "array" map=> item_map! {
+                "one" array=> item_array!["t1", "t2", "t3", "t4"],
+                "two" array=> item_array!["r1", "r2", "r3", "r4"],
+            },
+            "map" map=> map.clone(),
+        };
+        IndexMap::<String, Item>::try_from(s.get("map/one/adam/alpha/**")?)?.expect_val(alpha);
+        IndexMap::<String, Item>::try_from(s.get("map/one/adam/**")?)?.expect_val(adam);
+        IndexMap::<String, Item>::try_from(s.get("map/one/**")?)?.expect_val(one);
+        IndexMap::<String, Item>::try_from(s.get("map/**")?)?.expect_val(map);
+        IndexMap::<String, Item>::try_from(s.get("**")?)?.expect_val(root);
+        Ok(())
+    }
+
+    #[test]
+    fn get_multiple_maps() -> Result<(), Error> {
+        let s = store()?;
+        Vec::<IndexMap<String, Item>>::try_from(s.get("map/**/alpha/**")?)?.expect_val(vec![
+            item_map! {
+                "string" => "hello",
+                "int" => 1u32,
+            },
+            item_map! {
+                "string" => "hello",
+                "int" => 2u32,
+                "extra" map=> item_map! {
+                    "bool" => false,
+                    "i64" => i64::MIN,
+                },
+            },
+        ]);
+        Ok(())
     }
 }

@@ -8,7 +8,7 @@ use std::{
 
 use serde::{de::Visitor, Deserialize, Deserializer, Serialize, Serializer};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct FileRef {
     #[serde(skip)]
     pub(super) path: PathBuf,
