@@ -105,8 +105,8 @@ pub trait WriteStore: ReadStore {
 }
 
 enum Branch<'a> {
-    Array(usize, &'a mut Vec<Item>),
-    Map(&'a str, &'a mut IndexMap<String, Item>),
+    Array(&'a mut Vec<Item>, usize),
+    Map(&'a mut IndexMap<String, Item>, &'a str),
 }
 
 #[derive(Debug)]
@@ -203,185 +203,227 @@ impl Store {
         &self,
         key: &Path,
         leaf_handler: impl FnOnce(&Path) -> Result<Option<Item>, Error> + Copy,
-        branch_handler: impl FnOnce(Branch, Item, Option<usize>) -> Result<(), Error> + Copy,
+        branch_handler: impl FnOnce(Branch, Item, usize, usize) -> Result<(), Error> + Copy,
     ) -> Result<Option<Item>, Error> {
-        let key = self.check_key(key)?;
-
-        let escape_component = |comp: Component| {
-            if comp.as_os_str() == "**" {
-                ".*".to_string()
-            } else {
-                regex::escape(&comp.as_os_str().to_string_lossy()).replace(r#"\*"#, "[^/]*")
-            }
-        };
-
-        fn nested_suffix(suffix: &Path) -> Cow<Path> {
-            if suffix.components().count() == 1 {
-                Cow::Borrowed(suffix)
-            } else {
-                Cow::Owned(
-                    suffix
-                        .components()
-                        .take(1)
-                        .chain(Some(Component::Normal(OsStr::new("**"))))
-                        .collect::<PathBuf>(),
-                )
-            }
+        // If key does not contain any wildcards, then it is a "leaf", i.e. we can fetch the value
+        // directly.
+        if !key.as_os_str().as_bytes().contains(&b'*') {
+            return leaf_handler(key);
         }
 
-        if !key.as_os_str().as_bytes().contains(&b'*') {
-            leaf_handler(key)
-        } else if !matches!(key.components().last(), Some(comp) if comp.as_os_str() == "**") {
-            let regex_str = key
-                .components()
-                .map(escape_component)
-                .collect::<Vec<_>>()
-                .join("/");
-            let regex = Regex::new(&format!("^{regex_str}$")).unwrap();
+        let mut comps = key.components();
 
-            let keys: Vec<_> = self
-                .map
-                .borrow()
-                .keys()
-                .map(|k| k.to_string_lossy().into_owned())
-                .collect();
+        // A key is "nested" if it ends with a '**' component. Nested in this case means that it
+        // will traverse further down to build a map or an array structure, given the expanded
+        // components.
+        let is_nested = matches!(key.components().last(), Some(comp) if comp.as_os_str() == "**");
 
-            let mut array = Vec::new();
-            for k in keys {
-                if let Some(captures) = regex.captures(&k) {
-                    if let Some(key_match) = captures.get(0) {
-                        if let Some(item) = self.traverse(
-                            Path::new(key_match.as_str()),
-                            leaf_handler,
-                            branch_handler,
-                        )? {
-                            branch_handler(Branch::Array(array.len(), &mut array), item, None)?;
-                        };
-                    }
-                }
-            }
-
-            Ok(Some(Item::Array(array)))
-        } else {
-            let mut comps = key.components();
+        // If the key is nested, we remove the '**' wildcard component, and use the remaining
+        // components as the prefix expression for the regexes below.
+        if is_nested {
             comps.next_back();
+        }
 
-            let regex_str = comps.map(escape_component).collect::<Vec<_>>().join("/");
-            let regex = if regex_str.is_empty() {
-                Regex::new(&format!("^()(.*)$")).unwrap()
+        // Build the prefix expression, replacing wildcards and escaping regex tokens.
+        let prefix_expr = comps
+            .map(|comp| {
+                if comp.as_os_str() == "**" {
+                    ".*".to_string()
+                } else {
+                    regex::escape(&comp.as_os_str().to_string_lossy()).replace(r#"\*"#, "[^/]*")
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("/");
+
+        // Different regexes are used depending on the prefix expression and nestedness of the key.
+        // Non-nested keys kan be matched directly to the prefix expression (i.e. they have no
+        // suffixes). Nested keys need to capture the suffix in order to do further traversing.
+        let regex = if is_nested {
+            if prefix_expr.is_empty() {
+                Regex::new(&format!("^(?P<suffix>.*)$")).unwrap()
             } else {
-                Regex::new(&format!("^({regex_str})/(.*)$")).unwrap()
-            };
+                Regex::new(&format!("^(?P<prefix>{prefix_expr})/(?P<suffix>.*)$")).unwrap()
+            }
+        } else {
+            Regex::new(&format!("^(?P<prefix>{prefix_expr})$")).unwrap()
+        };
 
-            let keys: Vec<_> = self
-                .map
-                .borrow()
-                .keys()
-                .map(|k| k.to_string_lossy().into_owned())
-                .collect();
-            let mut key_map = IndexMap::new();
-            for k in &keys {
-                if let Some(captures) = regex.captures(k) {
-                    if let (Some(prefix), Some(suffix)) = (captures.get(1), captures.get(2)) {
+        // Get a copy of all the keys in this instance. We can't hold references to it since we
+        // might mutably borrow from the map later on.
+        let keys: Vec<_> = self
+            .map
+            .borrow()
+            .keys()
+            .map(|k| k.to_string_lossy().into_owned())
+            .collect();
+
+        // Build a map of prefixes and suffixes. Each prefix might have zero or more suffixes. If
+        // the prefix has no suffixes, then it is a leaf. If it has one or multple suffixes, then
+        // they originated from a nested key and will built as a map or an array, depending on the
+        // key structure. Multiple prefixes means the final result will be returned wrapped in an
+        // outer array.
+        let mut key_map = IndexMap::new();
+        for k in &keys {
+            if let Some(captures) = regex.captures(k) {
+                match (captures.name("prefix"), captures.name("suffix")) {
+                    (None, None) => (),
+                    (prefix, suffix) => {
                         key_map
-                            .entry(Path::new(prefix.as_str()))
+                            .entry(Path::new(prefix.map(|m| m.as_str()).unwrap_or_default()))
                             .and_modify(|suffixes: &mut IndexSet<_>| {
-                                suffixes.insert(nested_suffix(Path::new(suffix.as_str())));
+                                if let Some(suffix) = suffix {
+                                    suffixes
+                                        .insert(Self::nested_suffix(Path::new(suffix.as_str())));
+                                }
                             })
                             .or_insert_with(|| {
-                                let mut set = IndexSet::new();
-                                set.insert(nested_suffix(Path::new(suffix.as_str())));
-                                set
+                                let mut suffixes = IndexSet::new();
+                                if let Some(suffix) = suffix {
+                                    suffixes
+                                        .insert(Self::nested_suffix(Path::new(suffix.as_str())));
+                                }
+                                suffixes
                             });
                     }
                 }
             }
+        }
 
-            let mut result = Vec::new();
-            for (prefix, suffixes) in key_map {
-                let indices = suffixes
-                    .iter()
-                    .map(|suffix| {
-                        suffix
-                            .components()
-                            .next()
-                            .unwrap()
-                            .as_os_str()
-                            .to_str()
-                            .unwrap()
-                            .parse::<usize>()
-                    })
-                    .collect::<Result<Vec<_>, _>>();
-
-                if let Ok(indices) = indices {
-                    let mut validated = vec![false; indices.len()];
-                    for (index, suffix) in indices.iter().zip(suffixes.iter()) {
-                        validated
-                            .get_mut(*index)
-                            .map(|v| *v = suffix.components().count() >= 1);
-                    }
-
-                    if validated.into_iter().all(|v| v) {
-                        let mut array = Vec::new();
-                        let capacity = indices.len();
-                        for (index, suffix) in indices.into_iter().zip(suffixes) {
-                            let nested_key = prefix.join(suffix);
-                            if let Some(item) =
-                                self.traverse(&nested_key, leaf_handler, branch_handler)?
-                            {
-                                branch_handler(
-                                    Branch::Array(index, &mut array),
-                                    item,
-                                    Some(capacity),
-                                )?;
-                            }
-                        }
-
-                        branch_handler(
-                            Branch::Array(result.len(), &mut result),
-                            Item::Array(array),
-                            None,
-                        )?;
-                        continue;
-                    }
+        // Iterate through the key map of prefixes and suffixes.
+        let mut result = Vec::new();
+        for (prefix, suffixes) in key_map {
+            // If there are no suffixes, then it is a leaf and the prefix is its key.
+            if suffixes.is_empty() {
+                if let Some(item) = leaf_handler(prefix)? {
+                    let capacity = result.capacity();
+                    let index = result.len();
+                    branch_handler(Branch::Array(&mut result, index), item, capacity, index + 1)?;
                 }
+                continue;
+            }
 
-                let mut map = IndexMap::new();
-
-                let capacity = suffixes.len();
-                for suffix in suffixes {
-                    let field = suffix
+            // Iterate through all the first components of the suffix to see if they all parse as
+            // indices (usize).
+            let indices = suffixes
+                .iter()
+                .map(|suffix| {
+                    suffix
                         .components()
                         .next()
                         .unwrap()
                         .as_os_str()
-                        .to_string_lossy();
-                    let nested_key = prefix.join(&suffix);
-                    if let Some(item) = self.traverse(&nested_key, leaf_handler, branch_handler)? {
-                        branch_handler(Branch::Map(&field, &mut map), item, Some(capacity))?;
-                    };
+                        .to_str()
+                        .unwrap()
+                        .parse::<usize>()
+                })
+                .collect::<Result<Vec<_>, _>>();
+
+            // If all suffixes begin with an index and the range of those indices start at 0 and
+            // are compact (that is, if the indices where sorted, they would be consecutive), then
+            // an array will be built from the suffixes.
+            if let Ok(indices) = indices {
+                let mut validated = vec![false; indices.len()];
+                for (index, suffix) in indices.iter().zip(suffixes.iter()) {
+                    validated
+                        .get_mut(*index)
+                        .map(|v| *v = suffix.components().count() >= 1);
                 }
 
-                branch_handler(
-                    Branch::Array(result.len(), &mut result),
-                    Item::Map(map),
-                    None,
-                )?;
+                if validated.into_iter().all(|v| v) {
+                    let mut array = Vec::new();
+                    let count = indices.len();
+
+                    // Traverse through the suffixes and delegate the handling to the caller of
+                    // this function.
+                    for (index, suffix) in indices.into_iter().zip(suffixes) {
+                        let nested_key = prefix.join(suffix);
+                        if let Some(item) =
+                            self.traverse(&nested_key, leaf_handler, branch_handler)?
+                        {
+                            let capacity = array.capacity();
+                            branch_handler(
+                                Branch::Array(&mut array, index),
+                                item,
+                                capacity,
+                                count,
+                            )?;
+                        }
+                    }
+
+                    // Delegate the handling of the processed array to the caller of this function.
+                    let capacity = result.capacity();
+                    let index = result.len();
+                    branch_handler(
+                        Branch::Array(&mut result, index),
+                        Item::Array(array),
+                        capacity,
+                        index + 1,
+                    )?;
+                    continue;
+                }
             }
 
-            if result.len() == 1 {
-                Ok(Some(result.remove(0)))
-            } else if result.len() > 1 {
-                Ok(Some(Item::Array(result)))
-            } else {
-                Err(Error::KeyDoesNotExist(key.to_path_buf()))
+            // This prefix-suffixes pair is neither a leaf nor an array, so we process the suffixes
+            // as a map.
+            let mut map = IndexMap::new();
+
+            // Traverse through the suffixes and delegate the handling to the caller of this
+            // function.
+            let count = suffixes.len();
+            for suffix in suffixes {
+                let field = suffix
+                    .components()
+                    .next()
+                    .unwrap()
+                    .as_os_str()
+                    .to_string_lossy();
+                let nested_key = prefix.join(&suffix);
+                if let Some(item) = self.traverse(&nested_key, leaf_handler, branch_handler)? {
+                    let capacity = map.capacity();
+                    branch_handler(Branch::Map(&mut map, &field), item, capacity, count)?;
+                };
             }
+
+            // Delegate the handling of the processed map to the caller of this function.
+            let capacity = result.capacity();
+            let index = result.len();
+            branch_handler(
+                Branch::Array(&mut result, index),
+                Item::Map(map),
+                capacity,
+                index + 1,
+            )?;
+        }
+
+        if result.len() == 1 {
+            Ok(Some(result.remove(0)))
+        } else if result.len() > 1 {
+            Ok(Some(Item::Array(result)))
+        } else {
+            Ok(None)
+        }
+    }
+
+    fn nested_suffix(full_suffix: &Path) -> Cow<Path> {
+        if full_suffix.components().count() == 1 {
+            Cow::Borrowed(full_suffix)
+        } else {
+            Cow::Owned(
+                full_suffix
+                    .components()
+                    .take(1)
+                    .chain(Some(Component::Normal(OsStr::new("**"))))
+                    .collect::<PathBuf>(),
+            )
         }
     }
 }
 
 impl ReadStore for Store {
     fn get<Q: AsRef<Path>>(&self, key: Q) -> Result<Item, Error> {
+        let key = self.check_key(key)?;
+
         let map_borrow = self.map.borrow();
         self.traverse(
             key.as_ref(),
@@ -391,50 +433,37 @@ impl ReadStore for Store {
                     .map(|item| Some(item.clone()))
                     .ok_or_else(|| Error::KeyDoesNotExist(key.as_ref().to_path_buf()))
             },
-            |branch, item, count| {
-                let capacity = match &branch {
-                    Branch::Array(_, array) => array.capacity(),
-                    Branch::Map(_, map) => map.capacity(),
-                };
-
-                let count = if let Some(count) = count {
-                    count
-                } else {
-                    capacity + 1
-                };
-
-                match branch {
-                    Branch::Array(index, array) => {
-                        if capacity < count {
-                            array.reserve(count - capacity);
-                        }
-
-                        if index >= array.len() {
-                            array.extend(
-                                iter::repeat_with(|| Item::Value(Value::Bool(false)))
-                                    .take(index - array.len()),
-                            );
-
-                            array.push(item);
-                        } else {
-                            array[index] = item;
-                        }
-
-                        Ok(())
+            |branch, item, capacity, count| match branch {
+                Branch::Array(array, index) => {
+                    if capacity < count {
+                        array.reserve(count - capacity);
                     }
-                    Branch::Map(field, map) => {
-                        if capacity < count {
-                            map.reserve(count - capacity);
-                        }
 
-                        map.insert(field.to_string(), item);
+                    if index >= array.len() {
+                        array.extend(
+                            iter::repeat_with(|| Item::Value(Value::Bool(false)))
+                                .take(index - array.len()),
+                        );
 
-                        Ok(())
+                        array.push(item);
+                    } else {
+                        array[index] = item;
                     }
+
+                    Ok(())
+                }
+                Branch::Map(map, field) => {
+                    if capacity < count {
+                        map.reserve(count - capacity);
+                    }
+
+                    map.insert(field.to_string(), item);
+
+                    Ok(())
                 }
             },
-        )
-        .map(|item| item.unwrap())
+        )?
+        .ok_or_else(|| Error::KeyDoesNotExist(key.as_ref().to_path_buf()))
     }
 
     fn get_keys(&self) -> Vec<PathBuf> {
@@ -660,7 +689,7 @@ impl TryFrom<Item> for Value {
 impl<T> TryFrom<Item> for Vec<T>
 where
     T: TryFrom<Item>,
-    <T as TryFrom<Item>>::Error: Into<Error>,
+    Error: From<<T as TryFrom<Item>>::Error>,
 {
     type Error = Error;
 
@@ -671,10 +700,7 @@ where
                 .map(T::try_from)
                 .collect::<Result<_, _>>()
                 .map_err(Into::into),
-            item => Err(Error::MismatchedTypes(
-                item.type_description(),
-                TypeDescription::Array(Vec::new()),
-            )),
+            item => Ok(vec![T::try_from(item)?]),
         }
     }
 }
@@ -1084,6 +1110,7 @@ mod tests {
         bool::try_from(s.get("bool")?)?.expect_val(false);
         String::try_from(s.get("string")?)?.expect_val("hello".to_string());
         bool::try_from(s.get("nested/one")?)?.expect_val(true);
+        bool::try_from(s.get("nested/*")?)?.expect_val(true);
         bool::try_from(s.get("nested/two/adam")?)?.expect_val(false);
         Ok(())
     }
