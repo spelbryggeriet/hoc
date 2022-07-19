@@ -9,18 +9,17 @@ use std::{
 };
 
 use colored::Colorize;
-use lazy_regex::regex;
-use osshkeys::{keys::FingerprintHash, PublicKey, PublicParts};
-use regex::Regex;
-use serde::{Deserialize, Serialize};
-use structopt::StructOpt;
-
 use hoc_core::{
     kv::{self, ReadStore, WriteStore},
     process::{self, ssh},
 };
 use hoc_log::{bail, choose, error, hidden_input, info, prompt, LogErr, Result};
 use hoc_macros::{define_commands, doc_status, Procedure, ProcedureState};
+use lazy_regex::regex;
+use osshkeys::{keys::FingerprintHash, PublicKey, PublicParts};
+use regex::Regex;
+use serde::{Deserialize, Serialize};
+use structopt::StructOpt;
 use xz2::read::XzDecoder;
 use zip::ZipArchive;
 
@@ -54,8 +53,8 @@ const GO_TMP_DIR: &str = "/run/go";
 const VAULT_CERTS_DIR: &str = "/etc/vault.d/certs";
 const VAULT_CA_PUB_FILENAME: &str = "vault-ca.pem";
 const VAULT_CA_PRIV_FILENAME: &str = "vault-ca-key.pem";
-const VAULT_SERVER_PUB_FILENAME: &str = "server.pem";
-const VAULT_SERVER_PRIV_FILENAME: &str = "server-key.pem";
+const VAULT_SERVER_PUB_FILENAME: &str = "vault-cert.pem";
+const VAULT_SERVER_PRIV_FILENAME: &str = "vault-key.pem";
 
 const NOMAD_CERTS_DIR: &str = "/etc/nomad.d/certs";
 const NOMAD_CA_PUB_FILENAME: &str = "nomad-ca.pem";
@@ -208,12 +207,12 @@ pub enum DeployNodeState {
     MountStorage,
 
     InstallDependencies,
+    InitializeConsul,
+    SetUpConsulAcl,
     InitializeVault,
     InitializeNomad,
-    SetUpNomadAcl,
-    InitializeConsul,
     #[state(finish)]
-    SetUpConsulAcl,
+    SetUpNomadAcl,
 }
 
 #[doc_status]
@@ -350,10 +349,14 @@ impl Run for DeployNodeState {
             .and_then(String::try_from)?
             .parse()
             .log_err()?;
-        let used_addresses: Vec<IpAddr> = registry
-            .get_matches(format!("clusters/{cluster}/nodes/*/network/address"))?
+        let used_addresses: Vec<IpAddr> =
+            match registry.get(format!("clusters/{cluster}/nodes/*/network/address")) {
+                Ok(item) => Vec::<String>::try_from(item)?,
+                Err(kv::Error::KeyDoesNotExist(_)) => Vec::new(),
+                Err(err) => return Err(err.into()),
+            }
             .into_iter()
-            .map(|item| String::try_from(item)?.parse().log_err())
+            .map(|s| s.parse().log_err())
             .collect::<Result<_>>()?;
         let prefix_len = proc.get_prefix_len(registry)?;
 
@@ -377,7 +380,7 @@ impl Run for DeployNodeState {
         let inc = Self::numeral(used_addresses.len() as u64 + 1);
         registry.put(
             format!("clusters/{cluster}/nodes/{node}/nomad/name"),
-            format!("server.{inc}"),
+            format!("node-{inc}"),
         )?;
 
         Ok(FlashImage)
@@ -520,6 +523,12 @@ impl Run for DeployNodeState {
             pub_key
         };
 
+        // Get all node IP addresses in the cluster.
+        let cluster_addresses = Vec::<String>::try_from(
+            registry.get(format!("clusters/{cluster}/nodes/*/network/address"))?,
+        )?
+        .join(r#"", ""#);
+
         let mount_dir = disk::find_mount_dir(&disk_partition_id)?;
 
         /// Prepare image initialization
@@ -528,9 +537,10 @@ impl Run for DeployNodeState {
                 include_str!("../../config/user-data"),
                 admin_username = username,
                 cluster = cluster,
+                cluster_addresses = cluster_addresses,
                 hostname = proc.node_name,
-                nomad_name = nomad_name,
                 ip_address = address,
+                nomad_name = nomad_name,
                 ssh_pub_key = pub_key,
             ))
             .log_context("invalid user-data format")?;
@@ -838,11 +848,19 @@ impl Run for DeployNodeState {
         let common_set = process::Settings::default().ssh(&client);
         let sudo_set = common_set.clone().sudo_password(&*password);
 
+        let consul_path = format!("{CONSUL_TMP_DIR}/{CONSUL_VERSION}.zip");
         let vault_path = format!("{VAULT_TMP_DIR}/{VAULT_VERSION}.zip");
         let nomad_path = format!("{NOMAD_TMP_DIR}/{NOMAD_VERSION}.zip");
-        let consul_path = format!("{CONSUL_TMP_DIR}/{CONSUL_VERSION}.zip");
         let envoy_path = format!("{ENVOY_TMP_DIR}/{ENVOY_VERSION}.tar.xz");
         let go_path = format!("{GO_TMP_DIR}/{GO_VERSION}.tar.xz");
+
+        /// Consul
+        {
+            mkdir!("{CONSUL_TMP_DIR}").run_with(&sudo_set)?;
+            wget!("--no-verbose {CONSUL_URL} -O {consul_path}").run_with(&sudo_set)?;
+            unzip!("-o {consul_path} -d {BIN_DIR}").run_with(&sudo_set)?;
+            rm!("-fr {CONSUL_TMP_DIR}").run_with(&sudo_set)?;
+        }
 
         /// Vault
         {
@@ -858,14 +876,6 @@ impl Run for DeployNodeState {
             wget!("--no-verbose {NOMAD_URL} -O {nomad_path}").run_with(&sudo_set)?;
             unzip!("-o {nomad_path} -d {BIN_DIR}").run_with(&sudo_set)?;
             rm!("-fr {NOMAD_TMP_DIR}").run_with(&sudo_set)?;
-        }
-
-        /// Consul
-        {
-            mkdir!("{CONSUL_TMP_DIR}").run_with(&sudo_set)?;
-            wget!("--no-verbose {CONSUL_URL} -O {consul_path}").run_with(&sudo_set)?;
-            unzip!("-o {consul_path} -d {BIN_DIR}").run_with(&sudo_set)?;
-            rm!("-fr {CONSUL_TMP_DIR}").run_with(&sudo_set)?;
         }
 
         /// Envoy
@@ -891,34 +901,47 @@ impl Run for DeployNodeState {
             mv!("go/bin/cfssl go/bin/cfssljson {BIN_DIR}").run_with(&sudo_set)?;
         }
 
-        Ok(InitializeVault)
+        Ok(InitializeConsul)
     }
 
-    #[define_commands(chown, complete, mkdir, mv, openssl, rm, tee, vault)]
-    fn initialize_vault(proc: &mut DeployNode, registry: &impl WriteStore) -> Result<Self> {
+    #[define_commands(chown, complete, consul, mkdir, mv, rm, sed, systemctl)]
+    fn initialize_consul(proc: &mut DeployNode, registry: &impl WriteStore) -> Result<Self> {
         let cluster = &proc.cluster;
-        let node_name = &proc.node_name;
         let password = proc.get_password();
         let client = proc.connect(registry, ssh::Options::default())?;
         let common_set = process::Settings::default().ssh(&client);
         let sudo_set = common_set.clone().sudo_password(&*password);
+        let consul_set = sudo_set.clone().sudo_user("consul");
 
-        /// Set up command autocomplete
-        {
-            vault!("-autocomplete-install")
-                .settings(&common_set)
-                .success_codes([0, 1])
-                .run()?;
-            complete!("-C {BIN_DIR}/vault vault").run_with(&common_set)?;
-        }
+        // Set up command autocomplete.
+        consul!("-autocomplete-install")
+            .settings(&consul_set)
+            .success_codes([0, 1])
+            .run()?;
+        complete!("-C {BIN_DIR}/consul consul").run_with(&common_set)?;
 
-        mkdir!("-p {VAULT_CERTS_DIR}").run_with(&sudo_set)?;
+        // Generate common cluster key.
+        let registry_key = format!("$/clusters/{cluster}/consul/key");
+        let encrypt_key: String = match registry.get(&registry_key).and_then(String::try_from) {
+            Ok(key) => key,
+            Err(kv::Error::KeyDoesNotExist(_)) => {
+                let (_, key) = consul!("keygen")
+                    .settings(&consul_set)
+                    .hide_stdout()
+                    .run()?;
+                registry.put(&registry_key, key.clone())?;
+                key
+            }
+            Err(err) => return Err(err.into()),
+        };
+
+        mkdir!("-p {CONSUL_CERTS_DIR}").run_with(&sudo_set)?;
 
         // Create or distribute certificate authority certificate.
-        let ca_pub_key = format!("$/clusters/{cluster}/vault/certs/ca_pub");
-        let ca_priv_key = format!("$/clusters/{cluster}/vault/certs/ca_priv");
-        let ca_pub_path = format!("{VAULT_CERTS_DIR}/{VAULT_CA_PUB_FILENAME}");
-        let ca_priv_path = format!("{VAULT_CERTS_DIR}/{VAULT_CA_PRIV_FILENAME}");
+        let ca_pub_key = format!("$/clusters/{cluster}/consul/certs/ca_pub");
+        let ca_priv_key = format!("$/clusters/{cluster}/consul/certs/ca_priv");
+        let ca_pub_path = format!("{CONSUL_CERTS_DIR}/{CONSUL_CA_PUB_FILENAME}");
+        let ca_priv_path = format!("{CONSUL_CERTS_DIR}/{CONSUL_CA_PRIV_FILENAME}");
         match registry.get(&ca_pub_key).and_then(kv::FileRef::try_from) {
             Ok(ca_pub_file_ref) => {
                 Self::upload_certificates(
@@ -935,18 +958,8 @@ impl Run for DeployNodeState {
             }
             Err(kv::Error::KeyDoesNotExist(_)) => {
                 // Create CA certificate.
-                openssl!("ecparam -genkey -name prime256v1 -noout -out {VAULT_CA_PRIV_FILENAME}")
-                    .settings(&common_set)
-                    .hide_stdout()
-                    .run()?;
-                openssl!(
-                    "req -x509 -new -nodes -key {VAULT_CA_PRIV_FILENAME} -sha256 -days 1825 \
-                    -subj '/C=US/ST=CA/L=San Francisco/CN=example.net' \
-                    -addext keyUsage=critical,keyCertSign,cRLSign \
-                    -out {VAULT_CA_PUB_FILENAME}"
-                )
-                .run_with(&common_set)?;
-                mv!("{VAULT_CA_PUB_FILENAME} {VAULT_CA_PRIV_FILENAME} {VAULT_CERTS_DIR}")
+                consul!("tls ca create").run_with(&sudo_set)?;
+                mv!("{CONSUL_CA_PUB_FILENAME} {CONSUL_CA_PRIV_FILENAME} {CONSUL_CERTS_DIR}")
                     .run_with(&sudo_set)?;
 
                 // Download certificate and key.
@@ -962,21 +975,233 @@ impl Run for DeployNodeState {
             }
             Err(err) => return Err(err.into()),
         }
-        chown!("-R vault:vault {VAULT_CERTS_DIR}").run_with(&sudo_set)?;
+        chown!("-R consul:consul {CONSUL_CERTS_DIR}").run_with(&sudo_set)?;
 
-        tee!("csr.conf")
+        // Create server certificates.
+        let cert_filename = format!("{cluster}-server-consul-0.pem");
+        let key_filename = format!("{cluster}-server-consul-0-key.pem");
+        consul!("tls cert create -server -dc={cluster} -domain=consul -ca={ca_pub_path} -key={ca_priv_path}",
+        )
+        .run_with(&sudo_set)?;
+        mv!("{cert_filename} {key_filename} {CONSUL_CERTS_DIR}").run_with(&sudo_set)?;
+        chown!("-R consul:consul {CONSUL_CERTS_DIR}").run_with(&sudo_set)?;
+
+        // Remove CA key.
+        rm!("{ca_priv_path}").run_with(&sudo_set)?;
+
+        // Update Consul configuration file
+        let encrypt_sed = format!(
+            r#"s/^(encrypt = ")temporary_key(")$/\1{}\2/"#,
+            encrypt_key.replace("/", r"\/")
+        );
+        let consul_config_path = "/etc/consul.d/consul.hcl";
+        sed!("-ri {encrypt_sed} {consul_config_path}").run_with(&sudo_set)?;
+
+        // Validate Consul configuration.
+        consul!("validate /etc/consul.d/").run_with(&consul_set)?;
+
+        // Start Consul service.
+        systemctl!("enable consul").run_with(&sudo_set)?;
+        systemctl!("start consul").run_with(&sudo_set)?;
+
+        Ok(SetUpConsulAcl)
+    }
+
+    #[define_commands(consul, rm, tee)]
+    fn set_up_consul_acl(proc: &mut DeployNode, registry: &impl WriteStore) -> Result<Self> {
+        let cluster = &proc.cluster;
+
+        let client = proc.connect(registry, ssh::Options::default())?;
+        let mut common_set = process::Settings::default().ssh(&client);
+        let mut consul_set = process::Settings::default().ssh(&client);
+
+        // Set up ACL.
+        let mgmt_token_key = format!("$/clusters/{cluster}/consul/tokens/management");
+        let node_token_key = format!("$/clusters/{cluster}/consul/tokens/node");
+        let (mgmt_token, node_token) = match registry
+            .get(&mgmt_token_key)
+            .and_then(String::try_from)
+        {
+            Ok(token) => (
+                token,
+                registry.get(node_token_key).and_then(String::try_from)?,
+            ),
+            Err(kv::Error::KeyDoesNotExist(_)) => {
+                // Bootstrap ACL.
+                let (_, output) = consul!("acl bootstrap")
+                    .settings(&consul_set)
+                    .hide_stdout()
+                    .run()?;
+                let mgmt_token = Self::get_id("SecretID", &output).to_string();
+
+                common_set = common_set.secret(mgmt_token.clone());
+                consul_set = consul_set.secret(mgmt_token.clone());
+
+                // Create ACL policy.
+                tee!("node-policy.hcl")
+                    .settings(&common_set)
+                    .stdin_lines(include_str!("../../config/consul/node-policy.hcl").lines())
+                    .run()?;
+
+                consul!("acl policy create -token={mgmt_token} -name=node-policy -rules=@node-policy.hcl")
+                    .run_with(&consul_set)?;
+
+                rm!("node-policy.hcl").run_with(&common_set)?;
+
+                // Create ACL token.
+                let (_, output) = consul!("acl token create -token={mgmt_token} -description='node token' -policy-name=node-policy"
+                )
+                .settings(&consul_set)
+                .hide_stdout()
+                .run()?;
+                let node_token = Self::get_id("SecretID", &output).to_string();
+
+                consul_set = consul_set.secret(node_token.clone());
+
+                registry.put(mgmt_token_key, mgmt_token.clone())?;
+                registry.put(node_token_key, node_token.clone())?;
+
+                // Create Vault policy.
+                tee!("vault-service-policy.hcl")
+                    .settings(&common_set)
+                    .stdin_lines(
+                        include_str!("../../config/consul/vault-service-policy.hcl").lines(),
+                    )
+                    .run()?;
+
+                consul!(
+                    "acl policy create -token={mgmt_token} -name=vault-service \
+                        -rules=@vault-service-policy.hcl"
+                )
+                .run_with(&consul_set)?;
+
+                rm!("vault-service-policy.hcl").run_with(&common_set)?;
+
+                // Create Vault token.
+                let (_, output) = consul!(
+                    "acl token create -token={mgmt_token} -description='Vault Service Token' \
+                        -policy-name=vault-service"
+                )
+                .settings(&consul_set)
+                .hide_stdout()
+                .run()?;
+                let vault_token = Self::get_id("SecretID", &output).to_string();
+
+                consul_set = consul_set.secret(vault_token.clone());
+
+                let vault_token_key = format!("$/clusters/{cluster}/consul/tokens/vault");
+                registry.put(vault_token_key, vault_token.clone())?;
+
+                (mgmt_token, node_token)
+            }
+            Err(err) => return Err(err.into()),
+        };
+
+        // Assign ACL token to node.
+        consul!("acl set-agent-token -token={mgmt_token} agent {node_token}")
+            .run_with(&consul_set)?;
+
+        Ok(InitializeVault)
+    }
+
+    #[define_commands(
+        cat,
+        chown,
+        complete,
+        cp,
+        mkdir,
+        mv,
+        openssl,
+        rm,
+        sed,
+        systemctl,
+        tee,
+        update_ca_certificates = "update-ca-certificates",
+        vault
+    )]
+    fn initialize_vault(proc: &mut DeployNode, registry: &impl WriteStore) -> Result<Self> {
+        let cluster = &proc.cluster;
+        let node_name = &proc.node_name;
+        let password = proc.get_password();
+        let client = proc.connect(registry, ssh::Options::default())?;
+        let common_set = process::Settings::default().ssh(&client);
+        let sudo_set = common_set.clone().sudo_password(&*password);
+        let vault_set = sudo_set.clone().sudo_user("vault");
+
+        /// Set up command autocomplete
+        {
+            vault!("-autocomplete-install")
+                .settings(&common_set)
+                .success_codes([0, 1])
+                .run()?;
+            complete!("-C {BIN_DIR}/vault vault").run_with(&common_set)?;
+        }
+
+        mkdir!("-p {VAULT_CERTS_DIR}").run_with(&sudo_set)?;
+
+        // Create or distribute certificate authority certificate.
+        let ca_pub_key = format!("$/clusters/{cluster}/vault/certs/ca_pub");
+        let ca_priv_key = format!("$/clusters/{cluster}/vault/certs/ca_priv");
+        match registry.get(&ca_pub_key).and_then(kv::FileRef::try_from) {
+            Ok(ca_pub_file_ref) => {
+                Self::upload_certificates(
+                    client,
+                    &*password,
+                    ca_pub_file_ref.path(),
+                    &VAULT_CA_PUB_FILENAME,
+                    registry
+                        .get(ca_priv_key)
+                        .and_then(kv::FileRef::try_from)?
+                        .path(),
+                    &VAULT_CA_PRIV_FILENAME,
+                )?;
+            }
+            Err(kv::Error::KeyDoesNotExist(_)) => {
+                // Create CA certificate.
+                openssl!("ecparam -genkey -name prime256v1 -noout -out {VAULT_CA_PRIV_FILENAME}")
+                    .settings(&common_set)
+                    .hide_stdout()
+                    .run()?;
+                openssl!(
+                    "req -x509 -new -nodes -key {VAULT_CA_PRIV_FILENAME} -sha256 -days 1825 \
+                    -subj '/C=US/ST=CA/L=San Francisco/CN=example.net' \
+                    -addext keyUsage=critical,keyCertSign,cRLSign \
+                    -out {VAULT_CA_PUB_FILENAME}"
+                )
+                .run_with(&common_set)?;
+
+                // Download certificate and key.
+                Self::download_certificates(
+                    registry,
+                    client,
+                    &*password,
+                    VAULT_CA_PUB_FILENAME,
+                    VAULT_CA_PRIV_FILENAME,
+                    &ca_pub_key,
+                    &ca_priv_key,
+                )?;
+            }
+            Err(err) => return Err(err.into()),
+        }
+
+        // Install public CA file.
+        cp!(
+            "{VAULT_CA_PUB_FILENAME} /usr/local/share/ca-certificates/{}",
+            VAULT_CA_PUB_FILENAME.replace("pem", "crt")
+        )
+        .run_with(&sudo_set)?;
+        update_ca_certificates!().run_with(&sudo_set)?;
+
+        // Format certificate request extension file.
+        tee!("cert.conf")
             .settings(&common_set)
             .stdin_lines(
                 format!(
-                    include_str!("../../config/vault/csr.conf"),
+                    include_str!("../../config/vault/cert.conf"),
                     common_name = node_name,
                 )
                 .lines(),
             )
-            .run()?;
-        tee!("cert.conf")
-            .settings(&common_set)
-            .stdin_lines(include_str!("../../config/vault/cert.conf").lines())
             .run()?;
 
         // Create server certificates.
@@ -984,25 +1209,102 @@ impl Run for DeployNodeState {
             .settings(&common_set)
             .hide_stdout()
             .run()?;
+        openssl!("req -new -key {VAULT_SERVER_PRIV_FILENAME} -subj '/' -out server.csr")
+            .run_with(&common_set)?;
         openssl!(
-            "req -new -key {VAULT_SERVER_PRIV_FILENAME} -config csr.conf -subj '/' -out server.csr"
+            "x509 -req -in server.csr -CA {VAULT_CA_PUB_FILENAME} -CAkey {VAULT_CA_PRIV_FILENAME} \
+                -CAcreateserial -sha256 -days 1825 -extfile cert.conf \
+                -out {VAULT_SERVER_PUB_FILENAME}"
         )
         .run_with(&common_set)?;
-        openssl!(
-            "x509 -req -in server.csr -CA {ca_pub_path} -CAkey {ca_priv_path} -CAcreateserial \
-                -sha256 -days 1825 -extfile cert.conf -out {VAULT_SERVER_PUB_FILENAME}"
-        )
-        .run_with(&common_set)?;
-        mv!("{VAULT_SERVER_PUB_FILENAME} {VAULT_SERVER_PRIV_FILENAME} {VAULT_CERTS_DIR}")
-            .run_with(&sudo_set)?;
+
+        // Create certificate chain.
+        let server_pub_path = format!("{VAULT_CERTS_DIR}/{VAULT_SERVER_PUB_FILENAME}");
+        mv!("{VAULT_SERVER_PRIV_FILENAME} {VAULT_CERTS_DIR}").run_with(&sudo_set)?;
+        cat!("{VAULT_SERVER_PUB_FILENAME} {VAULT_CA_PUB_FILENAME}")
+            .settings(&common_set)
+            .stdout(&format!("{VAULT_SERVER_PUB_FILENAME}.chain"))
+            .run()?;
+        mv!("{VAULT_SERVER_PUB_FILENAME}.chain {server_pub_path}").run_with(&sudo_set)?;
         chown!("-R vault:vault {VAULT_CERTS_DIR}").run_with(&sudo_set)?;
 
         // Remove extraneous files.
         rm!(
-            "{ca_priv_path} {} csr.conf cert.conf server.csr",
+            "{VAULT_SERVER_PUB_FILENAME} {VAULT_CA_PUB_FILENAME} {VAULT_CA_PRIV_FILENAME} \
+                cert.conf server.csr {}",
             VAULT_CA_PUB_FILENAME.replace(".pem", ".srl"),
         )
         .run_with(&sudo_set)?;
+
+        // Update Vault configuration file
+        let vault_token: String = registry
+            .get(format!("$/clusters/{cluster}/consul/tokens/vault"))?
+            .try_into()?;
+
+        let token_sed = format!(
+            r#"s/^( *token = ")temporary_token(")$/\1{}\2/"#,
+            vault_token.replace("/", r"\/")
+        );
+        let vault_config_path = "/etc/vault.d/vault.hcl";
+        sed!("-ri {token_sed} {vault_config_path}").run_with(&vault_set)?;
+
+        // Start Vault service.
+        systemctl!("enable vault").run_with(&sudo_set)?;
+        systemctl!("start vault").run_with(&sudo_set)?;
+
+        let unseal_keys_key = format!("$/clusters/{cluster}/vault/unseal_keys");
+        let unseal_keys = match registry
+            .get(&unseal_keys_key)
+            .and_then(Vec::<String>::try_from)
+        {
+            Ok(unseal_keys) => unseal_keys,
+            Err(kv::Error::KeyDoesNotExist(_)) => {
+                let (_, vault_init_output) = vault!("operator init")
+                    .settings(&common_set)
+                    .hide_output()
+                    .run()?;
+
+                let mut unseal_keys = Vec::new();
+                let unseal_key_prefix = "Unseal Key ";
+                let root_key_prefix = "Initial Root Token";
+                let vault_init_re = Regex::new(&format!(
+                    r"(?P<key>{unseal_key_prefix}\d+|{root_key_prefix}): *(?P<value>.*)"
+                ))
+                .unwrap();
+
+                for cap in vault_init_re.captures_iter(&vault_init_output) {
+                    let value = &cap["value"];
+                    match &cap["key"] {
+                        key if key == root_key_prefix => {
+                            registry.put(format!("{unseal_keys_key}/root_token"), value)?;
+                        }
+                        key if key.starts_with(unseal_key_prefix) => {
+                            let index = key
+                                .strip_prefix(unseal_key_prefix)
+                                .unwrap()
+                                .parse::<usize>()
+                                .unwrap()
+                                - 1;
+                            registry.put(format!("{unseal_keys_key}/{index}"), value)?;
+                            if index >= unseal_keys.len() {
+                                unseal_keys.extend(
+                                    std::iter::repeat(String::new())
+                                        .take(index + 1 - unseal_keys.len()),
+                                );
+                            }
+                            unseal_keys[index] = value.to_string();
+                        }
+                        _ => unreachable!(),
+                    }
+                }
+                unseal_keys
+            }
+            Err(err) => return Err(err.into()),
+        };
+
+        for unseal_key in unseal_keys.into_iter().take(3) {
+            vault!("operator unseal {unseal_key}").run_with(&common_set)?;
+        }
 
         Ok(InitializeNomad)
     }
@@ -1167,7 +1469,7 @@ impl Run for DeployNodeState {
     }
 
     #[define_commands(nomad, rm, tee)]
-    fn set_up_nomad_acl(proc: &mut DeployNode, registry: &impl WriteStore) -> Result<Self> {
+    fn set_up_nomad_acl(proc: &mut DeployNode, registry: &impl WriteStore) -> Result<()> {
         let cluster = &proc.cluster;
         let password = proc.get_password();
 
@@ -1227,190 +1529,6 @@ impl Run for DeployNodeState {
             }
             Err(err) => return Err(err.into()),
         }
-
-        Ok(InitializeConsul)
-    }
-
-    #[define_commands(chown, complete, consul, mkdir, mv, rm, sed, systemctl)]
-    fn initialize_consul(proc: &mut DeployNode, registry: &impl WriteStore) -> Result<Self> {
-        let cluster = &proc.cluster;
-        let password = proc.get_password();
-        let client = proc.connect(registry, ssh::Options::default())?;
-        let common_set = process::Settings::default().ssh(&client);
-        let sudo_set = common_set.clone().sudo_password(&*password);
-        let consul_set = sudo_set.clone().sudo_user("consul");
-
-        // Set up command autocomplete.
-        consul!("-autocomplete-install")
-            .settings(&consul_set)
-            .success_codes([0, 1])
-            .run()?;
-        complete!("-C {BIN_DIR}/consul consul").run_with(&common_set)?;
-
-        // Generate common cluster key.
-        let registry_key = format!("$/clusters/{cluster}/consul/key");
-        let encrypt_key: String = match registry.get(&registry_key).and_then(String::try_from) {
-            Ok(key) => key,
-            Err(kv::Error::KeyDoesNotExist(_)) => {
-                let (_, key) = consul!("keygen")
-                    .settings(&consul_set)
-                    .hide_stdout()
-                    .run()?;
-                registry.put(&registry_key, key.clone())?;
-                key
-            }
-            Err(err) => return Err(err.into()),
-        };
-
-        mkdir!("-p {CONSUL_CERTS_DIR}").run_with(&sudo_set)?;
-
-        // Create or distribute certificate authority certificate.
-        let ca_pub_key = format!("$/clusters/{cluster}/consul/certs/ca_pub");
-        let ca_priv_key = format!("$/clusters/{cluster}/consul/certs/ca_priv");
-        let ca_pub_path = format!("{CONSUL_CERTS_DIR}/{CONSUL_CA_PUB_FILENAME}");
-        let ca_priv_path = format!("{CONSUL_CERTS_DIR}/{CONSUL_CA_PRIV_FILENAME}");
-        match registry.get(&ca_pub_key).and_then(kv::FileRef::try_from) {
-            Ok(ca_pub_file_ref) => {
-                Self::upload_certificates(
-                    client,
-                    &*password,
-                    ca_pub_file_ref.path(),
-                    &ca_pub_path,
-                    registry
-                        .get(ca_priv_key)
-                        .and_then(kv::FileRef::try_from)?
-                        .path(),
-                    &ca_priv_path,
-                )?;
-            }
-            Err(kv::Error::KeyDoesNotExist(_)) => {
-                // Create CA certificate.
-                consul!("tls ca create").run_with(&sudo_set)?;
-                mv!("{CONSUL_CA_PUB_FILENAME} {CONSUL_CA_PRIV_FILENAME} {CONSUL_CERTS_DIR}")
-                    .run_with(&sudo_set)?;
-
-                // Download certificate and key.
-                Self::download_certificates(
-                    registry,
-                    client,
-                    &*password,
-                    &ca_pub_path,
-                    &ca_priv_path,
-                    &ca_pub_key,
-                    &ca_priv_key,
-                )?;
-            }
-            Err(err) => return Err(err.into()),
-        }
-        chown!("-R consul:consul {CONSUL_CERTS_DIR}").run_with(&sudo_set)?;
-
-        // Create server certificates.
-        let cert_filename = format!("{cluster}-server-consul-0.pem");
-        let key_filename = format!("{cluster}-server-consul-0-key.pem");
-        consul!("tls cert create -server -dc={cluster} -domain=consul -ca={ca_pub_path} -key={ca_priv_path}",
-        )
-        .run_with(&sudo_set)?;
-        mv!("{cert_filename} {key_filename} {CONSUL_CERTS_DIR}").run_with(&sudo_set)?;
-        chown!("-R consul:consul {CONSUL_CERTS_DIR}").run_with(&sudo_set)?;
-
-        // Remove CA key.
-        rm!("{ca_priv_path}").run_with(&sudo_set)?;
-
-        // Set or get auto-join address.
-        let auto_join_key = format!("$/clusters/{cluster}/auto_join_address");
-        let auto_join_address = match registry.get(&auto_join_key).and_then(String::try_from) {
-            Ok(address) => address,
-            Err(kv::Error::KeyDoesNotExist(_)) => {
-                let address = proc.get_address(registry)?.to_string();
-                registry.put(auto_join_key, address.clone())?;
-                address
-            }
-            Err(err) => return Err(err.into()),
-        };
-
-        // Update Consul configuration file
-        let encrypt_sed = format!(
-            r#"s/^(encrypt = ")temporary_key(")$/\1{}\2/"#,
-            encrypt_key.replace("/", r"\/")
-        );
-        let retry_join_sed =
-            format!(r#"s/^(retry_join = \[")temporary_host("\])$/\1{auto_join_address}\2/"#);
-        let consul_config_path = "/etc/consul.d/consul.hcl";
-        sed!("-ri {encrypt_sed} {consul_config_path}").run_with(&sudo_set)?;
-        sed!("-ri {retry_join_sed} {consul_config_path}").run_with(&sudo_set)?;
-
-        // Validate Consul configuration.
-        consul!("validate /etc/consul.d/").run_with(&consul_set)?;
-
-        // Start Consul service.
-        systemctl!("enable consul").run_with(&sudo_set)?;
-        systemctl!("start consul").run_with(&sudo_set)?;
-
-        Ok(SetUpConsulAcl)
-    }
-
-    #[define_commands(consul, rm, tee)]
-    fn set_up_consul_acl(proc: &mut DeployNode, registry: &impl WriteStore) -> Result<()> {
-        let cluster = &proc.cluster;
-
-        let client = proc.connect(registry, ssh::Options::default())?;
-        let mut common_set = process::Settings::default().ssh(&client);
-        let mut consul_set = process::Settings::default().ssh(&client);
-
-        // Set up ACL.
-        let mgmt_token_key = format!("$/clusters/{cluster}/consul/tokens/management");
-        let node_token_key = format!("$/clusters/{cluster}/consul/tokens/node");
-        let (mgmt_token, node_token) = match registry
-            .get(&mgmt_token_key)
-            .and_then(String::try_from)
-        {
-            Ok(token) => (
-                token,
-                registry.get(node_token_key).and_then(String::try_from)?,
-            ),
-            Err(kv::Error::KeyDoesNotExist(_)) => {
-                // Bootstrap ACL.
-                let (_, output) = consul!("acl bootstrap")
-                    .settings(&consul_set)
-                    .hide_stdout()
-                    .run()?;
-                let mgmt_token = Self::get_id("SecretID", &output).to_string();
-
-                common_set = common_set.secret(mgmt_token.clone());
-                consul_set = consul_set.secret(mgmt_token.clone());
-
-                // Create ACL policy.
-                tee!("node-policy.hcl")
-                    .settings(&common_set)
-                    .stdin_lines(include_str!("../../config/consul/node-policy.hcl").lines())
-                    .run()?;
-
-                consul!("acl policy create -token={mgmt_token} -name=node-policy -rules=@node-policy.hcl")
-                    .run_with(&consul_set)?;
-
-                rm!("node-policy.hcl").run_with(&common_set)?;
-
-                // Create ACL token.
-                let (_, output) = consul!("acl token create -token={mgmt_token} -description='node token' -policy-name=node-policy"
-                )
-                .settings(&consul_set)
-                .hide_stdout()
-                .run()?;
-                let node_token = Self::get_id("SecretID", &output).to_string();
-
-                consul_set = consul_set.secret(node_token.clone());
-
-                registry.put(mgmt_token_key, mgmt_token.clone())?;
-                registry.put(node_token_key, node_token.clone())?;
-
-                (mgmt_token, node_token)
-            }
-            Err(err) => return Err(err.into()),
-        };
-
-        // Assign ACL token to node.
-        consul!("acl set-agent-token -token={mgmt_token} agent {node_token}")
-            .run_with(&consul_set)?;
 
         Ok(())
     }

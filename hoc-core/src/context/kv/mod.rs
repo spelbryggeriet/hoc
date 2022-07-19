@@ -846,9 +846,9 @@ impl Drop for Record {
 #[serde(untagged)]
 pub enum Item {
     Value(Value),
+    File(FileRef),
     Array(Vec<Item>),
     Map(IndexMap<String, Item>),
-    File(FileRef),
 }
 
 impl Item {
@@ -965,14 +965,18 @@ impl Display for TypeDescription {
 
                 if col.is_empty() {
                     write!(f, "{col_ty}")
+                } else if col.len() == 1 {
+                    write!(f, "{col_ty} of {}", col[0])
                 } else {
                     write!(
                         f,
-                        "{col_ty} of {}",
+                        "{col_ty} of {} and {}",
                         col.iter()
+                            .take(col.len() - 1)
                             .map(Self::to_string)
                             .collect::<Vec<_>>()
-                            .join(" and ")
+                            .join(", "),
+                        col.last().unwrap(),
                     )
                 }
             }
