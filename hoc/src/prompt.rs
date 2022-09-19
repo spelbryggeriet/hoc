@@ -24,17 +24,23 @@ where
     T::Err: Display,
 {
     let default_owned = default.map(<str>::to_string);
-    let mut text = Text::new(field)
+    let prompt = format!("{field}:");
+    let mut text = Text::new(&prompt)
         .with_validator(move |s: &str| {
+            let s = s.trim();
             if s.is_empty() {
-                if let Some(ref default) = default_owned {
-                    return match T::from_str(default) {
+                return if let Some(ref default) = default_owned {
+                    match T::from_str(default) {
                         Ok(_) => Ok(Validation::Valid),
                         Err(_) => {
                             Err(Box::new(InvalidDefaultError(default.clone())) as CustomUserError)
                         }
-                    };
-                }
+                    }
+                } else {
+                    Ok(Validation::Invalid(ErrorMessage::Custom(
+                        "input must not be empty".to_string(),
+                    )))
+                };
             }
 
             match T::from_str(s) {
@@ -58,7 +64,7 @@ where
     }
 
     match text.prompt() {
-        Ok(resp) => T::from_str(&resp).unwrap_or_else(|_| unreachable!()),
+        Ok(resp) => T::from_str(resp.trim()).unwrap_or_else(|_| unreachable!()),
         Err(
             err @ (InquireError::Custom(_)
             | InquireError::OperationCanceled
