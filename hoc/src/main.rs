@@ -35,7 +35,7 @@ macro_rules! concat_const {
     }};
 }
 
-macro_rules! arg_context {
+macro_rules! args_summary {
     ($($field:ident $(= $default:literal)?
         -> $help:literal
       $(-> $long_help:literal)?),+ $(,)?
@@ -102,7 +102,7 @@ macro_rules! arg_get {
     };
 }
 
-macro_rules! arg_get_or {
+macro_rules! arg_get_or_default {
     ($self:ident, $field:ident $(,)?) => {
         $crate::prompt::Prompt::get_or($self.$field, stringify!($field), default::$field())?
     };

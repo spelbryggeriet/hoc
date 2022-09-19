@@ -13,6 +13,70 @@ pub struct Cidr {
     pub prefix_len: u32,
 }
 
+impl Cidr {
+    const fn bits(&self) -> (u128, u32) {
+        match self.ip_addr {
+            IpAddr::V4(ipv4_addr) => (u32::from_be_bytes(ipv4_addr.octets()) as u128, 32),
+            IpAddr::V6(ipv6_addr) => (u128::from_be_bytes(ipv6_addr.octets()), 128),
+        }
+    }
+
+    pub fn start_address(&self) -> IpAddr {
+        let (mut bits, num_bits) = self.bits();
+
+        bits >>= num_bits - self.prefix_len;
+        bits <<= num_bits - self.prefix_len;
+
+        match self.ip_addr {
+            IpAddr::V4(_) => IpAddr::from((bits as u32).to_be_bytes()),
+            IpAddr::V6(_) => IpAddr::from(bits.to_be_bytes()),
+        }
+    }
+
+    pub fn end_address(&self) -> IpAddr {
+        let (mut bits, num_bits) = self.bits();
+
+        bits >>= num_bits - self.prefix_len;
+        bits += 1;
+        bits <<= num_bits - self.prefix_len;
+
+        match self.ip_addr {
+            IpAddr::V4(_) => IpAddr::from((bits as u32).to_be_bytes()),
+            IpAddr::V6(_) => IpAddr::from(bits.to_be_bytes()),
+        }
+    }
+
+    pub fn contains(&self, ip_addr: IpAddr) -> bool {
+        match (self.ip_addr, ip_addr) {
+            (IpAddr::V4(_), IpAddr::V6(_)) | (IpAddr::V6(_), IpAddr::V4(_)) => {
+                panic!(
+                    "version of IP address `{ip_addr}` should match version of CIDR block `{self}`"
+                )
+            }
+            _ => (),
+        }
+
+        ip_addr >= self.start_address() && ip_addr < self.end_address()
+    }
+
+    pub fn step(&self, step: u128) -> Option<IpAddr> {
+        let (mut bits, _) = self.bits();
+
+        bits += step;
+
+        let address = match self.ip_addr {
+            IpAddr::V4(_) => IpAddr::from((bits as u32).to_be_bytes()),
+            IpAddr::V6(_) => IpAddr::from(bits.to_be_bytes()),
+        };
+
+        if address < self.end_address() {
+            Some(address)
+        } else {
+            None
+        }
+    }
+}
+
 impl Display for Cidr {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
         let ip_addr = self.ip_addr;

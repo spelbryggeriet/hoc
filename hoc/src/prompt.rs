@@ -17,18 +17,6 @@ use thiserror::Error;
 
 use crate::prelude::*;
 
-macro_rules! prompt_get {
-    ($self:ident, $field:ident $(,)?) => {
-        $crate::prompt::Prompt::get_or($self.$field, stringify!($field))?
-    };
-}
-
-macro_rules! prompt_get_or {
-    ($self:ident, $field:ident, $default:expr $(,)?) => {
-        $crate::prompt::Prompt::get_or($self.$field, stringify!($field), $default)?
-    };
-}
-
 #[throws(InquireError)]
 fn get_prompt<T>(field: &str, default: Option<&str>) -> T
 where
