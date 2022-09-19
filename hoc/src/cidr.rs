@@ -7,6 +7,8 @@ use std::{
 
 use thiserror::Error;
 
+use crate::prelude::*;
+
 #[derive(Copy, Clone, Eq, PartialEq, Hash)]
 pub struct Cidr {
     pub ip_addr: IpAddr,
@@ -78,17 +80,19 @@ impl Cidr {
 }
 
 impl Display for Cidr {
-    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+    #[throws(fmt::Error)]
+    fn fmt(&self, f: &mut Formatter) {
         let ip_addr = self.ip_addr;
         let prefix_len = self.prefix_len;
-        write!(f, "{ip_addr}/{prefix_len}")
+        write!(f, "{ip_addr}/{prefix_len}")?;
     }
 }
 
 impl FromStr for Cidr {
     type Err = CidrParseError;
 
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
+    #[throws(Self::Err)]
+    fn from_str(s: &str) -> Self {
         let (ip_addr_str, prefix_len_str) = s
             .split_once("/")
             .ok_or_else(|| CidrParseError::MissingSlash)?;
@@ -98,12 +102,12 @@ impl FromStr for Cidr {
         let prefix_len_bound = if ip_addr.is_ipv4() { 32 } else { 128 };
 
         if prefix_len <= prefix_len_bound {
-            Ok(Cidr {
+            Cidr {
                 ip_addr,
                 prefix_len,
-            })
+            }
         } else {
-            Err(CidrParseError::PrefixLenOutOfRange {
+            throw!(CidrParseError::PrefixLenOutOfRange {
                 prefix_len,
                 prefix_len_bound,
             })
