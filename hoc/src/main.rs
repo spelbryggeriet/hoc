@@ -36,9 +36,10 @@ macro_rules! concat_const {
 }
 
 macro_rules! args_summary {
-    ($($field:ident $(= $default:literal)?
-        -> $help:literal
-      $(-> $long_help:literal)?),+ $(,)?
+    ($($field:ident(
+        $(default = $default:literal,)?
+        help = $help:literal
+        $(, long_help = $long_help:literal)? $(,)?))+
     ) => {
         mod default {
             $(

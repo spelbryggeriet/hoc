@@ -1,19 +1,21 @@
 use std::net::IpAddr;
 
-use anyhow::bail;
 use clap::Parser;
 
 use crate::{cidr::Cidr, prelude::*};
 
 args_summary! {
-    gateway = "172.16.0.1"
-        -> "The default gateway for the cluster to use",
-    node_addresses = "172.16.4.0/12"
-        -> "The node addresses for the cluster to use"
-        -> "The IP address denote the starting address of the allocation range, and the prefix \
-            length denote the network subnet mask.",
-    admin_username
-        -> "The username for the cluster administrator",
+    gateway(
+        default = "172.16.0.1",
+        help = "The default gateway for the cluster to use",
+    )
+    node_addresses(
+        default = "172.16.4.0/12",
+        help = "The node addresses for the cluster to use",
+        long_help = "The IP address denote the starting address of the allocation range, and the \
+            prefix length denote the network subnet mask.",
+    )
+    admin_username(help = "The username for the cluster administrator")
 }
 
 /// Initialize a cluster
@@ -53,13 +55,10 @@ impl Command {
         let gateway = arg_get_or_default!(self, gateway);
         let admin_username = arg_get!(self, admin_username);
 
-        if !node_addresses.contains(gateway) {
-            bail!(
-                "gateway IP address `{gateway}` is outside of the subnet mask `/{}`",
-                node_addresses.prefix_len
-            );
-        }
-
-        ()
+        ensure!(
+            node_addresses.contains(gateway),
+            "gateway IP address `{gateway}` is outside of the subnet mask `/{}`",
+            node_addresses.prefix_len
+        );
     }
 }
