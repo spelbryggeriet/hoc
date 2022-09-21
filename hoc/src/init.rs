@@ -2,7 +2,7 @@ use std::net::IpAddr;
 
 use clap::Parser;
 
-use crate::{cidr::Cidr, prelude::*};
+use crate::{cidr::Cidr, context::Context, prelude::*};
 
 args_summary! {
     gateway(
@@ -49,16 +49,23 @@ pub struct Command {
 }
 
 impl Command {
-    #[throws(Error)]
-    pub fn run(self) {
+    #[throws(anyhow::Error)]
+    pub fn run(self, mut context: Context) {
         let node_addresses = arg_get_or_default!(self, node_addresses);
         let gateway = arg_get_or_default!(self, gateway);
-        let admin_username = arg_get!(self, admin_username);
 
+        trace!("checking gateway");
         ensure!(
             node_addresses.contains(gateway),
             "gateway IP address `{gateway}` is outside of the subnet mask `/{}`",
             node_addresses.prefix_len
         );
+
+        let admin_username = arg_get!(self, admin_username);
+
+        context.put_value(
+            format!("network/start_address"),
+            node_addresses.ip_addr.to_string(),
+        )?;
     }
 }
