@@ -15,15 +15,15 @@ use thiserror::Error;
 
 use crate::prelude::*;
 
-pub struct Context {
-    kv: IndexMap<PathBuf, Item>,
+pub struct Kv {
+    map: IndexMap<PathBuf, Item>,
     file_dir: PathBuf,
 }
 
-impl Context {
+impl Kv {
     pub fn new<P: Into<PathBuf>>(file_dir: P) -> Self {
         Self {
-            kv: IndexMap::new(),
+            map: IndexMap::new(),
             file_dir: file_dir.into(),
         }
     }
@@ -36,7 +36,7 @@ impl Context {
         // If key does not contain any wildcards, then it is a "leaf", i.e. we can fetch the value
         // directly.
         if !key_ref.as_os_str().as_bytes().contains(&b'*') {
-            if let Some(item) = self.kv.get(key_ref) {
+            if let Some(item) = self.map.get(key_ref) {
                 return item.clone();
             } else {
                 throw!(Error::KeyDoesNotExist(key_ref.to_path_buf()));
@@ -85,7 +85,7 @@ impl Context {
         // Get a copy of all the keys in this instance. We can't hold references to it since we
         // might mutably borrow from the map later on.
         let keys: Vec<_> = self
-            .kv
+            .map
             .keys()
             .map(|k| k.to_string_lossy().into_owned())
             .collect();
@@ -127,7 +127,7 @@ impl Context {
         for (prefix, suffixes) in key_map {
             // If there are no suffixes, then it is a leaf and the prefix is its key.
             if suffixes.is_empty() {
-                if let Some(item) = self.kv.get(prefix).cloned() {
+                if let Some(item) = self.map.get(prefix).cloned() {
                     result.push(item);
                 }
                 continue;
@@ -217,11 +217,11 @@ impl Context {
     pub fn put_value<Q: AsRef<Path>, V: Into<Value>>(&mut self, key: Q, value: V) {
         let key = self.check_key(key)?.as_ref().to_path_buf();
 
-        if self.kv.contains_key(&key) {
+        if self.map.contains_key(&key) {
             throw!(Error::KeyAlreadyExists(key));
         }
 
-        self.kv.insert(key.clone(), Item::Value(value.into()));
+        self.map.insert(key.clone(), Item::Value(value.into()));
     }
 
     #[throws(Error)]
@@ -345,67 +345,6 @@ impl Item {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(untagged)]
-pub enum Value {
-    Bool(bool),
-    UnsignedInteger(u64),
-    SignedInteger(i64),
-    FloatingPointNumber(f64),
-    String(String),
-}
-
-impl Value {
-    fn type_description(&self) -> TypeDescription {
-        match self {
-            Self::Bool(_) => TypeDescription::Bool,
-            Self::UnsignedInteger(_) => TypeDescription::UnsignedInteger,
-            Self::SignedInteger(_) => TypeDescription::SignedInteger,
-            Self::FloatingPointNumber(_) => TypeDescription::FloatingPointNumber,
-            Self::String(_) => TypeDescription::String,
-        }
-    }
-}
-
-/*
-impl TryFrom<FileRef> for PathBuf {
-    type Error = Error;
-
-    fn try_from(file_ref: FileRef) -> Result<Self, Self::Error> {
-        Ok(file_ref.path().to_path_buf())
-    }
-}
-
-impl TryFrom<Item> for FileRef {
-    type Error = Error;
-
-    fn try_from(item: Item) -> Result<Self, Self::Error> {
-        match item {
-            Item::File(file_ref) => Ok(file_ref),
-            item => Err(Error::MismatchedTypes(
-                item.type_description(),
-                TypeDescription::File,
-            )),
-        }
-    }
-}
-*/
-
-impl TryFrom<Item> for Value {
-    type Error = Error;
-
-    #[throws(Self::Error)]
-    fn try_from(item: Item) -> Self {
-        match item {
-            Item::Value(value) => value,
-            item => throw!(Error::MismatchedTypes(
-                item.type_description(),
-                TypeDescription::Value,
-            )),
-        }
-    }
-}
-
 impl<T> TryFrom<Item> for Vec<T>
 where
     T: TryFrom<Item>,
@@ -443,6 +382,76 @@ where
             item => throw!(Error::MismatchedTypes(
                 item.type_description(),
                 TypeDescription::Array(Vec::new()),
+            )),
+        }
+    }
+}
+
+macro_rules! impl_try_from_item {
+    ($variant:ident::$inner_variant:ident for $impl_type:ty) => {
+        impl TryFrom<Item> for $impl_type {
+            type Error = Error;
+
+            #[throws(Self::Error)]
+            fn try_from(item: Item) -> Self {
+                match item {
+                    Item::$variant(v) => v.try_into()?,
+                    item => throw!(Error::MismatchedTypes(
+                        item.type_description(),
+                        TypeDescription::$inner_variant,
+                    )),
+                }
+            }
+        }
+    };
+}
+
+impl_try_from_item!(Value::Bool for bool);
+impl_try_from_item!(Value::UnsignedInteger for u8);
+impl_try_from_item!(Value::UnsignedInteger for u16);
+impl_try_from_item!(Value::UnsignedInteger for u32);
+impl_try_from_item!(Value::UnsignedInteger for u64);
+impl_try_from_item!(Value::SignedInteger for i8);
+impl_try_from_item!(Value::SignedInteger for i16);
+impl_try_from_item!(Value::SignedInteger for i32);
+impl_try_from_item!(Value::SignedInteger for i64);
+impl_try_from_item!(Value::FloatingPointNumber for f32);
+impl_try_from_item!(Value::FloatingPointNumber for f64);
+impl_try_from_item!(Value::String for String);
+// impl_try_from_item!(File::File for PathBuf);
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(untagged)]
+pub enum Value {
+    Bool(bool),
+    UnsignedInteger(u64),
+    SignedInteger(i64),
+    FloatingPointNumber(f64),
+    String(String),
+}
+
+impl Value {
+    fn type_description(&self) -> TypeDescription {
+        match self {
+            Self::Bool(_) => TypeDescription::Bool,
+            Self::UnsignedInteger(_) => TypeDescription::UnsignedInteger,
+            Self::SignedInteger(_) => TypeDescription::SignedInteger,
+            Self::FloatingPointNumber(_) => TypeDescription::FloatingPointNumber,
+            Self::String(_) => TypeDescription::String,
+        }
+    }
+}
+
+impl TryFrom<Item> for Value {
+    type Error = Error;
+
+    #[throws(Self::Error)]
+    fn try_from(item: Item) -> Self {
+        match item {
+            Item::Value(value) => value,
+            item => throw!(Error::MismatchedTypes(
+                item.type_description(),
+                TypeDescription::Value,
             )),
         }
     }
@@ -487,26 +496,6 @@ macro_rules! impl_try_from_value_non_integer {
     };
 }
 
-macro_rules! impl_try_from_item {
-    ($variant:ident::$inner_variant:ident for $impl_type:ty) => {
-        impl TryFrom<Item> for $impl_type {
-            type Error = Error;
-
-            #[throws(Self::Error)]
-            fn try_from(item: Item) -> Self {
-                match item {
-                    Item::$variant(v) => v.try_into()?,
-                    item => throw!(Error::MismatchedTypes(
-                        item.type_description(),
-                        TypeDescription::$inner_variant,
-                    )),
-                }
-            }
-        }
-    };
-}
-
-impl_try_from_value_non_integer!(Bool for bool);
 impl_try_from_value_integer!(UnsignedInteger for u8);
 impl_try_from_value_integer!(UnsignedInteger for u16);
 impl_try_from_value_integer!(UnsignedInteger for u32);
@@ -515,23 +504,10 @@ impl_try_from_value_integer!(SignedInteger for i8);
 impl_try_from_value_integer!(SignedInteger for i16);
 impl_try_from_value_integer!(SignedInteger for i32);
 impl_try_from_value_integer!(SignedInteger for i64);
+impl_try_from_value_non_integer!(Bool for bool);
 impl_try_from_value_non_integer!(FloatingPointNumber for f32);
 impl_try_from_value_non_integer!(FloatingPointNumber for f64);
 impl_try_from_value_non_integer!(String for String);
-
-impl_try_from_item!(Value::Bool for bool);
-impl_try_from_item!(Value::UnsignedInteger for u8);
-impl_try_from_item!(Value::UnsignedInteger for u16);
-impl_try_from_item!(Value::UnsignedInteger for u32);
-impl_try_from_item!(Value::UnsignedInteger for u64);
-impl_try_from_item!(Value::SignedInteger for i8);
-impl_try_from_item!(Value::SignedInteger for i16);
-impl_try_from_item!(Value::SignedInteger for i32);
-impl_try_from_item!(Value::SignedInteger for i64);
-impl_try_from_item!(Value::FloatingPointNumber for f32);
-impl_try_from_item!(Value::FloatingPointNumber for f64);
-impl_try_from_item!(Value::String for String);
-// impl_try_from_item!(File::File for PathBuf);
 
 macro_rules! impl_from_for_value_and_item {
     ($ty:ty as $variant:ident) => {
@@ -708,8 +684,8 @@ mod tests {
     impl<T> ExpectValue for T where T: Sized + PartialEq + Debug {}
 
     #[throws(Error)]
-    fn context() -> Context {
-        let mut context = Context::new("fakedir");
+    fn kv() -> Kv {
+        let mut kv = Kv::new("fakedir");
         let ttokens = ["t1", "t2", "t3", "t4"];
         let rtokens = ["r1", "r2", "r3", "r4"];
         let alpha = value_map! {
@@ -725,60 +701,60 @@ mod tests {
             "i64" => i64::MIN,
         };
         let two = ["t1", "t2", "t3", "t4", "r1", "r2", "r3", "r4"];
-        context.put_value("unsigned", 1u32)?;
-        context.put_value("signed", -1)?;
-        context.put_value("float", 1.0)?;
-        context.put_value("u64", u64::MAX)?;
-        context.put_value("bool", false)?;
-        context.put_value("string", "hello")?;
-        context.put_value("nested/one", true)?;
-        context.put_value("nested/two/adam", false)?;
-        context.put_value("nested/two/betsy/alpha/token", ttokens[0])?;
-        context.put_value("nested/two/betsy/beta/token", ttokens[1])?;
-        context.put_value("nested/two/betsy/delta/token", ttokens[2])?;
-        context.put_value("nested/two/betsy/gamma/token", ttokens[3])?;
-        context.put_array("array/one", ttokens)?;
-        context.put_array("array/two", rtokens.clone())?;
-        context.put_map("map/one/adam/alpha", alpha)?;
-        context.put_array("map/one/adam/beta", rtokens)?;
-        context.put_map("map/one/betsy/alpha", alpha2)?;
-        context.put_map("map/one/betsy/alpha/extra", extra)?;
-        context.put_array("map/two", two)?;
-        context
+        kv.put_value("unsigned", 1u32)?;
+        kv.put_value("signed", -1)?;
+        kv.put_value("float", 1.0)?;
+        kv.put_value("u64", u64::MAX)?;
+        kv.put_value("bool", false)?;
+        kv.put_value("string", "hello")?;
+        kv.put_value("nested/one", true)?;
+        kv.put_value("nested/two/adam", false)?;
+        kv.put_value("nested/two/betsy/alpha/token", ttokens[0])?;
+        kv.put_value("nested/two/betsy/beta/token", ttokens[1])?;
+        kv.put_value("nested/two/betsy/delta/token", ttokens[2])?;
+        kv.put_value("nested/two/betsy/gamma/token", ttokens[3])?;
+        kv.put_array("array/one", ttokens)?;
+        kv.put_array("array/two", rtokens.clone())?;
+        kv.put_map("map/one/adam/alpha", alpha)?;
+        kv.put_array("map/one/adam/beta", rtokens)?;
+        kv.put_map("map/one/betsy/alpha", alpha2)?;
+        kv.put_map("map/one/betsy/alpha/extra", extra)?;
+        kv.put_array("map/two", two)?;
+        kv
     }
 
     #[throws(Error)]
-    fn get_joined_vec(context: &Context, key: &str) -> String {
-        Vec::<String>::try_from(context.get(key)?)?.join(",")
+    fn get_joined_vec(kv: &Kv, key: &str) -> String {
+        Vec::<String>::try_from(kv.get(key)?)?.join(",")
     }
 
     #[test]
     #[throws(Error)]
     fn get_single_leaf() {
-        let c = context()?;
-        u32::try_from(c.get("unsigned")?)?.expect_val(1);
-        i32::try_from(c.get("signed")?)?.expect_val(-1);
-        f32::try_from(c.get("float")?)?.expect_val(1.0);
-        u64::try_from(c.get("u64")?)?.expect_val(u64::MAX);
-        bool::try_from(c.get("bool")?)?.expect_val(false);
-        String::try_from(c.get("string")?)?.expect_val("hello".to_string());
-        bool::try_from(c.get("nested/one")?)?.expect_val(true);
-        bool::try_from(c.get("nested/*")?)?.expect_val(true);
-        bool::try_from(c.get("nested/two/adam")?)?.expect_val(false);
+        let kv = kv()?;
+        u32::try_from(kv.get("unsigned")?)?.expect_val(1);
+        i32::try_from(kv.get("signed")?)?.expect_val(-1);
+        f32::try_from(kv.get("float")?)?.expect_val(1.0);
+        u64::try_from(kv.get("u64")?)?.expect_val(u64::MAX);
+        bool::try_from(kv.get("bool")?)?.expect_val(false);
+        String::try_from(kv.get("string")?)?.expect_val("hello".to_string());
+        bool::try_from(kv.get("nested/one")?)?.expect_val(true);
+        bool::try_from(kv.get("nested/*")?)?.expect_val(true);
+        bool::try_from(kv.get("nested/two/adam")?)?.expect_val(false);
     }
 
     #[test]
     #[throws(Error)]
     fn get_multiple_leafs() {
-        let c = context()?;
-        get_joined_vec(&c, "nested/two/betsy/*/token")?.expect_val("t1,t2,t3,t4".to_string());
-        get_joined_vec(&c, "nested/two/betsy/*ta/token")?.expect_val("t2,t3".to_string());
-        get_joined_vec(&c, "nested/two/*/*/token")?.expect_val("t1,t2,t3,t4".to_string());
-        get_joined_vec(&c, "nested/*/*/*/token")?.expect_val("t1,t2,t3,t4".to_string());
-        get_joined_vec(&c, "nested/*/*/*a*a/token")?.expect_val("t1,t4".to_string());
-        get_joined_vec(&c, "nested/**/token")?.expect_val("t1,t2,t3,t4".to_string());
-        get_joined_vec(&c, "nested/**/**/token")?.expect_val("t1,t2,t3,t4".to_string());
-        get_joined_vec(&c, "nested/**/betsy/*l*/token")?.expect_val("t1,t3".to_string());
+        let kv = kv()?;
+        get_joined_vec(&kv, "nested/two/betsy/*/token")?.expect_val("t1,t2,t3,t4".to_string());
+        get_joined_vec(&kv, "nested/two/betsy/*ta/token")?.expect_val("t2,t3".to_string());
+        get_joined_vec(&kv, "nested/two/*/*/token")?.expect_val("t1,t2,t3,t4".to_string());
+        get_joined_vec(&kv, "nested/*/*/*/token")?.expect_val("t1,t2,t3,t4".to_string());
+        get_joined_vec(&kv, "nested/*/*/*a*a/token")?.expect_val("t1,t4".to_string());
+        get_joined_vec(&kv, "nested/**/token")?.expect_val("t1,t2,t3,t4".to_string());
+        get_joined_vec(&kv, "nested/**/**/token")?.expect_val("t1,t2,t3,t4".to_string());
+        get_joined_vec(&kv, "nested/**/betsy/*l*/token")?.expect_val("t1,t3".to_string());
     }
 
     #[test]
@@ -786,8 +762,8 @@ mod tests {
     fn get_single_array() {
         use Value::*;
 
-        let c = context()?;
-        Vec::<Value>::try_from(c.get("*")?)?.expect_val(vec![
+        let kv = kv()?;
+        Vec::<Value>::try_from(kv.get("*")?)?.expect_val(vec![
             UnsignedInteger(1),
             SignedInteger(-1),
             FloatingPointNumber(1.0),
@@ -795,18 +771,18 @@ mod tests {
             Bool(false),
             String("hello".into()),
         ]);
-        Vec::<bool>::try_from(c.get("nested/*")?)?.expect_val(vec![true]);
-        Vec::<bool>::try_from(c.get("nested/*/*")?)?.expect_val(vec![false]);
-        get_joined_vec(&c, "array/one/*")?.expect_val("t1,t2,t3,t4".to_string());
-        get_joined_vec(&c, "array/one/**")?.expect_val("t1,t2,t3,t4".to_string());
-        get_joined_vec(&c, "array/*/*")?.expect_val("t1,t2,t3,t4,r1,r2,r3,r4".to_string());
+        Vec::<bool>::try_from(kv.get("nested/*")?)?.expect_val(vec![true]);
+        Vec::<bool>::try_from(kv.get("nested/*/*")?)?.expect_val(vec![false]);
+        get_joined_vec(&kv, "array/one/*")?.expect_val("t1,t2,t3,t4".to_string());
+        get_joined_vec(&kv, "array/one/**")?.expect_val("t1,t2,t3,t4".to_string());
+        get_joined_vec(&kv, "array/*/*")?.expect_val("t1,t2,t3,t4,r1,r2,r3,r4".to_string());
     }
 
     #[test]
     #[throws(Error)]
     fn get_multiple_arrays() {
-        let c = context()?;
-        Vec::<Vec<String>>::try_from(c.get("array/*/**")?)?.expect_val(vec![
+        let kv = kv()?;
+        Vec::<Vec<String>>::try_from(kv.get("array/*/**")?)?.expect_val(vec![
             vec![
                 "t1".to_string(),
                 "t2".to_string(),
@@ -825,7 +801,7 @@ mod tests {
     #[test]
     #[throws(Error)]
     fn get_single_map() {
-        let c = context()?;
+        let kv = kv()?;
         let alpha = item_map! {
             "string" => "hello",
             "int" => 1u32,
@@ -884,18 +860,18 @@ mod tests {
             },
             "map" map=> map.clone(),
         };
-        IndexMap::<String, Item>::try_from(c.get("map/one/adam/alpha/**")?)?.expect_val(alpha);
-        IndexMap::<String, Item>::try_from(c.get("map/one/adam/**")?)?.expect_val(adam);
-        IndexMap::<String, Item>::try_from(c.get("map/one/**")?)?.expect_val(one);
-        IndexMap::<String, Item>::try_from(c.get("map/**")?)?.expect_val(map);
-        IndexMap::<String, Item>::try_from(c.get("**")?)?.expect_val(root);
+        IndexMap::<String, Item>::try_from(kv.get("map/one/adam/alpha/**")?)?.expect_val(alpha);
+        IndexMap::<String, Item>::try_from(kv.get("map/one/adam/**")?)?.expect_val(adam);
+        IndexMap::<String, Item>::try_from(kv.get("map/one/**")?)?.expect_val(one);
+        IndexMap::<String, Item>::try_from(kv.get("map/**")?)?.expect_val(map);
+        IndexMap::<String, Item>::try_from(kv.get("**")?)?.expect_val(root);
     }
 
     #[test]
     #[throws(Error)]
     fn get_multiple_maps() {
-        let c = context()?;
-        Vec::<IndexMap<String, Item>>::try_from(c.get("map/**/alpha/**")?)?.expect_val(vec![
+        let kv = kv()?;
+        Vec::<IndexMap<String, Item>>::try_from(kv.get("map/**/alpha/**")?)?.expect_val(vec![
             item_map! {
                 "string" => "hello",
                 "int" => 1u32,
@@ -915,8 +891,8 @@ mod tests {
     #[should_panic]
     #[throws(Error)]
     fn get_array_no_zero_index() {
-        let mut c = context()?;
-        c.put_value("invalid_array/1", false)?;
-        Vec::<bool>::try_from(c.get("invalid_array/**")?)?;
+        let mut kv = kv()?;
+        kv.put_value("invalid_array/1", false)?;
+        Vec::<bool>::try_from(kv.get("invalid_array/**")?)?;
     }
 }

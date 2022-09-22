@@ -23,7 +23,7 @@ impl App {
     #[throws(anyhow::Error)]
     fn run() {
         let app = Self::from_args();
-        let context = Context::new("~/.config/hoc/context.yaml");
+        let context = Context::new();
         match app.command {
             Command::Init(init_command) => init_command.run(context)?,
             _ => (),

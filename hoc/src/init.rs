@@ -63,7 +63,7 @@ impl Command {
 
         let admin_username = arg_get!(self, admin_username);
 
-        context.put_value(
+        context.kv.put_value(
             format!("network/start_address"),
             node_addresses.ip_addr.to_string(),
         )?;
