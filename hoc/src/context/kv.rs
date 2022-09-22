@@ -2,7 +2,7 @@ use std::{
     borrow::Cow,
     convert::Infallible,
     ffi::OsStr,
-    fmt::{self, Display, Formatter},
+    fmt::{self, Debug, Display, Formatter},
     io, iter,
     os::unix::prelude::OsStrExt,
     path::{Component, Path, PathBuf},
@@ -221,6 +221,10 @@ impl Kv {
             throw!(Error::KeyAlreadyExists(key));
         }
 
+        let value = value.into();
+
+        info!("put: {key:?} => {value}");
+
         self.map.insert(key.clone(), Item::Value(value.into()));
     }
 
@@ -438,6 +442,19 @@ impl Value {
             Self::SignedInteger(_) => TypeDescription::SignedInteger,
             Self::FloatingPointNumber(_) => TypeDescription::FloatingPointNumber,
             Self::String(_) => TypeDescription::String,
+        }
+    }
+}
+
+impl Display for Value {
+    #[throws(fmt::Error)]
+    fn fmt(&self, f: &mut Formatter) {
+        match self {
+            Self::Bool(v) => Debug::fmt(v, f)?,
+            Self::UnsignedInteger(v) => Debug::fmt(v, f)?,
+            Self::SignedInteger(v) => Debug::fmt(v, f)?,
+            Self::FloatingPointNumber(v) => Debug::fmt(v, f)?,
+            Self::String(v) => Debug::fmt(v, f)?,
         }
     }
 }
