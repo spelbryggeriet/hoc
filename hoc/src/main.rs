@@ -1,4 +1,6 @@
-use clap::Parser;
+use std::env;
+
+use clap::{CommandFactory, Parser, Subcommand};
 use context::Context;
 use env_logger::Env;
 
@@ -22,16 +24,26 @@ struct App {
 impl App {
     #[throws(anyhow::Error)]
     fn run() {
+        debug!("parsing command-line arguments");
         let app = Self::from_args();
-        let context = Context::new();
+
+        debug!("feching HOME environment variable");
+        let home_dir = env::var("HOME")?;
+
+        debug!("loading context");
+        let context = Context::load(format!("{home_dir}/.config/hoc/context.yaml"))?;
+
         match app.command {
-            Command::Init(init_command) => init_command.run(context)?,
+            Command::Init(init_command) => {
+                info!("running {} command", init::Command::command().get_name());
+                init_command.run(context)?;
+            }
             _ => (),
         }
     }
 }
 
-#[derive(Parser)]
+#[derive(Subcommand)]
 enum Command {
     Deploy(DeployCommand),
     Init(init::Command),

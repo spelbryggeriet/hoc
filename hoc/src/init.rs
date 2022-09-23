@@ -20,6 +20,7 @@ args_summary! {
 
 /// Initialize a cluster
 #[derive(Parser)]
+#[clap(name = "init")]
 pub struct Command {
     #[clap(
         help = help::gateway(),
@@ -54,7 +55,7 @@ impl Command {
         let node_addresses = arg_get_or_default!(self, node_addresses);
         let gateway = arg_get_or_default!(self, gateway);
 
-        trace!("checking gateway");
+        debug!("checking gateway");
         ensure!(
             node_addresses.contains(gateway),
             "gateway IP address `{gateway}` is outside of the subnet mask `/{}`",

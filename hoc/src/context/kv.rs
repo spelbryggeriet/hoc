@@ -15,16 +15,16 @@ use thiserror::Error;
 
 use crate::prelude::*;
 
+#[derive(Serialize, Deserialize)]
 pub struct Kv {
+    #[serde(flatten)]
     map: IndexMap<PathBuf, Item>,
-    file_dir: PathBuf,
 }
 
 impl Kv {
-    pub fn new<P: Into<PathBuf>>(file_dir: P) -> Self {
+    pub fn new() -> Self {
         Self {
             map: IndexMap::new(),
-            file_dir: file_dir.into(),
         }
     }
 
