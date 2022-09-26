@@ -223,7 +223,7 @@ impl Kv {
 
         let value = value.into();
 
-        info!("put: {key:?} => {value}");
+        debug!("Put value: {key:?} => {value}");
 
         self.map.insert(key.clone(), Item::Value(value.into()));
     }

@@ -2,7 +2,6 @@ use std::env;
 
 use clap::{CommandFactory, Parser, Subcommand};
 use context::Context;
-use env_logger::Env;
 
 #[macro_use]
 mod macros;
@@ -10,6 +9,7 @@ mod macros;
 mod cidr;
 mod context;
 mod init;
+mod logger;
 mod prelude;
 mod prompt;
 
@@ -24,18 +24,18 @@ struct App {
 impl App {
     #[throws(anyhow::Error)]
     fn run() {
-        debug!("parsing command-line arguments");
+        debug!("Parsing command-line arguments");
         let app = Self::from_args();
 
-        debug!("feching HOME environment variable");
+        debug!("Feching HOME environment variable");
         let home_dir = env::var("HOME")?;
 
-        debug!("loading context");
+        debug!("Loading context");
         let context = Context::load(format!("{home_dir}/.config/hoc/context.yaml"))?;
 
         match app.command {
             Command::Init(init_command) => {
-                info!("running {} command", init::Command::command().get_name());
+                debug!("Running {} command", init::Command::command().get_name());
                 init_command.run(context)?;
             }
             _ => (),
@@ -63,14 +63,8 @@ struct NodeCommand {}
 #[derive(Parser)]
 struct SdCardCommand {}
 
-const LOWEST_DEFAULT_LEVEL: &'static str = if cfg!(debug_assertions) {
-    "debug"
-} else {
-    "info"
-};
-
 #[throws(anyhow::Error)]
 fn main() {
-    env_logger::Builder::from_env(Env::default().default_filter_or(LOWEST_DEFAULT_LEVEL)).init();
+    logger::Logger::init()?;
     App::run()?;
 }

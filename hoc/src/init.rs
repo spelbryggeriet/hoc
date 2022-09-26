@@ -55,7 +55,7 @@ impl Command {
         let node_addresses = arg_get_or_default!(self, node_addresses);
         let gateway = arg_get_or_default!(self, gateway);
 
-        debug!("checking gateway");
+        debug!("Checking gateway");
         ensure!(
             node_addresses.contains(gateway),
             "gateway IP address `{gateway}` is outside of the subnet mask `/{}`",

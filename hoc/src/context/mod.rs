@@ -24,37 +24,37 @@ impl Context {
     pub fn load<P: Into<PathBuf>>(context_path: P) -> Self {
         let context_path = context_path.into();
 
-        debug!("retrieving parent directory to context path");
+        debug!("Retrieving parent directory to context path");
         let context_dir = context_path
             .parent()
             .context("context path does not have any parent directories")?;
 
-        debug!("creating context directories");
+        debug!("Creating context directories");
         fs::create_dir_all(context_dir)?;
 
-        debug!("opening context file");
+        debug!("Opening context file");
         match File::options().read(true).write(true).open(&context_path) {
             Ok(file) => {
-                info!("using pre-existing context file: {context_path:?}");
+                trace!("Using pre-existing context file: {context_path:?}");
 
-                debug!("deserializing context from file");
+                debug!("Deserializing context from file");
                 let mut context: Self = serde_yaml::from_reader(&file)?;
                 context.file_path = context_path;
                 context
             }
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                info!("creating new context file: {context_path:?}");
+                info!("Creating new context file: {context_path:?}");
 
-                debug!("opening context file for creation");
+                debug!("Opening context file for creation");
                 let file = File::create(&context_path)?;
 
-                debug!("creating context object");
+                debug!("Creating context object");
                 let context = Self {
                     kv: Kv::new(),
                     file_path: context_path,
                 };
 
-                debug!("serializing context to file");
+                debug!("Serializing context to file");
                 serde_yaml::to_writer(file, &context)?;
                 context
             }
@@ -65,9 +65,9 @@ impl Context {
 
 impl Drop for Context {
     fn drop(&mut self) {
-        info!("persisting context");
+        info!("Persisting context");
 
-        debug!("opening context file for writing");
+        debug!("Opening context file for writing");
         let file = match File::options()
             .write(true)
             .truncate(true)
@@ -75,14 +75,14 @@ impl Drop for Context {
         {
             Ok(file) => file,
             Err(err) => {
-                error!("failed to open file for writing: {err}");
+                error!("Failed to open file for writing: {err}");
                 return;
             }
         };
 
-        debug!("serializing context to file");
+        debug!("Serializing context to file");
         if let Err(err) = serde_yaml::to_writer(file, self) {
-            error!("failed to persist context: {err}");
+            error!("Failed to persist context: {err}");
             return;
         }
     }
