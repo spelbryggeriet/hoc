@@ -117,16 +117,16 @@ impl FromStr for Cidr {
 
 #[derive(Error, Debug)]
 pub enum CidrParseError {
-    #[error("expected '/' separator")]
+    #[error("Expected '/' separator")]
     MissingSlash,
 
-    #[error(transparent)]
+    #[error("An IP address parse error occurred: {0}")]
     IpAddr(#[from] AddrParseError),
 
-    #[error("prefix length is not a valid integer: {0}")]
+    #[error("Prefix length is not a valid integer: {0}")]
     InvalidPrefixLen(#[from] ParseIntError),
 
-    #[error("prefix length needs to be between 0 and {prefix_len_bound}, got {prefix_len}")]
+    #[error("Prefix length needs to be between 0 and {prefix_len_bound}, got {prefix_len}")]
     PrefixLenOutOfRange {
         prefix_len: u32,
         prefix_len_bound: u32,

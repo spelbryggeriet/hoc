@@ -1,4 +1,4 @@
-use std::env;
+use std::{env, process::ExitCode};
 
 use clap::{CommandFactory, Parser, Subcommand};
 use context::Context;
@@ -64,7 +64,17 @@ struct NodeCommand {}
 struct SdCardCommand {}
 
 #[throws(anyhow::Error)]
-fn main() {
+fn main() -> ExitCode {
     logger::Logger::init()?;
-    App::run()?;
+    match App::run() {
+        Ok(()) => {
+            log::logger().flush();
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            error!("{error}");
+            log::logger().flush();
+            ExitCode::from(1)
+        }
+    }
 }

@@ -295,28 +295,28 @@ impl Kv {
 
 #[derive(Debug, Error)]
 pub enum Error {
-    #[error(r#"key already exists: "{0}""#)]
+    #[error(r#"Key already exists: "{0}""#)]
     KeyAlreadyExists(PathBuf),
 
-    #[error(r#"key does not exist: {0}""#)]
+    #[error(r#"Key does not exist: {0}""#)]
     KeyDoesNotExist(PathBuf),
 
-    #[error(r#"unexpected leading `/` in key: {0}""#)]
+    #[error(r#"Unexpected leading `/` in key: {0}""#)]
     LeadingForwardSlash(PathBuf),
 
-    #[error(r#"unexpected `.` in key: {0}""#)]
+    #[error(r#"Unexpected `.` in key: {0}""#)]
     SingleDotComponent(PathBuf),
 
-    #[error(r#"unexpected `..` in key: {0}""#)]
+    #[error(r#"Unexpected `..` in key: {0}""#)]
     DoubleDotComponent(PathBuf),
 
-    #[error("mismatched value types: {0} ≠ {1}")]
+    #[error("Mismatched value types: {0} ≠ {1}")]
     MismatchedTypes(TypeDescription, TypeDescription),
 
     #[error("{0} out of range for `{1}`")]
     OverflowingNumber(i128, &'static str),
 
-    #[error("io: {0}")]
+    #[error("An IO error occurred: {0}")]
     Io(#[from] io::Error),
 }
 
