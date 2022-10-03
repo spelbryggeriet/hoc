@@ -105,3 +105,9 @@ macro_rules! arg_get_or_default {
         $crate::prompt::Prompt::get_or($self.$field, stringify!($field), default::$field())?
     };
 }
+
+macro_rules! progress {
+    ($($args:tt)*) => {
+        $crate::logger::__progress(format!($($args)*))
+    };
+}

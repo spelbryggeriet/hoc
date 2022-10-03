@@ -1,8 +1,9 @@
-use std::net::IpAddr;
+use std::{any::Any, net::IpAddr};
 
 use clap::Parser;
+use log::Log;
 
-use crate::{cidr::Cidr, context::Context, prelude::*};
+use crate::{cidr::Cidr, context::Context, logger::Logger, prelude::*};
 
 args_summary! {
     gateway(
@@ -55,6 +56,8 @@ impl Command {
         let node_addresses = arg_get_or_default!(self, node_addresses);
         let gateway = arg_get_or_default!(self, gateway);
 
+        let progress_testing = progress!("Testing progress");
+
         debug!("Checking gateway");
         ensure!(
             node_addresses.contains(gateway),
@@ -62,10 +65,27 @@ impl Command {
             node_addresses.prefix_len
         );
 
+        let progress_nested = progress!("Testing nested progress");
         let admin_username = arg_get!(self, admin_username);
 
-        context
-            .kv
-            .put_value("network/start_address", node_addresses.ip_addr.to_string())?;
+        std::thread::sleep(std::time::Duration::new(0, 500_000_000));
+        info!("test");
+        let progress_nested_nested = progress!("Testing nested progress");
+        std::thread::sleep(std::time::Duration::new(2, 500_000_000));
+        info!("test");
+        std::thread::sleep(std::time::Duration::new(0, 500_000_000));
+        progress_nested_nested.finish();
+        info!("test");
+        std::thread::sleep(std::time::Duration::new(0, 500_000_000));
+
+        progress_nested.finish();
+        let _progress_nested_2 = progress!("Testing nested progress 2");
+
+        std::thread::sleep(std::time::Duration::new(1, 500_000_000));
+
+        // context
+        // .kv
+        // .put_value("network/start_address", node_addresses.ip_addr.to_string())?;
+        progress_testing.finish()
     }
 }
