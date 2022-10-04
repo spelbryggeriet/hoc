@@ -76,101 +76,77 @@ fn main() -> ExitCode {
             std::thread::sleep(std::time::Duration::new(0, 100_000_000));
             info!("Info {i}")
         }
-        for i in 0..50 {
-            std::thread::sleep(std::time::Duration::new(0, 10_000_000));
-            info!("Info {i}")
-        }
-        let progress2 = progress!("Progress 2");
+        let progress = progress!("Progress 2");
         for i in 0..10 {
             std::thread::sleep(std::time::Duration::new(0, 100_000_000));
             info!("Info {i}")
         }
-        for i in 0..50 {
-            std::thread::sleep(std::time::Duration::new(0, 10_000_000));
-            info!("Info {i}")
-        }
-        let progress3 = progress!("Progress 3");
+        drop(progress);
+        let progress = progress!("Progress");
         for i in 0..10 {
             std::thread::sleep(std::time::Duration::new(0, 100_000_000));
             info!("Info {i}")
         }
-        for i in 0..50 {
-            std::thread::sleep(std::time::Duration::new(0, 10_000_000));
-            info!("Info {i}")
-        }
-        let progress4 = progress!("Progress 4");
+        let progress = progress!("Progress");
         for i in 0..10 {
             std::thread::sleep(std::time::Duration::new(0, 100_000_000));
             info!("Info {i}")
         }
-        for i in 0..50 {
-            std::thread::sleep(std::time::Duration::new(0, 10_000_000));
-            info!("Info {i}")
-        }
-        let progress5 = progress!("Progress 5");
+        let progress = progress!("Progress");
         for i in 0..10 {
             std::thread::sleep(std::time::Duration::new(0, 100_000_000));
             info!("Info {i}")
         }
-        for i in 0..50 {
-            std::thread::sleep(std::time::Duration::new(0, 10_000_000));
-            info!("Info {i}")
-        }
-        let progress6 = progress!("Progress 6");
+        let progress = progress!("Progress");
         for i in 0..10 {
             std::thread::sleep(std::time::Duration::new(0, 100_000_000));
             info!("Info {i}")
         }
-        for i in 0..50 {
-            std::thread::sleep(std::time::Duration::new(0, 10_000_000));
-            info!("Info {i}")
-        }
-        let progress7 = progress!("Progress 7");
+        let progress = progress!("Progress");
         for i in 0..10 {
             std::thread::sleep(std::time::Duration::new(0, 100_000_000));
             info!("Info {i}")
         }
-        for i in 0..50 {
-            std::thread::sleep(std::time::Duration::new(0, 10_000_000));
-            info!("Info {i}")
-        }
-        let progress8 = progress!("Progress 8");
+        let progress = progress!("Progress");
         for i in 0..10 {
             std::thread::sleep(std::time::Duration::new(0, 100_000_000));
             info!("Info {i}")
         }
-        for i in 0..50 {
-            std::thread::sleep(std::time::Duration::new(0, 10_000_000));
-            info!("Info {i}")
-        }
-        let progress8 = progress!("Progress 8");
+        let progress = progress!("Progress");
         for i in 0..10 {
             std::thread::sleep(std::time::Duration::new(0, 100_000_000));
             info!("Info {i}")
         }
-        for i in 0..50 {
-            std::thread::sleep(std::time::Duration::new(0, 10_000_000));
-            info!("Info {i}")
-        }
-        let progress9 = progress!("Progress 9");
+        let progress = progress!("Progress");
         for i in 0..10 {
             std::thread::sleep(std::time::Duration::new(0, 100_000_000));
             info!("Info {i}")
         }
-        for i in 0..50 {
-            std::thread::sleep(std::time::Duration::new(0, 10_000_000));
-            info!("Info {i}")
-        }
-        let progress10 = progress!("Progress 10");
+        let progress = progress!("Progress");
         for i in 0..10 {
             std::thread::sleep(std::time::Duration::new(0, 100_000_000));
             info!("Info {i}")
         }
-        for i in 0..50 {
-            std::thread::sleep(std::time::Duration::new(0, 10_000_000));
+        let progress = progress!("Progress");
+        for i in 0..10 {
+            std::thread::sleep(std::time::Duration::new(0, 100_000_000));
             info!("Info {i}")
         }
-        std::thread::sleep(std::time::Duration::new(10, 0));
+        let progress = progress!("Progress");
+        for i in 0..10 {
+            std::thread::sleep(std::time::Duration::new(0, 100_000_000));
+            info!("Info {i}")
+        }
+        let progress = progress!("Progress");
+        for i in 0..10 {
+            std::thread::sleep(std::time::Duration::new(0, 100_000_000));
+            info!("Info {i}")
+        }
+        let progress = progress!("Progress");
+        for i in 0..10 {
+            std::thread::sleep(std::time::Duration::new(0, 100_000_000));
+            info!("Info {i}")
+        }
     }
 
     logger::Logger::cleanup()?;

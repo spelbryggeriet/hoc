@@ -3,18 +3,17 @@ use std::{
     env,
     fs::{self, File},
     io::{self, Stdout, Write},
-    marker::PhantomData,
     mem, panic,
     sync::{
         atomic::{AtomicBool, Ordering},
-        Arc, Barrier, Condvar, Mutex, RwLock,
+        Arc, Condvar, Mutex, RwLock, RwLockReadGuard, RwLockWriteGuard,
     },
     thread::{self, JoinHandle},
     time::{Duration, Instant},
 };
 
 use chrono::{DateTime, Utc};
-use crossterm::{cursor, execute, queue, style, terminal, ExecutableCommand, QueueableCommand};
+use crossterm::{cursor, execute, queue, style, terminal, QueueableCommand};
 use lazy_static::lazy_static;
 use log::{Level, LevelFilter, Log, Metadata, Record};
 use spin_sleep::{SpinSleeper, SpinStrategy};
@@ -22,55 +21,48 @@ use thiserror::Error;
 
 use crate::prelude::*;
 
-const EXPECT_THREAD_NOT_POSIONED: &'static str = "thread should not be poisoned";
-
 const MAX_DEFAULT_LEVEL: Level = if cfg!(debug_assertions) {
     Level::Trace
 } else {
     Level::Info
 };
 
+const EXPECT_THREAD_NOT_POSIONED: &'static str = "thread should not be poisoned";
+
 lazy_static! {
-    pub static ref PROGRESS: Arc<RwLock<Option<RunningProgress>>> = Arc::default();
-    pub static ref PROGRESS_THREAD: RwLock<Option<ProgressThread>> =
-        RwLock::new(Some(ProgressThread::init()));
+    pub static ref PROGRESS_THREAD: ProgressThread = ProgressThread::init();
 }
 
-pub fn __progress(message: String) -> ProgressHandle {
-    let mut progress = PROGRESS.write().expect(EXPECT_THREAD_NOT_POSIONED);
-    if let Some(ref mut progress) = *progress {
-        progress.push_progress(message);
-    } else {
-        progress.replace(RunningProgress::new(message));
-    }
+pub fn push_progress(message: String) -> ProgressHandle {
+    PROGRESS_THREAD.resync_if_needed();
 
-    ProgressHandle(PhantomData::default())
+    let mut progress = PROGRESS_THREAD.get_progress_mut();
+    if let Some(ref mut progress) = *progress {
+        progress.push_progress(message)
+    } else {
+        let running_progress = RunningProgress::new(message);
+        let handle = running_progress.get_handle();
+        progress.replace(running_progress);
+        handle
+    }
 }
 
 #[must_use]
-pub struct ProgressHandle(PhantomData<()>);
+pub struct ProgressHandle {
+    should_finish: Arc<AtomicBool>,
+}
 
 impl ProgressHandle {
+    fn new(should_finish: Arc<AtomicBool>) -> Self {
+        Self { should_finish }
+    }
+
     pub fn finish(self) {}
 }
 
 impl Drop for ProgressHandle {
     fn drop(&mut self) {
-        let mut progress = PROGRESS.write().expect(EXPECT_THREAD_NOT_POSIONED);
-        if !progress
-            .as_mut()
-            .expect("progress should be set if a handle exists")
-            .pop_progress()
-        {
-            drop(progress);
-            if let Some(progress_thread) =
-                &*PROGRESS_THREAD.read().expect(EXPECT_THREAD_NOT_POSIONED)
-            {
-                let (pop_root_progress, barrier) = &*progress_thread.pop_root_progress;
-                pop_root_progress.store(true, Ordering::SeqCst);
-                barrier.wait();
-            }
-        }
+        self.should_finish.store(true, Ordering::SeqCst);
     }
 }
 
@@ -136,7 +128,7 @@ fn render_progress(
     )?;
 
     // If there are no submessages, print the elapsed time on the same row as the progress message.
-    if submessages.is_empty() {
+    if max_rows <= 1 || submessages.is_empty() {
         queue!(
             stdout,
             style::Print(" "),
@@ -155,7 +147,7 @@ fn render_progress(
     )?;
 
     // Print submessages, if any.
-    if !submessages.is_empty() {
+    if max_rows > 2 && !submessages.is_empty() {
         // Reserve two rows for the header and the footer.
         max_rows -= 2;
 
@@ -252,30 +244,28 @@ fn render_progress(
             };
         }
 
-        if remaining_render_lines <= max_rows {
-            // Print elapsed time.
-            queue!(
-                stdout,
-                style::Print("\n"),
-                cursor::MoveToColumn(2 * indentation as u16),
-                style::SetForegroundColor(style::Color::Yellow),
-                style::Print(animate(
-                    BOX_TURN_SWELL_ANIMATION,
-                    animation_frame.map(|f| f - 2 * frame_offset),
-                )),
-                style::Print(animate(
-                    BOX_END_SWELL_ANIMATION,
-                    animation_frame.map(|f| f - 2 * (frame_offset + 1)),
-                )),
-            )?;
-            queue_elapsed(stdout)?;
-            queue!(
-                stdout,
-                style::Print("s"),
-                terminal::Clear(terminal::ClearType::UntilNewLine),
-                style::SetForegroundColor(style::Color::Reset),
-            )?;
-        }
+        // Print elapsed time.
+        queue!(
+            stdout,
+            style::Print("\n"),
+            cursor::MoveToColumn(2 * indentation as u16),
+            style::SetForegroundColor(style::Color::Yellow),
+            style::Print(animate(
+                BOX_TURN_SWELL_ANIMATION,
+                animation_frame.map(|f| f - 2 * frame_offset),
+            )),
+            style::Print(animate(
+                BOX_END_SWELL_ANIMATION,
+                animation_frame.map(|f| f - 2 * (frame_offset + 1)),
+            )),
+        )?;
+        queue_elapsed(stdout)?;
+        queue!(
+            stdout,
+            style::Print("s"),
+            terminal::Clear(terminal::ClearType::UntilNewLine),
+            style::SetForegroundColor(style::Color::Reset),
+        )?;
     }
 }
 
@@ -317,18 +307,7 @@ impl Logger {
     #[throws(Error)]
     pub fn cleanup() {
         log::logger().flush();
-
-        if let Some(progress_thread) = PROGRESS_THREAD
-            .write()
-            .expect(EXPECT_THREAD_NOT_POSIONED)
-            .take()
-        {
-            progress_thread.is_cancelled.store(true, Ordering::SeqCst);
-            progress_thread
-                .thread_handle
-                .join()
-                .unwrap_or_else(|e| panic::resume_unwind(e))?;
-        }
+        PROGRESS_THREAD.cleanup()?;
 
         execute!(io::stdout(), cursor::Show)?;
     }
@@ -363,9 +342,13 @@ impl Log for Logger {
             let log_line =
                 String::from_utf8(log_line_bytes).expect("control sequence should be valid");
 
-            let mut progress = PROGRESS.write().expect(EXPECT_THREAD_NOT_POSIONED);
+            let mut progress = PROGRESS_THREAD.get_progress_mut();
             if let Some(progress) = &mut *progress {
-                progress.push_log(log_line);
+                if !progress.should_finish() {
+                    progress.push_log(log_line);
+                } else {
+                    println!("{log_line}");
+                }
             } else {
                 println!("{log_line}");
             }
@@ -471,18 +454,21 @@ struct LoggerMeta {
 
 #[must_use]
 pub struct ProgressThread {
-    thread_handle: JoinHandle<Result<(), Error>>,
-    is_cancelled: Arc<AtomicBool>,
-    pop_root_progress: Arc<(AtomicBool, Barrier)>,
+    progress: Arc<RwLock<Option<RunningProgress>>>,
+    should_resync: Arc<(Mutex<bool>, Condvar)>,
+    should_cancel: Arc<AtomicBool>,
+    thread_handle: RwLock<Option<JoinHandle<Result<(), Error>>>>,
 }
 
 impl ProgressThread {
     pub fn init() -> Self {
-        let is_cancelled = Arc::new(AtomicBool::new(false));
-        let pop_root_progress = Arc::new((AtomicBool::new(false), Barrier::new(2)));
-        let should_cancel = Arc::clone(&is_cancelled);
-        let should_pop_root_progress = Arc::clone(&pop_root_progress);
-        let progress = Arc::clone(&PROGRESS);
+        let progress_orig = Arc::new(RwLock::new(Option::<RunningProgress>::None));
+        let should_resync_orig = Arc::new((Mutex::new(false), Condvar::new()));
+        let should_cancel_orig = Arc::new(AtomicBool::new(false));
+
+        let progress = Arc::clone(&progress_orig);
+        let should_resync = Arc::clone(&should_resync_orig);
+        let should_cancel = Arc::clone(&should_cancel_orig);
 
         let thread_handle = thread::spawn(move || {
             let spin_sleeper =
@@ -496,23 +482,29 @@ impl ProgressThread {
             while !should_cancel.load(Ordering::SeqCst) {
                 let terminal_rows = terminal::size()?.1 as usize;
 
-                let (should_pop_root_progress, barrier) = &*should_pop_root_progress;
-                if should_pop_root_progress.load(Ordering::SeqCst) {
-                    let mut progress = progress.write().expect(EXPECT_THREAD_NOT_POSIONED);
-                    if let Some(progress) = progress.take() {
-                        let finished: FinishedProgress = progress.into();
+                {
+                    let mut progress_opt = progress.write().expect(EXPECT_THREAD_NOT_POSIONED);
+                    if let Some(mut progress) = progress_opt.take() {
+                        progress.finish_progresses();
+                        if progress.should_finish() {
+                            if previous_num_lines > 1 {
+                                stdout.queue(cursor::MoveToPreviousLine(
+                                    previous_num_lines as u16 - 1,
+                                ))?;
+                            }
+                            stdout.queue(cursor::MoveToColumn(0))?;
+                            previous_num_lines = 0;
 
-                        if previous_num_lines > 1 {
-                            stdout
-                                .queue(cursor::MoveToPreviousLine(previous_num_lines as u16 - 1))?;
+                            let finished: FinishedProgress = progress.into();
+                            finished.render(&mut stdout, terminal_rows, 0)?;
+                            stdout.queue(style::Print("\n"))?;
+
+                            *should_resync.0.lock().expect(EXPECT_THREAD_NOT_POSIONED) = false;
+                            should_resync.1.notify_one();
+                        } else {
+                            progress_opt.replace(progress);
                         }
-                        stdout.queue(cursor::MoveToColumn(0))?;
-
-                        finished.render(&mut stdout, terminal_rows, 0)?;
-                        stdout.queue(style::Print("\n"))?;
                     }
-                    should_pop_root_progress.store(false, Ordering::SeqCst);
-                    barrier.wait();
                 }
 
                 {
@@ -544,9 +536,51 @@ impl ProgressThread {
         });
 
         Self {
-            thread_handle,
-            is_cancelled,
-            pop_root_progress,
+            progress: progress_orig,
+            should_resync: should_resync_orig,
+            should_cancel: should_cancel_orig,
+            thread_handle: RwLock::new(Some(thread_handle)),
+        }
+    }
+
+    fn get_progress_mut(&self) -> RwLockWriteGuard<Option<RunningProgress>> {
+        self.progress.write().expect(EXPECT_THREAD_NOT_POSIONED)
+    }
+
+    fn get_progress(&self) -> RwLockReadGuard<Option<RunningProgress>> {
+        self.progress.read().expect(EXPECT_THREAD_NOT_POSIONED)
+    }
+
+    fn resync_if_needed(&self) {
+        let mut lock = self
+            .should_resync
+            .0
+            .lock()
+            .expect(EXPECT_THREAD_NOT_POSIONED);
+        *lock = self
+            .get_progress()
+            .as_ref()
+            .map(RunningProgress::should_finish)
+            .unwrap_or(false);
+        let _ = self
+            .should_resync
+            .1
+            .wait_while(lock, |should_resync| *should_resync)
+            .expect(EXPECT_THREAD_NOT_POSIONED);
+    }
+
+    #[throws(Error)]
+    fn cleanup(&self) {
+        self.should_cancel.store(true, Ordering::SeqCst);
+        if let Some(thread_handle) = self
+            .thread_handle
+            .write()
+            .expect(EXPECT_THREAD_NOT_POSIONED)
+            .take()
+        {
+            thread_handle
+                .join()
+                .unwrap_or_else(|e| panic::resume_unwind(e))?;
         }
     }
 }
@@ -567,7 +601,7 @@ impl ProgressSubmessage {
             Self::Running(running) => {
                 let dummy_running_progress = RunningProgress::new(String::default());
                 let running = mem::replace(running, dummy_running_progress);
-                mem::replace(self, ProgressSubmessage::Finished(running.into()));
+                *self = ProgressSubmessage::Finished(running.into());
             }
             _ => panic!("`ProgressLogType` should be the `Running` variant when converting into the `Finished`"),
         }
@@ -578,6 +612,7 @@ pub struct RunningProgress {
     message: String,
     start_time: Instant,
     submessages: Vec<Submessage>,
+    should_finish: Arc<AtomicBool>,
 }
 
 impl RunningProgress {
@@ -586,14 +621,19 @@ impl RunningProgress {
             message,
             start_time: Instant::now(),
             submessages: Vec::new(),
+            should_finish: Arc::new(AtomicBool::new(false)),
         }
+    }
+
+    fn get_handle(&self) -> ProgressHandle {
+        ProgressHandle::new(Arc::clone(&self.should_finish))
     }
 
     fn push_log(&mut self, message: String) {
         let last_running_progress = self
             .submessages
             .iter_mut()
-            .filter(|sm| matches!(sm, Submessage::Progress(ProgressSubmessage::Running(_))))
+            .filter(|sm| matches!(sm, Submessage::Progress(ProgressSubmessage::Running(rp)) if !rp.should_finish()))
             .last();
         if let Some(Submessage::Progress(ProgressSubmessage::Running(last_running_progress))) =
             last_running_progress
@@ -604,41 +644,47 @@ impl RunningProgress {
         }
     }
 
-    fn push_progress(&mut self, message: String) {
+    fn push_progress(&mut self, message: String) -> ProgressHandle {
         let last_nested_progress = self
             .submessages
             .iter_mut()
-            .filter(|sm| matches!(sm, Submessage::Progress(_)))
+            .filter(|sm| {
+                matches!(
+                    sm,
+                    Submessage::Progress(ProgressSubmessage::Running(rp))
+                    if !rp.should_finish()
+                )
+            })
             .last();
         if let Some(Submessage::Progress(ProgressSubmessage::Running(last_running_progress))) =
             last_nested_progress
         {
-            last_running_progress.push_progress(message);
+            last_running_progress.push_progress(message)
         } else {
+            let running_progress = RunningProgress::new(message);
+            let handle = running_progress.get_handle();
             self.submessages
                 .push(Submessage::Progress(ProgressSubmessage::Running(
-                    RunningProgress::new(message),
+                    running_progress,
                 )));
+            handle
         }
     }
 
-    fn pop_progress(&mut self) -> bool {
-        let last_running_progress = self
-            .submessages
-            .iter_mut()
-            .filter(|sm| matches!(sm, Submessage::Progress(ProgressSubmessage::Running(_))))
-            .last();
-        if let Some(Submessage::Progress(progress)) = last_running_progress {
-            if let ProgressSubmessage::Running(last_running_progress) = progress {
-                if !last_running_progress.pop_progress() {
-                    progress.into_finished();
+    fn should_finish(&self) -> bool {
+        self.should_finish.load(Ordering::SeqCst)
+    }
+
+    fn finish_progresses(&mut self) {
+        for sm in self.submessages.iter_mut() {
+            if let Submessage::Progress(progress) = sm {
+                if let ProgressSubmessage::Running(running_progress) = progress {
+                    running_progress.finish_progresses();
+                    if running_progress.should_finish() {
+                        progress.into_finished();
+                    }
                 }
-                true
-            } else {
-                unreachable!("matched progress should be running");
             }
-        } else {
-            false
         }
     }
 
@@ -696,7 +742,7 @@ impl FinishedProgress {
                 )?;
                 Ok(())
             },
-        )?
+        )?;
     }
 }
 
