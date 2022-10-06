@@ -71,80 +71,117 @@ fn main() -> ExitCode {
 
     {
         info!("Test");
-        let progress = progress!("Progress");
+        let progress = progress!("Progress 1");
         for i in 0..10 {
-            std::thread::sleep(std::time::Duration::new(0, 100_000_000));
-            info!("Info {i}")
-        }
-        let progress = progress!("Progress 2");
-        for i in 0..10 {
-            std::thread::sleep(std::time::Duration::new(0, 100_000_000));
             info!("Info {i}")
         }
         drop(progress);
-        let progress = progress!("Progress");
+        let progress = progress!("Progress 2");
         for i in 0..10 {
-            std::thread::sleep(std::time::Duration::new(0, 100_000_000));
             info!("Info {i}")
         }
-        let progress = progress!("Progress");
+        let progress = progress!("Progress 3");
         for i in 0..10 {
-            std::thread::sleep(std::time::Duration::new(0, 100_000_000));
             info!("Info {i}")
         }
-        let progress = progress!("Progress");
+        let progress = progress!("Progress 3");
         for i in 0..10 {
-            std::thread::sleep(std::time::Duration::new(0, 100_000_000));
             info!("Info {i}")
         }
-        let progress = progress!("Progress");
+        let progress = progress!("Progress 3");
         for i in 0..10 {
-            std::thread::sleep(std::time::Duration::new(0, 100_000_000));
             info!("Info {i}")
         }
-        let progress = progress!("Progress");
+        let progress = progress!("Progress 3");
         for i in 0..10 {
-            std::thread::sleep(std::time::Duration::new(0, 100_000_000));
             info!("Info {i}")
         }
-        let progress = progress!("Progress");
+        let progress = progress!("Progress 3");
         for i in 0..10 {
-            std::thread::sleep(std::time::Duration::new(0, 100_000_000));
             info!("Info {i}")
         }
-        let progress = progress!("Progress");
+        let progress = progress!("Progress 3");
         for i in 0..10 {
-            std::thread::sleep(std::time::Duration::new(0, 100_000_000));
             info!("Info {i}")
         }
-        let progress = progress!("Progress");
+        let progress = progress!("Progress 3");
         for i in 0..10 {
-            std::thread::sleep(std::time::Duration::new(0, 100_000_000));
             info!("Info {i}")
         }
-        let progress = progress!("Progress");
+        let progress = progress!("Progress 3");
         for i in 0..10 {
-            std::thread::sleep(std::time::Duration::new(0, 100_000_000));
             info!("Info {i}")
         }
-        let progress = progress!("Progress");
+        let progress = progress!("Progress 3");
         for i in 0..10 {
-            std::thread::sleep(std::time::Duration::new(0, 100_000_000));
             info!("Info {i}")
         }
-        let progress = progress!("Progress");
+        let progress = progress!("Progress 3");
         for i in 0..10 {
-            std::thread::sleep(std::time::Duration::new(0, 100_000_000));
             info!("Info {i}")
         }
-        let progress = progress!("Progress");
+        let progress = progress!("Progress 3");
         for i in 0..10 {
-            std::thread::sleep(std::time::Duration::new(0, 100_000_000));
             info!("Info {i}")
         }
-        let progress = progress!("Progress");
+        let progress = progress!("Progress 3");
         for i in 0..10 {
-            std::thread::sleep(std::time::Duration::new(0, 100_000_000));
+            info!("Info {i}")
+        }
+        let progress = progress!("Progress 3");
+        for i in 0..10 {
+            info!("Info {i}")
+        }
+        let progress = progress!("Progress 3");
+        for i in 0..10 {
+            info!("Info {i}")
+        }
+        let progress = progress!("Progress 3");
+        for i in 0..10 {
+            info!("Info {i}")
+        }
+        let progress = progress!("Progress 3");
+        for i in 0..10 {
+            info!("Info {i}")
+        }
+        let progress = progress!("Progress 3");
+        for i in 0..10 {
+            info!("Info {i}")
+        }
+        let progress = progress!("Progress 3");
+        for i in 0..10 {
+            info!("Info {i}")
+        }
+        let progress = progress!("Progress 3");
+        for i in 0..10 {
+            info!("Info {i}")
+        }
+        let progress = progress!("Progress 3");
+        for i in 0..10 {
+            info!("Info {i}")
+        }
+        let progress = progress!("Progress 3");
+        for i in 0..10 {
+            info!("Info {i}")
+        }
+        let progress = progress!("Progress 3");
+        for i in 0..10 {
+            info!("Info {i}")
+        }
+        let progress = progress!("Progress 3");
+        for i in 0..10 {
+            info!("Info {i}")
+        }
+        let progress = progress!("Progress 3");
+        for i in 0..10 {
+            info!("Info {i}")
+        }
+        let progress = progress!("Progress 3");
+        for i in 0..10 {
+            info!("Info {i}")
+        }
+        let progress = progress!("Progress 3");
+        for i in 0..10 {
             info!("Info {i}")
         }
     }

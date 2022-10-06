@@ -3,7 +3,9 @@ use std::{
     env,
     fs::{self, File},
     io::{self, Stdout, Write},
-    mem, panic,
+    mem,
+    num::NonZeroUsize,
+    panic,
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc, Condvar, Mutex, RwLock, RwLockReadGuard, RwLockWriteGuard,
@@ -78,7 +80,7 @@ const BOX_END_SWELL_ANIMATION: ([char; ANIMATION_LENGTH], char) =
     (['╴', '╸', '╸', '╸', '╸', '╸', '╴', '╴'], '╸');
 const SEPARATOR_SWELL_ANIMATION: ([char; ANIMATION_LENGTH], char) = (['─'; ANIMATION_LENGTH], '━');
 
-fn num_progress_render_lines(submessages: &[Submessage]) -> usize {
+fn progress_render_height(submessages: &[Submessage]) -> usize {
     if submessages.is_empty() {
         1
     } else {
@@ -89,7 +91,7 @@ fn num_progress_render_lines(submessages: &[Submessage]) -> usize {
                 Submessage::Progress(
                     ProgressSubmessage::Running(RunningProgress { submessages, .. })
                     | ProgressSubmessage::Finished(FinishedProgress { submessages, .. }),
-                ) => num_progress_render_lines(submessages),
+                ) => progress_render_height(submessages),
             })
             .sum::<usize>()
     }
@@ -110,13 +112,17 @@ fn animate(
 #[throws(Error)]
 fn render_progress(
     stdout: &mut Stdout,
-    mut max_rows: usize,
-    animation_frame: Option<isize>,
+    max_height: usize,
     indentation: usize,
+    animation_frame: Option<isize>,
     message: &str,
     submessages: &[Submessage],
     queue_elapsed: impl Fn(&mut Stdout) -> Result<(), Error>,
-) {
+) -> usize {
+    if max_height == 0 {
+        return 0;
+    }
+
     // Print indicator and progress message.
     queue!(
         stdout,
@@ -127,8 +133,11 @@ fn render_progress(
         style::Print(message),
     )?;
 
-    // If there are no submessages, print the elapsed time on the same row as the progress message.
-    if max_rows <= 1 || submessages.is_empty() {
+    let render_single_line = submessages.is_empty() || max_height == 1;
+
+    // If there are no submessages, or if the max height is 1, print the elapsed time on the same
+    // row as the progress message.
+    if render_single_line {
         queue!(
             stdout,
             style::Print(" "),
@@ -147,15 +156,15 @@ fn render_progress(
     )?;
 
     // Print submessages, if any.
-    if max_rows > 2 && !submessages.is_empty() {
+    if !render_single_line {
         // Reserve two rows for the header and the footer.
-        max_rows -= 2;
+        let inner_max_height = max_height - 2;
 
         // Keep track of the number of render lines required for the submessages.
-        let mut remaining_render_lines = num_progress_render_lines(submessages) - 2;
+        let mut remaining_height = progress_render_height(submessages) - 2;
 
         // Keep track of an offset for animation frames.
-        let mut frame_offset = 0;
+        let mut rendered_submessage_lines = 0;
 
         // Helper closure to queue prefixes for submessages.
         let queue_prefix = |s: &mut Stdout, frame_offset: isize| -> Result<(), Error> {
@@ -174,11 +183,11 @@ fn render_progress(
         };
 
         for submessage in submessages.iter() {
-            frame_offset += match submessage {
+            rendered_submessage_lines += match submessage {
                 Submessage::Raw(message) => {
-                    if remaining_render_lines <= max_rows {
+                    let rendered_lines = if remaining_height - 1 < inner_max_height {
                         // Print prefix.
-                        queue_prefix(stdout, frame_offset)?;
+                        queue_prefix(stdout, rendered_submessage_lines as isize)?;
 
                         // Print progress message and clear previous frame residue.
                         queue!(
@@ -186,11 +195,15 @@ fn render_progress(
                             style::Print(message),
                             terminal::Clear(terminal::ClearType::UntilNewLine),
                         )?;
-                    }
 
-                    remaining_render_lines -= 1;
+                        1
+                    } else {
+                        0
+                    };
 
-                    1
+                    remaining_height -= 1;
+
+                    rendered_lines
                 }
                 Submessage::Progress(
                     nested_progress @ (ProgressSubmessage::Running(RunningProgress {
@@ -202,44 +215,54 @@ fn render_progress(
                         ..
                     })),
                 ) => {
-                    let num_render_lines = num_progress_render_lines(submessages);
+                    let nested_height = progress_render_height(submessages);
 
-                    let nested_max_rows = if remaining_render_lines > max_rows {
-                        num_render_lines.saturating_sub(remaining_render_lines - max_rows)
+                    let rendered_lines = if remaining_height - nested_height < inner_max_height {
+                        let truncated_nested_height = if remaining_height > inner_max_height {
+                            nested_height - (remaining_height - inner_max_height)
+                        } else {
+                            nested_height
+                        };
+
+                        // Print prefix.
+                        for i in 0..truncated_nested_height {
+                            queue_prefix(stdout, (rendered_submessage_lines + i) as isize)?;
+                        }
+
+                        // Reset cursor position.
+                        if truncated_nested_height >= 2 {
+                            stdout.queue(cursor::MoveToPreviousLine(
+                                truncated_nested_height as u16 - 1,
+                            ))?;
+                        }
+                        stdout.queue(cursor::MoveToColumn(0))?;
+
+                        match nested_progress {
+                            ProgressSubmessage::Running(running_progress) => {
+                                // Print nested running progress.
+                                running_progress.render(
+                                    stdout,
+                                    truncated_nested_height,
+                                    animation_frame,
+                                    indentation + 1,
+                                )?
+                            }
+                            ProgressSubmessage::Finished(finished_progress) => {
+                                // Print nested finished progress.
+                                finished_progress.render(
+                                    stdout,
+                                    truncated_nested_height,
+                                    indentation + 1,
+                                )?
+                            }
+                        }
                     } else {
-                        num_render_lines
+                        0
                     };
 
-                    // Print prefix.
-                    for i in 0..nested_max_rows {
-                        queue_prefix(stdout, frame_offset + i as isize)?;
-                    }
+                    remaining_height -= nested_height;
 
-                    // Reset cursor position.
-                    if nested_max_rows > 1 {
-                        stdout.queue(cursor::MoveToPreviousLine(nested_max_rows as u16 - 1))?;
-                    }
-                    stdout.queue(cursor::MoveToColumn(0))?;
-
-                    match nested_progress {
-                        ProgressSubmessage::Running(running_progress) => {
-                            // Print nested running progress.
-                            running_progress.render(
-                                stdout,
-                                nested_max_rows,
-                                animation_frame,
-                                indentation + 1,
-                            )?;
-                        }
-                        ProgressSubmessage::Finished(finished_progress) => {
-                            // Print nested finished progress.
-                            finished_progress.render(stdout, nested_max_rows, indentation + 1)?;
-                        }
-                    }
-
-                    remaining_render_lines -= num_render_lines;
-
-                    num_render_lines as isize
+                    rendered_lines
                 }
             };
         }
@@ -252,11 +275,11 @@ fn render_progress(
             style::SetForegroundColor(style::Color::Yellow),
             style::Print(animate(
                 BOX_TURN_SWELL_ANIMATION,
-                animation_frame.map(|f| f - 2 * frame_offset),
+                animation_frame.map(|f| f - 2 * rendered_submessage_lines as isize),
             )),
             style::Print(animate(
                 BOX_END_SWELL_ANIMATION,
-                animation_frame.map(|f| f - 2 * (frame_offset + 1)),
+                animation_frame.map(|f| f - 2 * (rendered_submessage_lines as isize + 1)),
             )),
         )?;
         queue_elapsed(stdout)?;
@@ -266,6 +289,10 @@ fn render_progress(
             terminal::Clear(terminal::ClearType::UntilNewLine),
             style::SetForegroundColor(style::Color::Reset),
         )?;
+
+        2 + rendered_submessage_lines
+    } else {
+        1
     }
 }
 
@@ -478,7 +505,7 @@ impl ProgressThread {
                 .cycle();
 
             let mut stdout = io::stdout();
-            let mut previous_num_lines = 0;
+            let mut previous_height: usize = 0;
             while !should_cancel.load(Ordering::SeqCst) {
                 let terminal_rows = terminal::size()?.1 as usize;
 
@@ -487,13 +514,13 @@ impl ProgressThread {
                     if let Some(mut progress) = progress_opt.take() {
                         progress.finish_progresses();
                         if progress.should_finish() {
-                            if previous_num_lines > 1 {
+                            if previous_height >= 2 {
                                 stdout.queue(cursor::MoveToPreviousLine(
-                                    previous_num_lines as u16 - 1,
+                                    previous_height as u16 - 1,
                                 ))?;
                             }
                             stdout.queue(cursor::MoveToColumn(0))?;
-                            previous_num_lines = 0;
+                            previous_height = 0;
 
                             let finished: FinishedProgress = progress.into();
                             finished.render(&mut stdout, terminal_rows, 0)?;
@@ -511,19 +538,17 @@ impl ProgressThread {
                     let progress = progress.read().expect(EXPECT_THREAD_NOT_POSIONED);
                     if let Some(ref progress) = *progress {
                         let (columns, _) = terminal::size()?;
-                        stdout.queue(terminal::SetSize(columns, previous_num_lines as u16))?;
-                        if previous_num_lines > 1 {
-                            stdout
-                                .queue(cursor::MoveToPreviousLine(previous_num_lines as u16 - 1))?;
+                        stdout.queue(terminal::SetSize(columns, previous_height as u16))?;
+                        if previous_height >= 2 {
+                            stdout.queue(cursor::MoveToPreviousLine(previous_height as u16 - 1))?;
                         }
                         stdout.queue(cursor::MoveToColumn(0))?;
 
                         let frame = spin_symbol_iter
                             .next()
                             .expect("spin symbol iterator should be infinite");
-                        progress.render(&mut stdout, terminal_rows, Some(frame as isize), 0)?;
-                        previous_num_lines =
-                            num_progress_render_lines(&progress.submessages).min(terminal_rows);
+                        previous_height =
+                            progress.render(&mut stdout, terminal_rows, Some(frame as isize), 0)?;
                     }
                 }
 
@@ -571,6 +596,8 @@ impl ProgressThread {
 
     #[throws(Error)]
     fn cleanup(&self) {
+        PROGRESS_THREAD.resync_if_needed();
+
         self.should_cancel.store(true, Ordering::SeqCst);
         if let Some(thread_handle) = self
             .thread_handle
@@ -692,16 +719,16 @@ impl RunningProgress {
     fn render(
         &self,
         stdout: &mut Stdout,
-        max_rows: usize,
+        max_height: usize,
         animation_frame: Option<isize>,
         indentation: usize,
-    ) {
+    ) -> usize {
         let elapsed = self.start_time.elapsed();
         render_progress(
             stdout,
-            max_rows,
-            animation_frame,
+            max_height,
             indentation,
+            animation_frame,
             &self.message,
             &self.submessages,
             |s| {
@@ -713,7 +740,7 @@ impl RunningProgress {
                 )?;
                 Ok(())
             },
-        )?;
+        )?
     }
 }
 
@@ -725,12 +752,12 @@ pub struct FinishedProgress {
 
 impl FinishedProgress {
     #[throws(Error)]
-    fn render(&self, stdout: &mut Stdout, max_rows: usize, indentation: usize) {
+    fn render(&self, stdout: &mut Stdout, max_height: usize, indentation: usize) -> usize {
         render_progress(
             stdout,
-            max_rows,
-            None,
+            max_height,
             indentation,
+            None,
             &self.message,
             &self.submessages,
             |s| {
@@ -742,7 +769,7 @@ impl FinishedProgress {
                 )?;
                 Ok(())
             },
-        )?;
+        )?
     }
 }
 
