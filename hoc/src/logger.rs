@@ -1,11 +1,10 @@
 use std::{
     borrow::Cow,
     env,
+    fmt::{self, Write as FmtWrite},
     fs::{self, File},
-    io::{self, Stdout, Write},
-    mem,
-    num::NonZeroUsize,
-    panic,
+    io::{self, Stdout, Write as IoWrite},
+    mem, panic,
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc, Condvar, Mutex, RwLock, RwLockReadGuard, RwLockWriteGuard,
@@ -15,7 +14,11 @@ use std::{
 };
 
 use chrono::{DateTime, Utc};
-use crossterm::{cursor, execute, queue, style, terminal, QueueableCommand};
+use crossterm::{
+    cursor, execute, queue,
+    style::{self, Stylize},
+    terminal, QueueableCommand,
+};
 use lazy_static::lazy_static;
 use log::{Level, LevelFilter, Log, Metadata, Record};
 use spin_sleep::{SpinSleeper, SpinStrategy};
@@ -36,7 +39,7 @@ lazy_static! {
 }
 
 pub fn push_progress(message: String) -> ProgressHandle {
-    PROGRESS_THREAD.resync_if_needed();
+    PROGRESS_THREAD.sync();
 
     let mut progress = PROGRESS_THREAD.get_progress_mut();
     if let Some(ref mut progress) = *progress {
@@ -164,7 +167,7 @@ fn render_progress(
         let mut remaining_height = progress_render_height(submessages) - 2;
 
         // Keep track of an offset for animation frames.
-        let mut rendered_submessage_lines = 0;
+        let mut rendered_submessage_height = 0;
 
         // Helper closure to queue prefixes for submessages.
         let queue_prefix = |s: &mut Stdout, frame_offset: isize| -> Result<(), Error> {
@@ -183,11 +186,11 @@ fn render_progress(
         };
 
         for submessage in submessages.iter() {
-            rendered_submessage_lines += match submessage {
+            rendered_submessage_height += match submessage {
                 Submessage::Raw(message) => {
                     let rendered_lines = if remaining_height - 1 < inner_max_height {
                         // Print prefix.
-                        queue_prefix(stdout, rendered_submessage_lines as isize)?;
+                        queue_prefix(stdout, rendered_submessage_height as isize)?;
 
                         // Print progress message and clear previous frame residue.
                         queue!(
@@ -217,7 +220,7 @@ fn render_progress(
                 ) => {
                     let nested_height = progress_render_height(submessages);
 
-                    let rendered_lines = if remaining_height - nested_height < inner_max_height {
+                    let rendered_height = if remaining_height - nested_height < inner_max_height {
                         let truncated_nested_height = if remaining_height > inner_max_height {
                             nested_height - (remaining_height - inner_max_height)
                         } else {
@@ -226,7 +229,7 @@ fn render_progress(
 
                         // Print prefix.
                         for i in 0..truncated_nested_height {
-                            queue_prefix(stdout, (rendered_submessage_lines + i) as isize)?;
+                            queue_prefix(stdout, (rendered_submessage_height + i) as isize)?;
                         }
 
                         // Reset cursor position.
@@ -249,10 +252,14 @@ fn render_progress(
                             }
                             ProgressSubmessage::Finished(finished_progress) => {
                                 // Print nested finished progress.
-                                finished_progress.render(
+                                render_progress(
                                     stdout,
                                     truncated_nested_height,
                                     indentation + 1,
+                                    None,
+                                    &finished_progress.message,
+                                    &finished_progress.submessages,
+                                    finished_progress.get_queue_elapsed(),
                                 )?
                             }
                         }
@@ -262,7 +269,7 @@ fn render_progress(
 
                     remaining_height -= nested_height;
 
-                    rendered_lines
+                    rendered_height
                 }
             };
         }
@@ -275,11 +282,11 @@ fn render_progress(
             style::SetForegroundColor(style::Color::Yellow),
             style::Print(animate(
                 BOX_TURN_SWELL_ANIMATION,
-                animation_frame.map(|f| f - 2 * rendered_submessage_lines as isize),
+                animation_frame.map(|f| f - 2 * rendered_submessage_height as isize),
             )),
             style::Print(animate(
                 BOX_END_SWELL_ANIMATION,
-                animation_frame.map(|f| f - 2 * (rendered_submessage_lines as isize + 1)),
+                animation_frame.map(|f| f - 2 * (rendered_submessage_height as isize + 1)),
             )),
         )?;
         queue_elapsed(stdout)?;
@@ -290,7 +297,7 @@ fn render_progress(
             style::SetForegroundColor(style::Color::Reset),
         )?;
 
-        2 + rendered_submessage_lines
+        2 + rendered_submessage_height
     } else {
         1
     }
@@ -369,13 +376,11 @@ impl Log for Logger {
             let log_line =
                 String::from_utf8(log_line_bytes).expect("control sequence should be valid");
 
+            PROGRESS_THREAD.sync();
+
             let mut progress = PROGRESS_THREAD.get_progress_mut();
             if let Some(progress) = &mut *progress {
-                if !progress.should_finish() {
-                    progress.push_log(log_line);
-                } else {
-                    println!("{log_line}");
-                }
+                progress.push_log(log_line);
             } else {
                 println!("{log_line}");
             }
@@ -430,23 +435,25 @@ impl Log for Logger {
                         longest_mod_name = module.len();
                     }
 
-                    file.write_fmt(format_args!(
+                    write!(
+                        file,
                         "[{time:<27} {level:<7} {module:<longest_mod_name$}] {message}\n",
-                        time = format!("{:?}", meta.timestamp),
                         level = meta.level,
-                    ))
-                } else {
-                    file.write_fmt(format_args!(
-                        "[{time:<27} {level:<7}{:mod_len$}] {message}\n",
-                        "",
                         time = format!("{:?}", meta.timestamp),
+                    )
+                } else {
+                    write!(
+                        file,
+                        "[{time:<27} {level:<7}{empty_mod:mod_len$}] {message}\n",
+                        empty_mod = "",
                         level = meta.level,
                         mod_len = if longest_mod_name > 0 {
                             longest_mod_name + 1
                         } else {
                             0
                         },
-                    ))
+                        time = format!("{:?}", meta.timestamp),
+                    )
                 };
 
                 if let Err(err) = res {
@@ -482,7 +489,7 @@ struct LoggerMeta {
 #[must_use]
 pub struct ProgressThread {
     progress: Arc<RwLock<Option<RunningProgress>>>,
-    should_resync: Arc<(Mutex<bool>, Condvar)>,
+    should_sync: Arc<(Mutex<bool>, Condvar)>,
     should_cancel: Arc<AtomicBool>,
     thread_handle: RwLock<Option<JoinHandle<Result<(), Error>>>>,
 }
@@ -523,8 +530,13 @@ impl ProgressThread {
                             previous_height = 0;
 
                             let finished: FinishedProgress = progress.into();
-                            finished.render(&mut stdout, terminal_rows, 0)?;
-                            stdout.queue(style::Print("\n"))?;
+                            let mut buffer = Vec::new();
+                            finished.render_to_strings(&mut buffer, 0)?;
+                            for line in buffer {
+                                stdout.queue(style::Print(line))?;
+                                stdout.queue(terminal::Clear(terminal::ClearType::UntilNewLine))?;
+                                stdout.queue(style::Print("\n"))?;
+                            }
 
                             *should_resync.0.lock().expect(EXPECT_THREAD_NOT_POSIONED) = false;
                             should_resync.1.notify_one();
@@ -562,7 +574,7 @@ impl ProgressThread {
 
         Self {
             progress: progress_orig,
-            should_resync: should_resync_orig,
+            should_sync: should_resync_orig,
             should_cancel: should_cancel_orig,
             thread_handle: RwLock::new(Some(thread_handle)),
         }
@@ -576,27 +588,23 @@ impl ProgressThread {
         self.progress.read().expect(EXPECT_THREAD_NOT_POSIONED)
     }
 
-    fn resync_if_needed(&self) {
-        let mut lock = self
-            .should_resync
-            .0
-            .lock()
-            .expect(EXPECT_THREAD_NOT_POSIONED);
+    fn sync(&self) {
+        let mut lock = self.should_sync.0.lock().expect(EXPECT_THREAD_NOT_POSIONED);
         *lock = self
             .get_progress()
             .as_ref()
             .map(RunningProgress::should_finish)
             .unwrap_or(false);
         let _ = self
-            .should_resync
+            .should_sync
             .1
-            .wait_while(lock, |should_resync| *should_resync)
+            .wait_while(lock, |should_sync| *should_sync)
             .expect(EXPECT_THREAD_NOT_POSIONED);
     }
 
     #[throws(Error)]
     fn cleanup(&self) {
-        PROGRESS_THREAD.resync_if_needed();
+        PROGRESS_THREAD.sync();
 
         self.should_cancel.store(true, Ordering::SeqCst);
         if let Some(thread_handle) = self
@@ -752,24 +760,136 @@ pub struct FinishedProgress {
 
 impl FinishedProgress {
     #[throws(Error)]
-    fn render(&self, stdout: &mut Stdout, max_height: usize, indentation: usize) -> usize {
-        render_progress(
-            stdout,
-            max_height,
-            indentation,
-            None,
-            &self.message,
-            &self.submessages,
-            |s| {
-                queue!(
-                    s,
-                    style::Print(self.elapsed.as_secs()),
-                    style::Print("."),
-                    style::Print(self.elapsed.as_millis() % 1000)
+    fn render_to_strings(&self, buffer: &mut Vec<String>, start_index: usize) -> usize {
+        let mut index = start_index;
+
+        // Helper function to get a line from the buffer, or create it if it does not exist.
+        fn get_line_mut(buffer: &mut Vec<String>, index: usize) -> &mut String {
+            debug_assert!(
+                buffer.len() >= index,
+                "buffer length was `{}`, but it was expected to have a length of at least `{}`",
+                buffer.len(),
+                index + 1
+            );
+
+            if buffer.len() < index + 1 {
+                buffer.push(String::new());
+            }
+            &mut buffer[index]
+        }
+
+        // Render indicator and progress message.
+        let header_line = get_line_mut(buffer, index);
+
+        write!(
+            header_line,
+            "{color}{icon} {message}",
+            color = style::SetForegroundColor(style::Color::Yellow),
+            icon = BRAILLE_SPIN_ANIMATION.1,
+            message = self.message,
+        )?;
+
+        let render_single_line = self.submessages.is_empty();
+
+        // If there are no submessages, render the elapsed time on the same row as the progress
+        // message.
+        if render_single_line {
+            write!(
+                header_line,
+                " {separator} {secs}.{millis:03}s",
+                separator = SEPARATOR_SWELL_ANIMATION.1,
+                secs = self.elapsed.as_secs(),
+                millis = self.elapsed.as_millis() % 1000
+            )?;
+        }
+
+        write!(
+            header_line,
+            "{reset}",
+            reset = style::SetForegroundColor(style::Color::Reset),
+        )?;
+        index += 1;
+
+        // Render submessages, if any.
+        if !render_single_line {
+            // Helper function to render prefixes for submessages.
+            #[throws(Error)]
+            fn render_prefix(buffer: &mut Vec<String>, index: usize) -> &mut String {
+                let line = get_line_mut(buffer, index);
+
+                write!(
+                    line,
+                    "{color}{side} {reset}",
+                    color = style::SetForegroundColor(style::Color::Yellow),
+                    reset = style::SetForegroundColor(style::Color::Reset),
+                    side = BOX_SIDE_SWELL_ANIMATION.1,
                 )?;
-                Ok(())
-            },
-        )?
+
+                line
+            }
+
+            for submessage in self.submessages.iter() {
+                index += match submessage {
+                    Submessage::Raw(message) => {
+                        // Render prefix.
+                        let line = render_prefix(buffer, index)?;
+
+                        // Render progress message.
+                        write!(line, "{message}")?;
+
+                        1
+                    }
+                    Submessage::Progress(ProgressSubmessage::Finished(finished_progress)) => {
+                        // Render prefix.
+                        let height = progress_render_height(&finished_progress.submessages);
+                        for k in 0..height {
+                            render_prefix(buffer, index + k)?;
+                        }
+
+                        // Render nested finished progress.
+                        let real_height = finished_progress.render_to_strings(buffer, index)?;
+
+                        debug_assert!(
+                            height == real_height,
+                            "expected rendered height to be `{height}`, got `{real_height}`"
+                        );
+
+                        real_height
+                    }
+                    Submessage::Progress(ProgressSubmessage::Running(_)) => {
+                        panic!("a finished progress cannot contain a running progress")
+                    }
+                };
+            }
+
+            // Render elapsed time.
+            let line = get_line_mut(buffer, index);
+            write!(
+                line,
+                "{color}{turn}{end}{secs}.{millis:03}s{reset}",
+                color = style::SetForegroundColor(style::Color::Yellow),
+                end = BOX_END_SWELL_ANIMATION.1,
+                millis = self.elapsed.as_millis() % 1000,
+                reset = style::SetForegroundColor(style::Color::Reset),
+                secs = self.elapsed.as_secs(),
+                turn = BOX_TURN_SWELL_ANIMATION.1,
+            )?;
+            index += 1;
+        }
+
+        index - start_index
+    }
+
+    fn get_queue_elapsed(&self) -> impl Fn(&mut Stdout) -> Result<(), Error> + '_ {
+        |stdout| {
+            queue!(
+                stdout,
+                style::Print(self.elapsed.as_secs()),
+                style::Print("."),
+                style::Print(format!("{:03}", self.elapsed.as_millis() % 1000)),
+            )?;
+            Ok(())
+        }
     }
 }
 
@@ -793,4 +913,7 @@ pub enum Error {
 
     #[error(transparent)]
     Crossterm(#[from] crossterm::ErrorKind),
+
+    #[error(transparent)]
+    Format(#[from] fmt::Error),
 }

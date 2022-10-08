@@ -65,129 +65,59 @@ struct SdCardCommand {}
 
 #[throws(anyhow::Error)]
 fn main() -> ExitCode {
-    use crossterm::ExecutableCommand;
-
     logger::Logger::init()?;
 
-    {
-        info!("Test");
-        let progress = progress!("Progress 1");
-        for i in 0..10 {
-            info!("Info {i}")
+    let mut rng = <rand_chacha::ChaCha8Rng as rand::SeedableRng>::seed_from_u64(2);
+    let mut progresses = Vec::new();
+
+    for i in 1.. {
+        let n = rand::Rng::gen_range(&mut rng, 0..6);
+
+        if n == 0 {
+            trace!("Trace {i}");
+        } else if n == 1 {
+            debug!("Debug {i}");
+        } else if n == 2 {
+            info!("Info {i}");
+        } else if n == 3 {
+            warn!("Warning {i}");
+        } else if n == 4 {
+            error!("Error {i}");
+        } else {
+            progresses.push((
+                progress!("Progress {i}"),
+                if rand::Rng::gen_ratio(&mut rng, 99, 100) {
+                    rand::Rng::gen_range(&mut rng, 50..100)
+                } else {
+                    rand::Rng::gen_range(&mut rng, 0..5)
+                },
+            ));
         }
-        drop(progress);
-        let progress = progress!("Progress 2");
-        for i in 0..10 {
-            info!("Info {i}")
-        }
-        let progress = progress!("Progress 3");
-        for i in 0..10 {
-            info!("Info {i}")
-        }
-        let progress = progress!("Progress 3");
-        for i in 0..10 {
-            info!("Info {i}")
-        }
-        let progress = progress!("Progress 3");
-        for i in 0..10 {
-            info!("Info {i}")
-        }
-        let progress = progress!("Progress 3");
-        for i in 0..10 {
-            info!("Info {i}")
-        }
-        let progress = progress!("Progress 3");
-        for i in 0..10 {
-            info!("Info {i}")
-        }
-        let progress = progress!("Progress 3");
-        for i in 0..10 {
-            info!("Info {i}")
-        }
-        let progress = progress!("Progress 3");
-        for i in 0..10 {
-            info!("Info {i}")
-        }
-        let progress = progress!("Progress 3");
-        for i in 0..10 {
-            info!("Info {i}")
-        }
-        let progress = progress!("Progress 3");
-        for i in 0..10 {
-            info!("Info {i}")
-        }
-        let progress = progress!("Progress 3");
-        for i in 0..10 {
-            info!("Info {i}")
-        }
-        let progress = progress!("Progress 3");
-        for i in 0..10 {
-            info!("Info {i}")
-        }
-        let progress = progress!("Progress 3");
-        for i in 0..10 {
-            info!("Info {i}")
-        }
-        let progress = progress!("Progress 3");
-        for i in 0..10 {
-            info!("Info {i}")
-        }
-        let progress = progress!("Progress 3");
-        for i in 0..10 {
-            info!("Info {i}")
-        }
-        let progress = progress!("Progress 3");
-        for i in 0..10 {
-            info!("Info {i}")
-        }
-        let progress = progress!("Progress 3");
-        for i in 0..10 {
-            info!("Info {i}")
-        }
-        let progress = progress!("Progress 3");
-        for i in 0..10 {
-            info!("Info {i}")
-        }
-        let progress = progress!("Progress 3");
-        for i in 0..10 {
-            info!("Info {i}")
-        }
-        let progress = progress!("Progress 3");
-        for i in 0..10 {
-            info!("Info {i}")
-        }
-        let progress = progress!("Progress 3");
-        for i in 0..10 {
-            info!("Info {i}")
-        }
-        let progress = progress!("Progress 3");
-        for i in 0..10 {
-            info!("Info {i}")
-        }
-        let progress = progress!("Progress 3");
-        for i in 0..10 {
-            info!("Info {i}")
-        }
-        let progress = progress!("Progress 3");
-        for i in 0..10 {
-            info!("Info {i}")
-        }
-        let progress = progress!("Progress 3");
-        for i in 0..10 {
-            info!("Info {i}")
-        }
-        let progress = progress!("Progress 3");
-        for i in 0..10 {
-            info!("Info {i}")
-        }
-        let progress = progress!("Progress 3");
-        for i in 0..10 {
-            info!("Info {i}")
+
+        progresses.retain_mut(|(_, ttl)| {
+            if *ttl == 0 {
+                false
+            } else {
+                *ttl -= 1;
+                true
+            }
+        });
+
+        if rand::Rng::gen_ratio(&mut rng, 3, 4) {
+            std::thread::sleep(std::time::Duration::from_millis(rand::Rng::gen_range(
+                &mut rng,
+                5..50,
+            )));
+        } else {
+            std::thread::sleep(std::time::Duration::from_millis(rand::Rng::gen_range(
+                &mut rng,
+                100..1000,
+            )));
         }
     }
 
     logger::Logger::cleanup()?;
-    return ExitCode::from(0);
+    return ExitCode::from(1);
 
     let exit_code = match App::run() {
         Ok(()) => ExitCode::SUCCESS,
