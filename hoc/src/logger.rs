@@ -356,6 +356,9 @@ impl ProgresHandler {
             thread_handle
                 .join()
                 .unwrap_or_else(|e| panic::resume_unwind(e))?;
+
+            // Print a final new line.
+            println!();
         }
     }
 }
