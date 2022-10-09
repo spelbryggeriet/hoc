@@ -108,6 +108,6 @@ macro_rules! arg_get_or_default {
 
 macro_rules! progress {
     ($($args:tt)*) => {
-        $crate::logger::push_progress(format!($($args)*))
+        $crate::logger::PROGRESS_THREAD.push_progress(format!($($args)*))
     };
 }

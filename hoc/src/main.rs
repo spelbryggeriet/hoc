@@ -27,6 +27,12 @@ impl App {
         debug!("Parsing command-line arguments");
         let app = Self::from_args();
 
+        #[cfg(debug_assertions)]
+        if matches!(app.command, Command::Debug) {
+            run_debug();
+            return;
+        }
+
         debug!("Feching HOME environment variable");
         let home_dir = env::var("HOME")?;
 
@@ -45,6 +51,9 @@ impl App {
 
 #[derive(Subcommand)]
 enum Command {
+    #[cfg(debug_assertions)]
+    Debug,
+
     Deploy(DeployCommand),
     Init(init::Command),
     Node(NodeCommand),
@@ -67,31 +76,53 @@ struct SdCardCommand {}
 fn main() -> ExitCode {
     logger::Logger::init()?;
 
+    let exit_code = match App::run() {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            error!("{error}");
+            ExitCode::from(1)
+        }
+    };
+
+    logger::Logger::cleanup()?;
+
+    exit_code
+}
+
+#[cfg(debug_assertions)]
+fn run_debug() {
     let mut rng = <rand_chacha::ChaCha8Rng as rand::SeedableRng>::seed_from_u64(2);
-    let mut progresses = Vec::new();
+    let mut progresses = Vec::<(_, i32)>::new();
 
-    for i in 1.. {
-        let n = rand::Rng::gen_range(&mut rng, 0..6);
+    for i in 0.. {
+        let d = progresses.len();
 
-        if n == 0 {
-            trace!("Trace {i}");
-        } else if n == 1 {
-            debug!("Debug {i}");
-        } else if n == 2 {
-            info!("Info {i}");
-        } else if n == 3 {
-            warn!("Warning {i}");
-        } else if n == 4 {
-            error!("Error {i}");
+        if rand::Rng::gen_ratio(&mut rng, 1, 5) {
+            let ttl = if rand::Rng::gen_ratio(&mut rng, 1, 20) {
+                rand::Rng::gen_range(&mut rng, 50..100)
+            } else {
+                rand::Rng::gen_range(&mut rng, 0..5)
+            };
+
+            progresses.push((progress!("Progress {}-{i}", d + 1), ttl));
+            progresses.iter_mut().rev().fold(0, |max, (_, ttl)| {
+                if *ttl <= max {
+                    *ttl = max + 1;
+                }
+                *ttl
+            });
         } else {
-            progresses.push((
-                progress!("Progress {i}"),
-                if rand::Rng::gen_ratio(&mut rng, 99, 100) {
-                    rand::Rng::gen_range(&mut rng, 50..100)
-                } else {
-                    rand::Rng::gen_range(&mut rng, 0..5)
-                },
-            ));
+            if rand::Rng::gen_ratio(&mut rng, 1, 2) {
+                trace!("Trace {d}-{i}");
+            } else if rand::Rng::gen_ratio(&mut rng, 1, 2) {
+                debug!("Debug {d}-{i}");
+            } else if rand::Rng::gen_ratio(&mut rng, 9, 10) {
+                info!("Info {d}-{i}");
+            } else if rand::Rng::gen_ratio(&mut rng, 1, 2) {
+                warn!("Warning {d}-{i}");
+            } else {
+                error!("Error {d}-{i}");
+            }
         }
 
         progresses.retain_mut(|(_, ttl)| {
@@ -115,19 +146,4 @@ fn main() -> ExitCode {
             )));
         }
     }
-
-    logger::Logger::cleanup()?;
-    return ExitCode::from(1);
-
-    let exit_code = match App::run() {
-        Ok(()) => ExitCode::SUCCESS,
-        Err(error) => {
-            error!("{error}");
-            ExitCode::from(1)
-        }
-    };
-
-    logger::Logger::cleanup()?;
-
-    exit_code
 }

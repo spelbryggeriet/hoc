@@ -62,10 +62,7 @@ impl Command {
             node_addresses.prefix_len
         );
 
-        let progress_nested = progress!("Testing nested progress");
         let _admin_username = arg_get!(self, admin_username);
-
-        std::thread::sleep(std::time::Duration::new(1, 500_000_000));
 
         // context
         // .kv
