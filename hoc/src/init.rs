@@ -68,6 +68,8 @@ impl Command {
 
         context
             .kv
-            .put_value("network/start_address", node_addresses.ip_addr.to_string())?;
+            .put_value("network/start_address", node_addresses.ip_addr.to_string())?
+            .put_value("network/prefix_len", node_addresses.prefix_len)?
+            .put_value("network/gateway", gateway.to_string())?;
     }
 }
