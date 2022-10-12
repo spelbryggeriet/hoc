@@ -37,12 +37,12 @@ impl App {
         let home_dir = env::var("HOME")?;
 
         debug!("Loading context");
-        let context = Context::load(format!("{home_dir}/.config/hoc/context.yaml"))?;
+        let mut context = Context::load(format!("{home_dir}/.config/hoc/context.yaml"))?;
 
         match app.command {
             Command::Init(init_command) => {
                 debug!("Running {} command", init::Command::command().get_name());
-                init_command.run(context)?;
+                init_command.run(&mut context)?;
             }
             _ => (),
         }

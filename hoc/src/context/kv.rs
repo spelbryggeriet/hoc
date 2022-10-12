@@ -11,9 +11,10 @@ use std::{
 use indexmap::{IndexMap, IndexSet};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
+use strum::{Display, EnumIter, IntoEnumIterator};
 use thiserror::Error;
 
-use crate::prelude::*;
+use crate::{logger, prelude::*};
 
 #[derive(Serialize, Deserialize)]
 pub struct Kv {
@@ -216,16 +217,48 @@ impl Kv {
     #[throws(Error)]
     pub fn put_value<Q: AsRef<Path>, V: Into<Value>>(&mut self, key: Q, value: V) {
         let key = self.check_key(key)?.as_ref().to_path_buf();
-
-        if self.map.contains_key(&key) {
-            throw!(Error::KeyAlreadyExists(key));
-        }
-
         let value = value.into();
 
         debug!("Put value: {key:?} => {value}");
 
-        self.map.insert(key.clone(), Item::Value(value.into()));
+        if self.map.contains_key(&key) {
+            error!("Value for key {key:?} is already set");
+
+            let _pause_lock = logger::pause();
+
+            #[derive(Display, EnumIter)]
+            enum Action {
+                Abort,
+                Skip,
+                Overwrite,
+            }
+
+            let option = select!("How do you want to resolve the key conflict?")
+                .with_options(Action::iter())
+                .get()?;
+
+            match option {
+                Action::Abort => {
+                    throw!(inquire::InquireError::OperationCanceled);
+                }
+                Action::Skip => {
+                    info!("Skipping to put value for key {key:?}");
+                    return;
+                }
+                Action::Overwrite => {
+                    warn!("Overwriting existing value for key {key:?}");
+
+                    if log_enabled!(Level::Debug) {
+                        trace!(
+                            "Old value for key {key:?}: {}",
+                            serde_json::to_string(&self.get(&key)?)?
+                        );
+                    }
+                }
+            }
+        }
+
+        self.map.insert(key, Item::Value(value));
     }
 
     #[throws(Error)]
@@ -318,6 +351,12 @@ pub enum Error {
 
     #[error("An IO error occurred: {0}")]
     Io(#[from] io::Error),
+
+    #[error(transparent)]
+    Prompt(#[from] inquire::InquireError),
+
+    #[error(transparent)]
+    Serialization(#[from] serde_json::Error),
 }
 
 impl From<Infallible> for Error {

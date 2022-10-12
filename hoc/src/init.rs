@@ -51,9 +51,9 @@ pub struct Command {
 
 impl Command {
     #[throws(anyhow::Error)]
-    pub fn run(self, _context: Context) {
-        let node_addresses = arg_get_or_default!(self, node_addresses);
-        let gateway = arg_get_or_default!(self, gateway);
+    pub fn run(self, context: &mut Context) {
+        let node_addresses = prompt_arg_default!(self, node_addresses);
+        let gateway = prompt_arg_default!(self, gateway);
 
         debug!("Checking gateway");
         ensure!(
@@ -62,10 +62,12 @@ impl Command {
             node_addresses.prefix_len
         );
 
-        let _admin_username = arg_get!(self, admin_username);
+        let _admin_username = prompt_arg!(self, admin_username);
 
-        // context
-        // .kv
-        // .put_value("network/start_address", node_addresses.ip_addr.to_string())?;
+        let _store_progress = progress!("Storing network information");
+
+        context
+            .kv
+            .put_value("network/start_address", node_addresses.ip_addr.to_string())?;
     }
 }

@@ -51,6 +51,8 @@ pub fn pause() -> ProgressPauseLock {
             .expect(EXPECT_THREAD_NOT_POSIONED);
     }
 
+    println!();
+
     ProgressPauseLock
 }
 
@@ -308,6 +310,8 @@ impl ProgresHandler {
             let mut has_printed = false;
 
             while !wants_cancel.load(Ordering::SeqCst) {
+                let (terminal_cols, terminal_rows) = terminal::size()?;
+
                 {
                     let (wants_pause_mutex, wants_pause_cvar) = &*wants_pause;
                     let wants_pause_lock =
@@ -341,7 +345,17 @@ impl ProgresHandler {
                                         )?;
                                     }
 
-                                    log => {
+                                    Log::Progress(ref progress_log) => {
+                                        Self::print_running_progress_log(
+                                            &mut stdout,
+                                            progress_log,
+                                            terminal_rows as usize,
+                                            terminal_cols as usize,
+                                            &mut frames,
+                                            true,
+                                            previous_height,
+                                            &mut has_printed,
+                                        )?;
                                         logs.push_front(log);
                                         break;
                                     }
@@ -370,8 +384,6 @@ impl ProgresHandler {
                         }
                     }
 
-                    let terminal_rows = terminal::size()?.1 as usize;
-
                     {
                         let mut stdout = io::stdout();
 
@@ -391,8 +403,10 @@ impl ProgresHandler {
                                     Self::print_running_progress_log(
                                         &mut stdout,
                                         progress_log,
+                                        terminal_rows as usize,
+                                        terminal_cols as usize,
                                         &mut frames,
-                                        terminal_rows,
+                                        false,
                                         previous_height,
                                         &mut has_printed,
                                     )?;
@@ -482,15 +496,17 @@ impl ProgresHandler {
     fn print_running_progress_log(
         stdout: &mut Stdout,
         progress_log: &ProgressLog,
-        frames: &mut impl Iterator<Item = usize>,
         max_height: usize,
+        width: usize,
+        frames: &mut impl Iterator<Item = usize>,
+        is_paused: bool,
         previous_height: &mut usize,
         has_printed: &mut bool,
     ) {
         Self::clear_previous_progress_log(stdout, *previous_height, has_printed)?;
 
         let frame = frames.next().expect("animation frames should be infinite");
-        *previous_height = progress_log.render(stdout, max_height, 0, frame)?;
+        *previous_height = progress_log.render(stdout, max_height, width, 0, frame, is_paused)?;
     }
 
     #[throws(Error)]
@@ -726,8 +742,10 @@ impl ProgressLog {
         &self,
         stdout: &mut Stdout,
         max_height: usize,
+        width: usize,
         indentation: usize,
         animation_frame: usize,
+        is_paused: bool,
     ) -> usize {
         if max_height == 0 {
             return 0;
@@ -735,14 +753,20 @@ impl ProgressLog {
 
         let is_finished = *self.is_finished.lock().expect(EXPECT_THREAD_NOT_POSIONED);
 
+        let animation_state = if is_finished.is_some() {
+            animation::State::Finished
+        } else if is_paused {
+            animation::State::Paused
+        } else {
+            animation::State::Animating(animation_frame as isize)
+        };
+
         // Print indicator and progress message.
         queue!(
             stdout,
             cursor::MoveToColumn(2 * indentation as u16),
             style::SetForegroundColor(Self::COLOR),
-            style::Print(animation::braille_spin(
-                is_finished.is_none().then_some(animation_frame as isize)
-            )),
+            style::Print(animation::braille_spin(animation_state)),
             style::Print(" "),
             style::Print(&self.message),
         )?;
@@ -775,15 +799,21 @@ impl ProgressLog {
         // If there are no submessages, or if the max height is 1, print the elapsed time on the same
         // row as the progress message.
         if render_single_line {
-            queue!(
-                stdout,
-                style::Print(" "),
-                style::Print(animation::separator_swell(
-                    is_finished.is_none().then_some(animation_frame as isize)
-                )),
-                style::Print(" "),
-            )?;
-            queue_elapsed(stdout)?;
+            if indentation == 0 && is_paused {
+                queue!(
+                    stdout,
+                    style::Print("\n└"),
+                    style::Print("╶".repeat(width - 1)),
+                )?;
+            } else {
+                queue!(
+                    stdout,
+                    style::Print(" "),
+                    style::Print(animation::separator_swell(animation_state)),
+                    style::Print(" "),
+                )?;
+                queue_elapsed(stdout)?;
+            }
         }
 
         // Clear the rest of the line in case there is residues left from previous frame.
@@ -794,7 +824,9 @@ impl ProgressLog {
         )?;
 
         // Print submessages, if any.
-        if render_single_line {
+        if render_single_line && is_paused {
+            2
+        } else if render_single_line {
             1
         } else {
             // Reserve two rows for the header and the footer.
@@ -812,9 +844,7 @@ impl ProgressLog {
                     cursor::MoveToColumn(2 * indentation as u16),
                     style::SetForegroundColor(Self::COLOR),
                     style::Print(animation::box_side_swell(
-                        is_finished
-                            .is_none()
-                            .then_some(animation_frame as isize - 2 * frame_offset as isize)
+                        animation_state.frame_offset(-2 * frame_offset as isize)
                     )),
                     style::Print(" "),
                     style::SetForegroundColor(style::Color::Reset),
@@ -865,8 +895,10 @@ impl ProgressLog {
                             progress_log.render(
                                 stdout,
                                 truncated_nested_height,
+                                width.saturating_sub(2),
                                 indentation + 1,
                                 animation_frame,
+                                is_paused,
                             )?
                         } else {
                             0
@@ -879,24 +911,33 @@ impl ProgressLog {
                 };
             }
 
-            // Print elapsed time.
+            // Print prefix of elapsed line.
             queue!(
                 stdout,
                 style::Print("\n"),
                 cursor::MoveToColumn(2 * indentation as u16),
                 style::SetForegroundColor(Self::COLOR),
-                style::Print(animation::box_turn_swell(is_finished.is_none().then_some(
-                    animation_frame as isize - 2 * rendered_logs_height as isize
-                ))),
-                style::Print(animation::box_end_swell(is_finished.is_none().then_some(
-                    animation_frame as isize - 2 * (rendered_logs_height as isize + 1)
-                )))
+                style::Print(animation::box_turn_swell(
+                    animation_state.frame_offset(-2 * rendered_logs_height as isize)
+                ))
             )?;
-            queue_elapsed(stdout)?;
+
+            if is_paused {
+                // Print dashed line to indicate paused, incomplete progress.
+                stdout.queue(style::Print("╶".repeat(width - 1)))?;
+            } else {
+                // Print elapsed time.
+                stdout.queue(style::Print(animation::box_end_swell(
+                    animation_state.frame_offset(-2 * (rendered_logs_height as isize + 1)),
+                )))?;
+                queue_elapsed(stdout)?;
+            }
+
+            // Reset color and clear rest of line.
             queue!(
                 stdout,
-                terminal::Clear(terminal::ClearType::UntilNewLine),
                 style::SetForegroundColor(style::Color::Reset),
+                terminal::Clear(terminal::ClearType::UntilNewLine),
             )?;
 
             2 + rendered_logs_height
@@ -920,7 +961,7 @@ impl ProgressLog {
             header_line,
             "{color}{icon} {message}",
             color = style::SetForegroundColor(Self::COLOR),
-            icon = animation::braille_spin(None),
+            icon = animation::braille_spin(animation::State::Finished),
             message = self.message,
         )?;
 
@@ -932,7 +973,7 @@ impl ProgressLog {
             write!(
                 header_line,
                 " {separator} {secs}.{millis:03}s",
-                separator = animation::separator_swell(None),
+                separator = animation::separator_swell(animation::State::Finished),
                 secs = elapsed.as_secs(),
                 millis = elapsed.as_millis() % 1000
             )?;
@@ -957,7 +998,7 @@ impl ProgressLog {
                     "{color}{side} {reset}",
                     color = style::SetForegroundColor(ProgressLog::COLOR),
                     reset = style::SetForegroundColor(style::Color::Reset),
-                    side = animation::box_side_swell(None),
+                    side = animation::box_side_swell(animation::State::Finished),
                 )?;
             }
 
@@ -988,11 +1029,11 @@ impl ProgressLog {
                 line,
                 "{color}{turn}{end}{secs}.{millis:03}s{reset}",
                 color = style::SetForegroundColor(Self::COLOR),
-                end = animation::box_end_swell(None),
+                end = animation::box_end_swell(animation::State::Finished),
                 millis = elapsed.as_millis() % 1000,
                 reset = style::SetForegroundColor(style::Color::Reset),
                 secs = elapsed.as_secs(),
-                turn = animation::box_turn_swell(None),
+                turn = animation::box_turn_swell(animation::State::Finished),
             )?;
             index += 1;
         }
@@ -1049,42 +1090,97 @@ mod animation {
     const BOX_END_SWELL_ANIMATION: [char; LENGTH] = ['╴', '╸', '╸', '╸', '╸', '╸', '╴', '╴'];
     const SEPARATOR_SWELL_ANIMATION: [char; LENGTH] = ['─', '─', '─', '─', '─', '─', '─', '─'];
 
+    const BRAILLE_SPIN_PAUSED: char = '';
+    const BOX_SIDE_SWELL_PAUSED: char = '│';
+    const BOX_TURN_SWELL_PAUSED: char = '└';
+    const BOX_END_SWELL_PAUSED: char = '╴';
+    const SEPARATOR_SWELL_PAUSED: char = '─';
+
     const BRAILLE_SPIN_FINISHED: char = '';
     const BOX_SIDE_SWELL_FINISHED: char = '┃';
     const BOX_TURN_SWELL_FINISHED: char = '┗';
     const BOX_END_SWELL_FINISHED: char = '╸';
     const SEPARATOR_SWELL_FINISHED: char = '━';
 
+    #[derive(Copy, Clone)]
+    pub enum State {
+        Animating(isize),
+        Finished,
+        Paused,
+    }
+
+    impl State {
+        pub fn frame_offset(self, offset: isize) -> Self {
+            if let Self::Animating(frame) = self {
+                Self::Animating(frame + offset)
+            } else {
+                self
+            }
+        }
+    }
+
     pub fn frames() -> impl Iterator<Item = usize> {
         (0..LENGTH).flat_map(|f| [f; SLOWDOWN]).cycle()
     }
 
-    pub fn braille_spin(frame: Option<isize>) -> char {
-        animate(frame, BRAILLE_SPIN_ANIMATION, BRAILLE_SPIN_FINISHED)
+    pub fn braille_spin(state: State) -> char {
+        animate(
+            state,
+            BRAILLE_SPIN_ANIMATION,
+            BRAILLE_SPIN_PAUSED,
+            BRAILLE_SPIN_FINISHED,
+        )
     }
 
-    pub fn box_side_swell(frame: Option<isize>) -> char {
-        animate(frame, BOX_SIDE_SWELL_ANIMATION, BOX_SIDE_SWELL_FINISHED)
+    pub fn box_side_swell(state: State) -> char {
+        animate(
+            state,
+            BOX_SIDE_SWELL_ANIMATION,
+            BOX_SIDE_SWELL_PAUSED,
+            BOX_SIDE_SWELL_FINISHED,
+        )
     }
 
-    pub fn box_turn_swell(frame: Option<isize>) -> char {
-        animate(frame, BOX_TURN_SWELL_ANIMATION, BOX_TURN_SWELL_FINISHED)
+    pub fn box_turn_swell(state: State) -> char {
+        animate(
+            state,
+            BOX_TURN_SWELL_ANIMATION,
+            BOX_TURN_SWELL_PAUSED,
+            BOX_TURN_SWELL_FINISHED,
+        )
     }
 
-    pub fn box_end_swell(frame: Option<isize>) -> char {
-        animate(frame, BOX_END_SWELL_ANIMATION, BOX_END_SWELL_FINISHED)
+    pub fn box_end_swell(state: State) -> char {
+        animate(
+            state,
+            BOX_END_SWELL_ANIMATION,
+            BOX_END_SWELL_PAUSED,
+            BOX_END_SWELL_FINISHED,
+        )
     }
 
-    pub fn separator_swell(frame: Option<isize>) -> char {
-        animate(frame, SEPARATOR_SWELL_ANIMATION, SEPARATOR_SWELL_FINISHED)
+    pub fn separator_swell(state: State) -> char {
+        animate(
+            state,
+            SEPARATOR_SWELL_ANIMATION,
+            SEPARATOR_SWELL_PAUSED,
+            SEPARATOR_SWELL_FINISHED,
+        )
     }
 
-    fn animate(frame: Option<isize>, animation_chars: [char; LENGTH], freeze_char: char) -> char {
-        frame
-            .map(|f| {
-                let index = f.rem_euclid(LENGTH as isize) as usize;
+    fn animate(
+        state: State,
+        animation_chars: [char; LENGTH],
+        paused_char: char,
+        finished_char: char,
+    ) -> char {
+        match state {
+            State::Animating(frame) => {
+                let index = frame.rem_euclid(LENGTH as isize) as usize;
                 animation_chars[index]
-            })
-            .unwrap_or(freeze_char)
+            }
+            State::Paused => paused_char,
+            State::Finished => finished_char,
+        }
     }
 }

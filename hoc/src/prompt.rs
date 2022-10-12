@@ -1,21 +1,37 @@
 use std::{
     fmt::{Debug, Display},
+    marker::PhantomData,
     str::FromStr,
 };
 
 use crossterm::{
     cursor::{self, MoveToPreviousLine},
-    execute,
     terminal::{Clear, ClearType},
 };
 use inquire::{
     error::CustomUserError,
     validator::{ErrorMessage, Validation},
-    InquireError, Text,
+    InquireError, Select, Text,
 };
 use thiserror::Error;
 
 use crate::{logger, prelude::*};
+
+fn clear_prompt() -> String {
+    use std::fmt::Write;
+
+    let mut clear_section = String::new();
+    write!(
+        clear_section,
+        "{clear_line}{move_line}{move_column}",
+        clear_line = Clear(ClearType::CurrentLine),
+        move_line = MoveToPreviousLine(2),
+        move_column = cursor::MoveToColumn(0),
+    )
+    .expect("commands should be formatable");
+
+    clear_section
+}
 
 #[throws(InquireError)]
 fn get_prompt<T>(field: &str, default: Option<&str>) -> T
@@ -24,7 +40,6 @@ where
     T::Err: Display,
 {
     let _pause_lock = logger::pause();
-    println!();
 
     let default_owned = default.map(<str>::to_string);
     let prompt = format!("{field}:");
@@ -51,17 +66,7 @@ where
                 Err(err) => Ok(Validation::Invalid(ErrorMessage::Custom(err.to_string()))),
             }
         })
-        .with_formatter(&|_| {
-            let mut control_sequence = Vec::new();
-            execute!(
-                control_sequence,
-                Clear(ClearType::CurrentLine),
-                MoveToPreviousLine(2),
-                cursor::MoveToColumn(0),
-            )
-            .unwrap();
-            String::from_utf8(control_sequence).unwrap()
-        });
+        .with_formatter(&|_| clear_prompt());
 
     if let Some(default) = default {
         text = text.with_default(default);
@@ -81,6 +86,55 @@ where
                 throw!(err)
             }
         }
+    }
+}
+
+pub fn select<'msg, T>(message: &'msg str) -> SelectBuilder<'msg, T, Empty> {
+    SelectBuilder {
+        message,
+        options: Vec::with_capacity(1),
+        _state: Default::default(),
+    }
+}
+
+pub struct SelectBuilder<'msg, T, S> {
+    message: &'msg str,
+    options: Vec<T>,
+    _state: PhantomData<S>,
+}
+
+pub enum Empty {}
+pub enum NonEmpty {}
+
+impl<'msg, T, S> SelectBuilder<'msg, T, S> {
+    fn into_non_empty(self) -> SelectBuilder<'msg, T, NonEmpty> {
+        SelectBuilder {
+            message: self.message,
+            options: self.options,
+            _state: Default::default(),
+        }
+    }
+
+    pub fn with_option(mut self, option: T) -> SelectBuilder<'msg, T, NonEmpty> {
+        self.options.push(option);
+        self.into_non_empty()
+    }
+
+    pub fn with_options(
+        mut self,
+        options: impl IntoIterator<Item = T>,
+    ) -> SelectBuilder<'msg, T, NonEmpty> {
+        self.options.extend(options);
+        self.into_non_empty()
+    }
+}
+
+impl<'msg, T: Display> SelectBuilder<'msg, T, NonEmpty> {
+    #[throws(InquireError)]
+    pub fn get(self) -> T {
+        Select::new(self.message, self.options)
+            .with_formatter(&|_| clear_prompt())
+            .prompt()?
     }
 }
 

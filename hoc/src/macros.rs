@@ -20,13 +20,15 @@ macro_rules! concat_const {
 
         static mut __OUT: [u8; __LEN] = [0u8; __LEN];
 
-        // SAFETY: `__OUT` is bound to the current scope, and is thus only accessible in the current thread.
+        // FIXME: This is unsound. The returned `&str` can change if this macro is called
+        // again.
         unsafe {
             let mut __offset = 0;
             (__offset, __OUT) = __copy_slice($first_segment.as_bytes(), __OUT, __offset);
             $(
             (__offset, __OUT) = __copy_slice($segments.as_bytes(), __OUT, __offset);
             )*
+
             ::std::str::from_utf8(&__OUT).unwrap_unchecked()
         }
     }};
@@ -94,13 +96,13 @@ macro_rules! args_summary {
     };
 }
 
-macro_rules! arg_get {
+macro_rules! prompt_arg {
     ($self:ident, $field:ident $(,)?) => {
         $crate::prompt::Prompt::get($self.$field, stringify!($field))?
     };
 }
 
-macro_rules! arg_get_or_default {
+macro_rules! prompt_arg_default {
     ($self:ident, $field:ident $(,)?) => {
         $crate::prompt::Prompt::get_or($self.$field, stringify!($field), default::$field())?
     };
@@ -109,5 +111,11 @@ macro_rules! arg_get_or_default {
 macro_rules! progress {
     ($($args:tt)*) => {
         $crate::logger::PROGRESS_THREAD.push_progress(format!($($args)*))
+    };
+}
+
+macro_rules! select {
+    ($($args:tt)*) => {
+        $crate::prompt::select(&format!($($args)*))
     };
 }
