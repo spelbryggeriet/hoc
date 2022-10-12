@@ -167,7 +167,7 @@ impl LogTrait for Logger {
             let (_, ref mut logs) = *logs_lock;
             let progress_log = logs.iter_mut().last().and_then(|log| {
                 if let Log::Progress(progress_log) = log {
-                    Some(progress_log)
+                    (!progress_log.is_finished()).then_some(progress_log)
                 } else {
                     None
                 }
