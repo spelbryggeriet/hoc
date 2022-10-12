@@ -4,7 +4,7 @@ use std::{
 };
 
 use crossterm::{
-    cursor::MoveToPreviousLine,
+    cursor::{self, MoveToPreviousLine},
     execute,
     terminal::{Clear, ClearType},
 };
@@ -15,7 +15,7 @@ use inquire::{
 };
 use thiserror::Error;
 
-use crate::prelude::*;
+use crate::{logger, prelude::*};
 
 #[throws(InquireError)]
 fn get_prompt<T>(field: &str, default: Option<&str>) -> T
@@ -23,6 +23,9 @@ where
     T: FromStr,
     T::Err: Display,
 {
+    let _pause_lock = logger::pause();
+    println!();
+
     let default_owned = default.map(<str>::to_string);
     let prompt = format!("{field}:");
     let mut text = Text::new(&prompt)
@@ -53,7 +56,8 @@ where
             execute!(
                 control_sequence,
                 Clear(ClearType::CurrentLine),
-                MoveToPreviousLine(1),
+                MoveToPreviousLine(2),
+                cursor::MoveToColumn(0),
             )
             .unwrap();
             String::from_utf8(control_sequence).unwrap()

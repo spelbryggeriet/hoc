@@ -1,5 +1,6 @@
 use std::{
     borrow::Cow,
+    collections::VecDeque,
     env,
     fmt::{self, Write as FmtWrite},
     fs::{self, File},
@@ -7,7 +8,7 @@ use std::{
     panic,
     sync::{
         atomic::{AtomicBool, Ordering},
-        Arc, Mutex,
+        Arc, Condvar, Mutex,
     },
     thread::{self, JoinHandle},
     time::{Duration, Instant},
@@ -34,6 +35,47 @@ lazy_static! {
     pub static ref PROGRESS_THREAD: ProgresHandler = ProgresHandler::init();
 }
 
+pub fn pause() -> ProgressPauseLock {
+    {
+        let (wants_pause_mutex, wants_pause_cvar) = &*PROGRESS_THREAD.wants_pause;
+        let mut wants_pause_lock = wants_pause_mutex.lock().expect(EXPECT_THREAD_NOT_POSIONED);
+        *wants_pause_lock = true;
+        wants_pause_cvar.notify_one();
+    }
+
+    {
+        let (is_paused_mutex, is_paused_cvar) = &*PROGRESS_THREAD.is_paused;
+        let is_paused_lock = is_paused_mutex.lock().expect(EXPECT_THREAD_NOT_POSIONED);
+        let _ = is_paused_cvar
+            .wait_while(is_paused_lock, |is_paused| !*is_paused)
+            .expect(EXPECT_THREAD_NOT_POSIONED);
+    }
+
+    ProgressPauseLock
+}
+
+#[must_use]
+pub struct ProgressPauseLock;
+
+impl Drop for ProgressPauseLock {
+    fn drop(&mut self) {
+        {
+            let (wants_pause_mutex, wants_pause_cvar) = &*PROGRESS_THREAD.wants_pause;
+            let mut wants_pause_lock = wants_pause_mutex.lock().expect(EXPECT_THREAD_NOT_POSIONED);
+            *wants_pause_lock = false;
+            wants_pause_cvar.notify_one();
+        }
+
+        {
+            let (is_paused_mutex, is_paused_cvar) = &*PROGRESS_THREAD.is_paused;
+            let is_paused_lock = is_paused_mutex.lock().expect(EXPECT_THREAD_NOT_POSIONED);
+            let _ = is_paused_cvar
+                .wait_while(is_paused_lock, |is_paused| *is_paused)
+                .expect(EXPECT_THREAD_NOT_POSIONED);
+        }
+    }
+}
+
 #[must_use]
 pub struct ProgressHandle {
     start_time: Instant,
@@ -57,9 +99,6 @@ impl Drop for ProgressHandle {
             .lock()
             .expect(EXPECT_THREAD_NOT_POSIONED)
             .replace(self.start_time.elapsed());
-        if let Err(err) = PROGRESS_THREAD.update_progresses() {
-            panic!("{err}");
-        };
     }
 }
 
@@ -67,7 +106,6 @@ pub struct Logger {
     level: Level,
     start_time: DateTime<Utc>,
     buffer: Mutex<LoggerBuffer>,
-    has_printed: Mutex<AtomicBool>,
 }
 
 impl Logger {
@@ -93,7 +131,6 @@ impl Logger {
             level,
             start_time: Utc::now(),
             buffer: Mutex::new(LoggerBuffer::new()),
-            has_printed: Mutex::new(AtomicBool::new(false)),
         };
 
         log::set_boxed_logger(Box::new(logger))?;
@@ -118,33 +155,26 @@ impl LogTrait for Logger {
         let args_str = record.args().to_string();
 
         if self.enabled(record.metadata()) {
-            let log = SimpleLog::new(record.level(), args_str.clone());
+            let simple_log = SimpleLog::new(record.level(), args_str.clone());
 
-            let mut progress_lock = PROGRESS_THREAD
-                .progress_log
+            // Find the current progress log.
+            let mut logs_lock = PROGRESS_THREAD
+                .logs
                 .lock()
                 .expect(EXPECT_THREAD_NOT_POSIONED);
-            if let Some((_, ref mut progress)) = *progress_lock {
-                progress.push_simple_log(log);
-            } else {
-                let mut stdout = io::stdout();
-
-                // Print new line from previous log.
-                let has_printed_lock = self.has_printed.lock().expect(EXPECT_THREAD_NOT_POSIONED);
-                if has_printed_lock.load(Ordering::SeqCst) {
-                    stdout
-                        .queue(style::Print("\n"))
-                        .unwrap_or_else(|err| panic!("{err}"));
+            let (_, ref mut logs) = *logs_lock;
+            let progress_log = logs.iter_mut().last().and_then(|log| {
+                if let Log::Progress(progress_log) = log {
+                    Some(progress_log)
                 } else {
-                    has_printed_lock.store(true, Ordering::SeqCst)
+                    None
                 }
+            });
 
-                // Render the simple log.
-                log.render(&mut stdout)
-                    .unwrap_or_else(|err| panic!("{err}"));
-
-                // Flush to the screen.
-                stdout.flush().unwrap_or_else(|err| panic!("{err}"));
+            if let Some(progress_log) = progress_log {
+                progress_log.push_simple_log(simple_log);
+            } else {
+                logs.push_back(Log::Simple(simple_log));
             }
         }
 
@@ -251,45 +281,169 @@ struct LoggerMeta {
 #[must_use]
 pub struct ProgresHandler {
     thread_handle: Mutex<Option<JoinHandle<Result<(), Error>>>>,
-    progress_log: Arc<Mutex<Option<(usize, ProgressLog)>>>,
+    logs: Arc<Mutex<(usize, VecDeque<Log>)>>,
     wants_cancel: Arc<AtomicBool>,
+    wants_pause: Arc<(Mutex<bool>, Condvar)>,
+    is_paused: Arc<(Mutex<bool>, Condvar)>,
 }
 
 impl ProgresHandler {
     pub fn init() -> Self {
-        let progress_log_orig = Arc::new(Mutex::new(Option::<(usize, ProgressLog)>::None));
-        let progress_log = Arc::clone(&progress_log_orig);
+        let logs_orig = Arc::new(Mutex::new((0, VecDeque::<Log>::new())));
+        let logs = Arc::clone(&logs_orig);
 
         let wants_cancel_orig = Arc::new(AtomicBool::new(false));
         let wants_cancel = Arc::clone(&wants_cancel_orig);
+
+        let wants_pause_orig = Arc::new((Mutex::new(false), Condvar::new()));
+        let wants_pause = Arc::clone(&wants_pause_orig);
+
+        let is_paused_orig = Arc::new((Mutex::new(false), Condvar::new()));
+        let is_paused = Arc::clone(&is_paused_orig);
 
         let thread_handle = thread::spawn(move || {
             let spin_sleeper =
                 SpinSleeper::new(100_000).with_spin_strategy(SpinStrategy::YieldThread);
             let mut frames = animation::frames();
+            let mut has_printed = false;
 
             while !wants_cancel.load(Ordering::SeqCst) {
-                let terminal_rows = terminal::size()?.1 as usize;
-
                 {
-                    let mut progress_lock = progress_log.lock().expect(EXPECT_THREAD_NOT_POSIONED);
-                    if let Some((ref mut previous_height, ref mut progress)) = *progress_lock {
+                    let (wants_pause_mutex, wants_pause_cvar) = &*wants_pause;
+                    let wants_pause_lock =
+                        wants_pause_mutex.lock().expect(EXPECT_THREAD_NOT_POSIONED);
+
+                    if *wants_pause_lock {
+                        {
+                            let mut stdout = io::stdout();
+
+                            let mut logs_lock = logs.lock().expect(EXPECT_THREAD_NOT_POSIONED);
+                            let (ref mut previous_height, ref mut logs) = *logs_lock;
+                            while let Some(log) = logs.pop_front() {
+                                match log {
+                                    Log::Simple(ref simple_log) => {
+                                        Self::print_simple_log(
+                                            &mut stdout,
+                                            simple_log,
+                                            previous_height,
+                                            &mut has_printed,
+                                        )?;
+                                    }
+
+                                    Log::Progress(ref progress_log)
+                                        if progress_log.is_finished() =>
+                                    {
+                                        Self::print_finished_progress_log(
+                                            &mut stdout,
+                                            progress_log,
+                                            previous_height,
+                                            &mut has_printed,
+                                        )?;
+                                    }
+
+                                    log => {
+                                        logs.push_front(log);
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+
+                        {
+                            let (is_paused_mutex, is_paused_cvar) = &*is_paused;
+                            let mut is_paused_lock =
+                                is_paused_mutex.lock().expect(EXPECT_THREAD_NOT_POSIONED);
+                            *is_paused_lock = true;
+                            is_paused_cvar.notify_one();
+                        }
+
+                        let _ = wants_pause_cvar
+                            .wait_while(wants_pause_lock, |wants_pause| *wants_pause)
+                            .expect(EXPECT_THREAD_NOT_POSIONED);
+
+                        {
+                            let (is_paused_mutex, is_paused_cvar) = &*PROGRESS_THREAD.is_paused;
+                            let mut is_paused_lock =
+                                is_paused_mutex.lock().expect(EXPECT_THREAD_NOT_POSIONED);
+                            *is_paused_lock = false;
+                            is_paused_cvar.notify_one();
+                        }
+                    }
+
+                    let terminal_rows = terminal::size()?.1 as usize;
+
+                    {
                         let mut stdout = io::stdout();
 
-                        if *previous_height >= 2 {
-                            stdout
-                                .queue(cursor::MoveToPreviousLine(*previous_height as u16 - 1))?;
+                        let mut logs_lock = logs.lock().expect(EXPECT_THREAD_NOT_POSIONED);
+                        let (ref mut previous_height, ref mut logs) = *logs_lock;
+                        while let Some(log) = logs.pop_front() {
+                            match log {
+                                Log::Simple(ref simple_log) => {
+                                    Self::print_simple_log(
+                                        &mut stdout,
+                                        simple_log,
+                                        previous_height,
+                                        &mut has_printed,
+                                    )?;
+                                }
+                                Log::Progress(ref progress_log) if !progress_log.is_finished() => {
+                                    Self::print_running_progress_log(
+                                        &mut stdout,
+                                        progress_log,
+                                        &mut frames,
+                                        terminal_rows,
+                                        previous_height,
+                                        &mut has_printed,
+                                    )?;
+                                    logs.push_front(log);
+                                    break;
+                                }
+                                Log::Progress(ref progress_log) => {
+                                    Self::print_finished_progress_log(
+                                        &mut stdout,
+                                        progress_log,
+                                        previous_height,
+                                        &mut has_printed,
+                                    )?;
+                                }
+                            }
+
+                            stdout.flush()?;
                         }
-                        stdout.queue(cursor::MoveToColumn(0))?;
-
-                        let frame = frames.next().expect("animation frames should be infinite");
-                        *previous_height = progress.render(&mut stdout, terminal_rows, 0, frame)?;
-
-                        stdout.flush()?;
                     }
                 }
 
                 spin_sleeper.sleep(Duration::new(0, 16_666_667));
+            }
+
+            let mut stdout = io::stdout();
+
+            let mut logs_lock = logs.lock().expect(EXPECT_THREAD_NOT_POSIONED);
+            let (ref mut previous_height, ref mut logs) = *logs_lock;
+            for log in logs.drain(..) {
+                match log {
+                    Log::Simple(ref simple_log) => {
+                        Self::print_simple_log(
+                            &mut stdout,
+                            simple_log,
+                            previous_height,
+                            &mut has_printed,
+                        )?;
+                    }
+
+                    Log::Progress(ref progress_log) if progress_log.is_finished() => {
+                        Self::print_finished_progress_log(
+                            &mut stdout,
+                            progress_log,
+                            previous_height,
+                            &mut has_printed,
+                        )?;
+                    }
+
+                    _ => panic!("no progress should be running after cancellation"),
+                }
+                stdout.flush()?;
             }
 
             Ok(())
@@ -297,50 +451,112 @@ impl ProgresHandler {
 
         Self {
             thread_handle: Mutex::new(Some(thread_handle)),
-            progress_log: progress_log_orig,
+            logs: logs_orig,
             wants_cancel: wants_cancel_orig,
+            wants_pause: wants_pause_orig,
+            is_paused: is_paused_orig,
+        }
+    }
+
+    fn print_simple_log(
+        stdout: &mut Stdout,
+        simple_log: &SimpleLog,
+        previous_height: &mut usize,
+        has_printed: &mut bool,
+    ) -> Result<(), Error> {
+        // Print new line from previous log.
+        if *has_printed {
+            stdout.queue(style::Print("\n"))?;
+        } else {
+            *has_printed = true;
+        }
+
+        // Render the simple log.
+        simple_log.render(stdout)?;
+        *previous_height = 0;
+
+        Ok(())
+    }
+
+    #[throws(Error)]
+    fn print_running_progress_log(
+        stdout: &mut Stdout,
+        progress_log: &ProgressLog,
+        frames: &mut impl Iterator<Item = usize>,
+        max_height: usize,
+        previous_height: &mut usize,
+        has_printed: &mut bool,
+    ) {
+        Self::clear_previous_progress_log(stdout, *previous_height, has_printed)?;
+
+        let frame = frames.next().expect("animation frames should be infinite");
+        *previous_height = progress_log.render(stdout, max_height, 0, frame)?;
+    }
+
+    #[throws(Error)]
+    fn print_finished_progress_log(
+        stdout: &mut Stdout,
+        progress_log: &ProgressLog,
+        previous_height: &mut usize,
+        has_printed: &mut bool,
+    ) {
+        Self::clear_previous_progress_log(stdout, *previous_height, has_printed)?;
+
+        // Render finished progress to a vector of strings.
+        let mut buffer = StringBuffer::new();
+        let rendered_height = progress_log.render_to_strings(&mut buffer, 0)?;
+        *previous_height = 0;
+
+        // Print rendered strings.
+        for (i, line) in buffer.0.iter().enumerate().take(rendered_height) {
+            stdout.queue(style::Print(line))?;
+            stdout.queue(terminal::Clear(terminal::ClearType::UntilNewLine))?;
+
+            if i + 1 < rendered_height {
+                stdout.queue(style::Print("\n"))?;
+            }
+        }
+    }
+
+    #[throws(Error)]
+    fn clear_previous_progress_log(
+        stdout: &mut Stdout,
+        previous_height: usize,
+        has_printed: &mut bool,
+    ) {
+        if previous_height >= 1 {
+            if previous_height >= 2 {
+                stdout.queue(cursor::MoveToPreviousLine(previous_height as u16 - 1))?;
+            }
+
+            stdout.queue(cursor::MoveToColumn(0))?;
+        } else if *has_printed {
+            stdout.queue(style::Print("\n"))?;
+        } else {
+            *has_printed = true;
         }
     }
 
     pub fn push_progress(&self, message: String) -> ProgressHandle {
         let subprogress_log = ProgressLog::new(message);
-        let mut progress_log_lock = self.progress_log.lock().expect(EXPECT_THREAD_NOT_POSIONED);
-        if let Some((_, ref mut progress_log)) = *progress_log_lock {
+
+        // Find the current progress log.
+        let mut logs_lock = self.logs.lock().expect(EXPECT_THREAD_NOT_POSIONED);
+        let (_, ref mut logs) = *logs_lock;
+        let progress_log = logs.iter_mut().last().and_then(|log| {
+            if let Log::Progress(progress_log) = log {
+                (!progress_log.is_finished()).then_some(progress_log)
+            } else {
+                None
+            }
+        });
+
+        if let Some(progress_log) = progress_log {
             progress_log.push_progress_log(subprogress_log)
         } else {
             let handle = subprogress_log.get_handle();
-            progress_log_lock.replace((0, subprogress_log));
+            logs.push_back(Log::Progress(subprogress_log));
             handle
-        }
-    }
-
-    #[throws(Error)]
-    pub fn update_progresses(&self) {
-        let mut progress_log_lock = self.progress_log.lock().expect(EXPECT_THREAD_NOT_POSIONED);
-        if let Some((previous_height, mut progress_log)) = progress_log_lock.take() {
-            if progress_log.update() {
-                let mut stdout = io::stdout();
-
-                if previous_height >= 2 {
-                    stdout.queue(cursor::MoveToPreviousLine(previous_height as u16 - 1))?;
-                }
-                stdout.queue(cursor::MoveToColumn(0))?;
-
-                let mut buffer = StringBuffer::new();
-                let rendered_height = progress_log.into_strings(&mut buffer, 0)?;
-                for (i, line) in buffer.0.iter().enumerate().take(rendered_height) {
-                    stdout.queue(style::Print(line))?;
-                    stdout.queue(terminal::Clear(terminal::ClearType::UntilNewLine))?;
-
-                    if i + 1 < rendered_height {
-                        stdout.queue(style::Print("\n"))?;
-                    }
-                }
-
-                stdout.flush()?;
-            } else {
-                progress_log_lock.replace((previous_height, progress_log));
-            }
         }
     }
 
@@ -363,11 +579,13 @@ impl ProgresHandler {
     }
 }
 
+#[derive(Debug)]
 enum Log {
     Simple(SimpleLog),
     Progress(ProgressLog),
 }
 
+#[derive(Debug)]
 pub struct SimpleLog {
     level: Level,
     message: String,
@@ -400,7 +618,7 @@ impl SimpleLog {
     }
 
     #[throws(Error)]
-    fn into_strings(self, buffer: &mut StringBuffer, index: usize) -> usize {
+    fn render_to_strings(&self, buffer: &mut StringBuffer, index: usize) -> usize {
         let (level_icon, color) = self.get_icon_and_color();
 
         let line = buffer.get_line_mut(index);
@@ -426,6 +644,7 @@ impl SimpleLog {
     }
 }
 
+#[derive(Debug)]
 pub struct ProgressLog {
     message: String,
     start_time: Instant,
@@ -485,26 +704,6 @@ impl ProgressLog {
             .lock()
             .expect(EXPECT_THREAD_NOT_POSIONED)
             .is_some()
-    }
-
-    fn update(&mut self) -> bool {
-        let mut subprogresses_finished = true;
-
-        for log in self.logs.iter_mut() {
-            if let Log::Progress(progress) = log {
-                subprogresses_finished &= progress.update();
-            }
-        }
-
-        let is_finished = self.is_finished();
-
-        assert!(
-            !(is_finished && !subprogresses_finished),
-            r#"progress with message "{}" finished before all of its subprogresses finished"#,
-            self.message,
-        );
-
-        is_finished
     }
 
     fn render_height(&self) -> usize {
@@ -705,7 +904,7 @@ impl ProgressLog {
     }
 
     #[throws(Error)]
-    fn into_strings(self, buffer: &mut StringBuffer, start_index: usize) -> usize {
+    fn render_to_strings(&self, buffer: &mut StringBuffer, start_index: usize) -> usize {
         let elapsed = self
             .is_finished
             .lock()
@@ -762,13 +961,13 @@ impl ProgressLog {
                 )?;
             }
 
-            for log in self.logs {
+            for log in self.logs.iter() {
                 index += match log {
                     Log::Simple(simple_log) => {
                         // Render prefix.
                         render_prefix(buffer, index)?;
 
-                        simple_log.into_strings(buffer, index)?
+                        simple_log.render_to_strings(buffer, index)?
                     }
 
                     Log::Progress(progress) => {
@@ -778,7 +977,7 @@ impl ProgressLog {
                             render_prefix(buffer, index + k)?;
                         }
 
-                        progress.into_strings(buffer, index)?
+                        progress.render_to_strings(buffer, index)?
                     }
                 };
             }
