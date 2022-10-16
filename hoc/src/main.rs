@@ -23,7 +23,7 @@ struct App {
 
 impl App {
     #[throws(anyhow::Error)]
-    fn run() {
+    async fn run() {
         debug!("Parsing command-line arguments");
         let app = Self::from_args();
 
@@ -42,7 +42,7 @@ impl App {
         match app.command {
             Command::Init(init_command) => {
                 debug!("Running {} command", init::Command::command().get_name());
-                init_command.run(&mut context)?;
+                init_command.run(&mut context).await?;
             }
             _ => (),
         }
@@ -73,14 +73,15 @@ struct NodeCommand {}
 struct SdCardCommand {}
 
 #[throws(anyhow::Error)]
-fn main() -> ExitCode {
+#[async_std::main]
+async fn main() -> ExitCode {
     logger::Logger::init()?;
 
-    let exit_code = match App::run() {
+    let exit_code = match App::run().await {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             error!("{error}");
-            ExitCode::from(1)
+            ExitCode::FAILURE
         }
     };
 

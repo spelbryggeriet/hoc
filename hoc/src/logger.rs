@@ -15,7 +15,7 @@ use std::{
 };
 
 use chrono::{DateTime, Utc};
-use crossterm::{cursor, execute, queue, style, terminal, QueueableCommand};
+use crossterm::{cursor, execute, queue, style, terminal, ExecutableCommand, QueueableCommand};
 use lazy_static::lazy_static;
 use log::{Level, LevelFilter, Log as LogTrait, Metadata, Record};
 use spin_sleep::{SpinSleeper, SpinStrategy};
@@ -32,19 +32,25 @@ const MAX_DEFAULT_LEVEL: Level = if cfg!(debug_assertions) {
 const EXPECT_THREAD_NOT_POSIONED: &'static str = "thread should not be poisoned";
 
 lazy_static! {
-    pub static ref PROGRESS_THREAD: ProgresHandler = ProgresHandler::init();
+    pub static ref LOG_RENDERER: LogRenderer = LogRenderer::init();
 }
 
+#[throws(Error)]
 pub fn pause() -> ProgressPauseLock {
     {
-        let (wants_pause_mutex, wants_pause_cvar) = &*PROGRESS_THREAD.wants_pause;
+        let (wants_pause_mutex, wants_pause_cvar) = &*LOG_RENDERER.wants_pause;
         let mut wants_pause_lock = wants_pause_mutex.lock().expect(EXPECT_THREAD_NOT_POSIONED);
+
+        if *wants_pause_lock {
+            throw!(Error::PauseLockAlreadyAcquired);
+        }
+
         *wants_pause_lock = true;
         wants_pause_cvar.notify_one();
     }
 
     {
-        let (is_paused_mutex, is_paused_cvar) = &*PROGRESS_THREAD.is_paused;
+        let (is_paused_mutex, is_paused_cvar) = &*LOG_RENDERER.is_paused;
         let is_paused_lock = is_paused_mutex.lock().expect(EXPECT_THREAD_NOT_POSIONED);
         let _ = is_paused_cvar
             .wait_while(is_paused_lock, |is_paused| !*is_paused)
@@ -62,14 +68,14 @@ pub struct ProgressPauseLock;
 impl Drop for ProgressPauseLock {
     fn drop(&mut self) {
         {
-            let (wants_pause_mutex, wants_pause_cvar) = &*PROGRESS_THREAD.wants_pause;
+            let (wants_pause_mutex, wants_pause_cvar) = &*LOG_RENDERER.wants_pause;
             let mut wants_pause_lock = wants_pause_mutex.lock().expect(EXPECT_THREAD_NOT_POSIONED);
             *wants_pause_lock = false;
             wants_pause_cvar.notify_one();
         }
 
         {
-            let (is_paused_mutex, is_paused_cvar) = &*PROGRESS_THREAD.is_paused;
+            let (is_paused_mutex, is_paused_cvar) = &*LOG_RENDERER.is_paused;
             let is_paused_lock = is_paused_mutex.lock().expect(EXPECT_THREAD_NOT_POSIONED);
             let _ = is_paused_cvar
                 .wait_while(is_paused_lock, |is_paused| *is_paused)
@@ -113,19 +119,17 @@ pub struct Logger {
 impl Logger {
     #[throws(Error)]
     pub fn init() {
-        lazy_static::initialize(&PROGRESS_THREAD);
-
-        execute!(io::stdout(), cursor::Hide)?;
+        io::stdout().execute(cursor::Hide)?;
 
         let level_str = env::var("RUST_LOG")
             .map(|v| Cow::Owned(v.to_uppercase()))
             .unwrap_or(Cow::Borrowed(MAX_DEFAULT_LEVEL.as_str()));
         let level = match &*level_str {
-            "E" | "ER" | "ERR" | "ERRO" | "ERROR" => Level::Error,
-            "W" | "WA" | "WAR" | "WARN" | "WARNI" | "WARNIN" | "WARNING" => Level::Warn,
-            "I" | "IN" | "INF" | "INFO" => Level::Info,
-            "D" | "DE" | "DEB" | "DEBU" | "DEBUG" => Level::Debug,
-            "T" | "TR" | "TRA" | "TRAC" | "TRACE" => Level::Trace,
+            error if "ERROR".starts_with(error) => Level::Error,
+            warning if "WARNING".starts_with(warning) => Level::Warn,
+            info if "INFO".starts_with(info) => Level::Info,
+            debug if "DEBUG".starts_with(debug) => Level::Debug,
+            trace if "TRACE".starts_with(trace) => Level::Trace,
             _ => throw!(Error::UnknownLevel(level_str.to_string())),
         };
 
@@ -137,14 +141,16 @@ impl Logger {
 
         log::set_boxed_logger(Box::new(logger))?;
         log::set_max_level(LevelFilter::Trace);
+
+        lazy_static::initialize(&LOG_RENDERER);
     }
 
     #[throws(Error)]
     pub fn cleanup() {
         log::logger().flush();
-        PROGRESS_THREAD.cleanup()?;
+        LOG_RENDERER.cleanup()?;
 
-        execute!(io::stdout(), cursor::Show)?;
+        io::stdout().execute(cursor::Show)?;
     }
 }
 
@@ -160,10 +166,7 @@ impl LogTrait for Logger {
             let simple_log = SimpleLog::new(record.level(), args_str.clone());
 
             // Find the current progress log.
-            let mut logs_lock = PROGRESS_THREAD
-                .logs
-                .lock()
-                .expect(EXPECT_THREAD_NOT_POSIONED);
+            let mut logs_lock = LOG_RENDERER.logs.lock().expect(EXPECT_THREAD_NOT_POSIONED);
             let (_, ref mut logs) = *logs_lock;
             let progress_log = logs.iter_mut().last().and_then(|log| {
                 if let Log::Progress(progress_log) = log {
@@ -281,7 +284,7 @@ struct LoggerMeta {
 }
 
 #[must_use]
-pub struct ProgresHandler {
+pub struct LogRenderer {
     thread_handle: Mutex<Option<JoinHandle<Result<(), Error>>>>,
     logs: Arc<Mutex<(usize, VecDeque<Log>)>>,
     wants_cancel: Arc<AtomicBool>,
@@ -289,7 +292,7 @@ pub struct ProgresHandler {
     is_paused: Arc<(Mutex<bool>, Condvar)>,
 }
 
-impl ProgresHandler {
+impl LogRenderer {
     pub fn init() -> Self {
         let logs_orig = Arc::new(Mutex::new((0, VecDeque::<Log>::new())));
         let logs = Arc::clone(&logs_orig);
@@ -306,7 +309,7 @@ impl ProgresHandler {
         let thread_handle = thread::spawn(move || {
             let spin_sleeper =
                 SpinSleeper::new(100_000).with_spin_strategy(SpinStrategy::YieldThread);
-            let mut frames = animation::frames();
+            let mut frames = animation::Frames::new();
             let mut has_printed = false;
 
             while !wants_cancel.load(Ordering::SeqCst) {
@@ -376,7 +379,7 @@ impl ProgresHandler {
                             .expect(EXPECT_THREAD_NOT_POSIONED);
 
                         {
-                            let (is_paused_mutex, is_paused_cvar) = &*PROGRESS_THREAD.is_paused;
+                            let (is_paused_mutex, is_paused_cvar) = &*LOG_RENDERER.is_paused;
                             let mut is_paused_lock =
                                 is_paused_mutex.lock().expect(EXPECT_THREAD_NOT_POSIONED);
                             *is_paused_lock = false;
@@ -1070,6 +1073,9 @@ pub enum Error {
     #[error("Unknown log level '{0}'")]
     UnknownLevel(String),
 
+    #[error("pause lock already acquired")]
+    PauseLockAlreadyAcquired,
+
     #[error("Failed to set logger: {0}")]
     SetLogger(#[from] log::SetLoggerError),
 
@@ -1117,10 +1123,6 @@ mod animation {
                 self
             }
         }
-    }
-
-    pub fn frames() -> impl Iterator<Item = usize> {
-        (0..LENGTH).flat_map(|f| [f; SLOWDOWN]).cycle()
     }
 
     pub fn braille_spin(state: State) -> char {
@@ -1181,6 +1183,30 @@ mod animation {
             }
             State::Paused => paused_char,
             State::Finished => finished_char,
+        }
+    }
+
+    pub struct Frames {
+        frame_index: usize,
+        slowdown_index: usize,
+    }
+
+    impl Frames {
+        pub fn new() -> Self {
+            Self {
+                frame_index: LENGTH - 1,
+                slowdown_index: SLOWDOWN - 1,
+            }
+        }
+    }
+
+    impl Iterator for Frames {
+        type Item = usize;
+
+        fn next(&mut self) -> Option<Self::Item> {
+            self.frame_index = (self.frame_index + (self.slowdown_index + 1) / SLOWDOWN) % LENGTH;
+            self.slowdown_index = (self.slowdown_index + 1) % LENGTH;
+            Some(self.frame_index)
         }
     }
 }

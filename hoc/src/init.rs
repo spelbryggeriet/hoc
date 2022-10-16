@@ -51,9 +51,9 @@ pub struct Command {
 
 impl Command {
     #[throws(anyhow::Error)]
-    pub fn run(self, context: &mut Context) {
-        let node_addresses = prompt_arg_default!(self, node_addresses);
-        let gateway = prompt_arg_default!(self, gateway);
+    pub async fn run(self, context: &mut Context) {
+        let node_addresses = prompt_arg_default!(self, node_addresses).await?;
+        let gateway = prompt_arg_default!(self, gateway).await?;
 
         debug!("Checking gateway");
         ensure!(
@@ -62,14 +62,17 @@ impl Command {
             node_addresses.prefix_len
         );
 
-        let _admin_username = prompt_arg!(self, admin_username);
+        let _admin_username = prompt_arg!(self, admin_username).await?;
 
         let _store_progress = progress!("Storing network information");
 
         context
             .kv
-            .put_value("network/start_address", node_addresses.ip_addr.to_string())?
-            .put_value("network/prefix_len", node_addresses.prefix_len)?
-            .put_value("network/gateway", gateway.to_string())?;
+            .put_value("network/start_address", node_addresses.ip_addr.to_string())
+            .await?
+            .put_value("network/prefix_len", node_addresses.prefix_len)
+            .await?
+            .put_value("network/gateway", gateway.to_string())
+            .await?;
     }
 }

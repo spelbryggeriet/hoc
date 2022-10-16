@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use strum::{Display, EnumIter, IntoEnumIterator};
 use thiserror::Error;
 
-use crate::{logger, prelude::*};
+use crate::{logger, prelude::*, prompt};
 
 #[derive(Serialize, Deserialize)]
 pub struct Kv {
@@ -215,7 +215,11 @@ impl Kv {
     }
 
     #[throws(Error)]
-    pub fn put_value<Q: AsRef<Path>, V: Into<Value>>(&mut self, key: Q, value: V) -> &mut Self {
+    pub async fn put_value<Q: AsRef<Path>, V: Into<Value>>(
+        &mut self,
+        key: Q,
+        value: V,
+    ) -> &mut Self {
         let key = self.check_key(key)?.as_ref().to_path_buf();
         let value = value.into();
 
@@ -223,8 +227,6 @@ impl Kv {
 
         if self.map.contains_key(&key) {
             error!("Value for key {key:?} is already set");
-
-            let _pause_lock = logger::pause();
 
             #[derive(Display, EnumIter)]
             enum Action {
@@ -235,11 +237,13 @@ impl Kv {
 
             let option = select!("How do you want to resolve the key conflict?")
                 .with_options(Action::iter())
-                .get()?;
+                .await?;
 
             match option {
                 Action::Abort => {
-                    throw!(inquire::InquireError::OperationCanceled);
+                    throw!(Error::Prompt(prompt::Error::Inquire(
+                        inquire::InquireError::OperationCanceled
+                    )));
                 }
                 Action::Skip => {
                     info!("Skipping to put value for key {key:?}");
@@ -264,7 +268,7 @@ impl Kv {
     }
 
     #[throws(Error)]
-    pub fn put_array<K, V, I>(&mut self, key_prefix: K, array: I)
+    pub async fn put_array<K, V, I>(&mut self, key_prefix: K, array: I)
     where
         K: Into<PathBuf>,
         V: Into<Value>,
@@ -273,12 +277,12 @@ impl Kv {
         let key_prefix = key_prefix.into();
         for (index, value) in array.into_iter().enumerate() {
             let index_key = key_prefix.join(index.to_string());
-            self.put_value(index_key, value)?;
+            self.put_value(index_key, value).await?;
         }
     }
 
     #[throws(Error)]
-    pub fn put_map<K, V, Q, I>(&mut self, key_prefix: K, map: I)
+    pub async fn put_map<K, V, Q, I>(&mut self, key_prefix: K, map: I)
     where
         K: Into<PathBuf>,
         V: Into<Value>,
@@ -288,7 +292,7 @@ impl Kv {
         let key_prefix = key_prefix.into();
         for (key, value) in map.into_iter() {
             let map_key = key_prefix.join(key);
-            self.put_value(map_key, value)?;
+            self.put_value(map_key, value).await?;
         }
     }
 
@@ -351,11 +355,14 @@ pub enum Error {
     #[error("{0} out of range for `{1}`")]
     OverflowingNumber(i128, &'static str),
 
-    #[error("An IO error occurred: {0}")]
-    Io(#[from] io::Error),
+    #[error(transparent)]
+    Logger(#[from] logger::Error),
 
     #[error(transparent)]
-    Prompt(#[from] inquire::InquireError),
+    Prompt(#[from] prompt::Error),
+
+    #[error("An IO error occurred: {0}")]
+    Io(#[from] io::Error),
 
     #[error(transparent)]
     Serialization(#[from] serde_json::Error),

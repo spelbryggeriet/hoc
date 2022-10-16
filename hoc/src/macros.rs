@@ -98,24 +98,24 @@ macro_rules! args_summary {
 
 macro_rules! prompt_arg {
     ($self:ident, $field:ident $(,)?) => {
-        $crate::prompt::Prompt::get($self.$field, stringify!($field))?
+        $crate::prompt::Prompt::get($self.$field, stringify!($field))
     };
 }
 
 macro_rules! prompt_arg_default {
     ($self:ident, $field:ident $(,)?) => {
-        $crate::prompt::Prompt::get_or($self.$field, stringify!($field), default::$field())?
+        $crate::prompt::Prompt::get_or($self.$field, stringify!($field), default::$field())
     };
 }
 
 macro_rules! progress {
     ($($args:tt)*) => {
-        $crate::logger::PROGRESS_THREAD.push_progress(format!($($args)*))
+        $crate::logger::LOG_RENDERER.push_progress(format!($($args)*))
     };
 }
 
 macro_rules! select {
     ($($args:tt)*) => {
-        $crate::prompt::select(&format!($($args)*))
+        $crate::prompt::select(format!($($args)*))
     };
 }
