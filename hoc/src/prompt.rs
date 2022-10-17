@@ -47,7 +47,7 @@ where
     let prompt = format!("{field}:");
 
     let prompt_fut = task::spawn_blocking(move || {
-        let _pause_lock = logger::pause()?;
+        let _pause_lock = logger::render::pause()?;
 
         let default_clone = default_owned.clone();
         let mut text =
@@ -86,7 +86,7 @@ where
 
     match prompt_fut.await {
         Ok(resp) => T::from_str(resp.trim()).unwrap_or_else(|_| unreachable!()),
-        Err(Error::Logger(err)) => throw!(err),
+        Err(Error::Render(err)) => throw!(err),
         Err(Error::Inquire(err)) => match err {
             err @ (inquire::InquireError::Custom(_)
             | inquire::InquireError::OperationCanceled
@@ -146,7 +146,7 @@ impl<T: Display + Send + 'static> SelectBuilder<T, NonEmpty> {
     #[throws(Error)]
     pub async fn get(self) -> T {
         task::spawn_blocking(move || {
-            let _pause_lock = logger::pause()?;
+            let _pause_lock = logger::render::pause()?;
 
             let resp = Select::new(&self.message, self.options)
                 .with_formatter(&|_| clear_prompt())
@@ -212,7 +212,7 @@ where
 #[derive(Debug, Error)]
 pub enum Error {
     #[error(transparent)]
-    Logger(#[from] logger::Error),
+    Render(#[from] logger::render::Error),
 
     #[error(transparent)]
     Inquire(#[from] inquire::InquireError),

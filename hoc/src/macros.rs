@@ -110,7 +110,7 @@ macro_rules! prompt_arg_default {
 
 macro_rules! progress {
     ($($args:tt)*) => {
-        $crate::logger::LOG_RENDERER.push_progress(format!($($args)*))
+        $crate::logger::render::RENDER_THREAD.push_progress(format!($($args)*))
     };
 }
 
