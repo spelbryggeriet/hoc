@@ -167,7 +167,7 @@ impl LogTrait for Logger {
 
             // Find the current progress log.
             let mut logs_lock = LOG_RENDERER.logs.lock().expect(EXPECT_THREAD_NOT_POSIONED);
-            let (_, ref mut logs) = *logs_lock;
+            let logs = &mut *logs_lock;
             let progress_log = logs.iter_mut().last().and_then(|log| {
                 if let Log::Progress(progress_log) = log {
                     (!progress_log.is_finished()).then_some(progress_log)
@@ -286,7 +286,7 @@ struct LoggerMeta {
 #[must_use]
 pub struct LogRenderer {
     thread_handle: Mutex<Option<JoinHandle<Result<(), Error>>>>,
-    logs: Arc<Mutex<(usize, VecDeque<Log>)>>,
+    logs: Arc<Mutex<VecDeque<Log>>>,
     wants_cancel: Arc<AtomicBool>,
     wants_pause: Arc<(Mutex<bool>, Condvar)>,
     is_paused: Arc<(Mutex<bool>, Condvar)>,
@@ -294,7 +294,7 @@ pub struct LogRenderer {
 
 impl LogRenderer {
     pub fn init() -> Self {
-        let logs_orig = Arc::new(Mutex::new((0, VecDeque::<Log>::new())));
+        let logs_orig = Arc::new(Mutex::new(VecDeque::<Log>::new()));
         let logs = Arc::clone(&logs_orig);
 
         let wants_cancel_orig = Arc::new(AtomicBool::new(false));
@@ -309,11 +309,12 @@ impl LogRenderer {
         let thread_handle = thread::spawn(move || {
             let spin_sleeper =
                 SpinSleeper::new(100_000).with_spin_strategy(SpinStrategy::YieldThread);
-            let mut frames = animation::Frames::new();
-            let mut has_printed = false;
+            let mut render_config = RenderConfig::new();
 
             while !wants_cancel.load(Ordering::SeqCst) {
                 let (terminal_cols, terminal_rows) = terminal::size()?;
+                render_config.width = terminal_cols as usize;
+                render_config.max_running_progress_height = terminal_rows as usize;
 
                 {
                     let (wants_pause_mutex, wants_pause_cvar) = &*wants_pause;
@@ -323,17 +324,17 @@ impl LogRenderer {
                     if *wants_pause_lock {
                         {
                             let mut stdout = io::stdout();
+                            render_config.is_paused = true;
 
                             let mut logs_lock = logs.lock().expect(EXPECT_THREAD_NOT_POSIONED);
-                            let (ref mut previous_height, ref mut logs) = *logs_lock;
+                            let logs = &mut *logs_lock;
                             while let Some(log) = logs.pop_front() {
                                 match log {
                                     Log::Simple(ref simple_log) => {
                                         Self::print_simple_log(
                                             &mut stdout,
+                                            &mut render_config,
                                             simple_log,
-                                            previous_height,
-                                            &mut has_printed,
                                         )?;
                                     }
 
@@ -342,22 +343,16 @@ impl LogRenderer {
                                     {
                                         Self::print_finished_progress_log(
                                             &mut stdout,
+                                            &mut render_config,
                                             progress_log,
-                                            previous_height,
-                                            &mut has_printed,
                                         )?;
                                     }
 
                                     Log::Progress(ref progress_log) => {
                                         Self::print_running_progress_log(
                                             &mut stdout,
+                                            &mut render_config,
                                             progress_log,
-                                            terminal_rows as usize,
-                                            terminal_cols as usize,
-                                            &mut frames,
-                                            true,
-                                            previous_height,
-                                            &mut has_printed,
                                         )?;
                                         logs.push_front(log);
                                         break;
@@ -389,29 +384,24 @@ impl LogRenderer {
 
                     {
                         let mut stdout = io::stdout();
+                        render_config.is_paused = false;
 
                         let mut logs_lock = logs.lock().expect(EXPECT_THREAD_NOT_POSIONED);
-                        let (ref mut previous_height, ref mut logs) = *logs_lock;
+                        let logs = &mut *logs_lock;
                         while let Some(log) = logs.pop_front() {
                             match log {
                                 Log::Simple(ref simple_log) => {
                                     Self::print_simple_log(
                                         &mut stdout,
+                                        &mut render_config,
                                         simple_log,
-                                        previous_height,
-                                        &mut has_printed,
                                     )?;
                                 }
                                 Log::Progress(ref progress_log) if !progress_log.is_finished() => {
                                     Self::print_running_progress_log(
                                         &mut stdout,
+                                        &mut render_config,
                                         progress_log,
-                                        terminal_rows as usize,
-                                        terminal_cols as usize,
-                                        &mut frames,
-                                        false,
-                                        previous_height,
-                                        &mut has_printed,
                                     )?;
                                     logs.push_front(log);
                                     break;
@@ -419,9 +409,8 @@ impl LogRenderer {
                                 Log::Progress(ref progress_log) => {
                                     Self::print_finished_progress_log(
                                         &mut stdout,
+                                        &mut render_config,
                                         progress_log,
-                                        previous_height,
-                                        &mut has_printed,
                                     )?;
                                 }
                             }
@@ -437,24 +426,18 @@ impl LogRenderer {
             let mut stdout = io::stdout();
 
             let mut logs_lock = logs.lock().expect(EXPECT_THREAD_NOT_POSIONED);
-            let (ref mut previous_height, ref mut logs) = *logs_lock;
+            let logs = &mut *logs_lock;
             for log in logs.drain(..) {
                 match log {
                     Log::Simple(ref simple_log) => {
-                        Self::print_simple_log(
-                            &mut stdout,
-                            simple_log,
-                            previous_height,
-                            &mut has_printed,
-                        )?;
+                        Self::print_simple_log(&mut stdout, &mut render_config, simple_log)?;
                     }
 
                     Log::Progress(ref progress_log) if progress_log.is_finished() => {
                         Self::print_finished_progress_log(
                             &mut stdout,
+                            &mut render_config,
                             progress_log,
-                            previous_height,
-                            &mut has_printed,
                         )?;
                     }
 
@@ -475,58 +458,77 @@ impl LogRenderer {
         }
     }
 
+    #[throws(Error)]
     fn print_simple_log(
         stdout: &mut Stdout,
+        render_config: &mut RenderConfig,
         simple_log: &SimpleLog,
-        previous_height: &mut usize,
-        has_printed: &mut bool,
-    ) -> Result<(), Error> {
+    ) {
+        // Print leading new line from previous progress log.
+        if render_config.has_printed_finished_progress {
+            println!()
+        }
+
         // Print new line from previous log.
-        if *has_printed {
+        if render_config.has_printed_non_running_progress_atleast_once {
             stdout.queue(style::Print("\n"))?;
-        } else {
-            *has_printed = true;
         }
 
         // Render the simple log.
         simple_log.render(stdout)?;
-        *previous_height = 0;
+        render_config.rendered_running_progress_height = 0;
 
-        Ok(())
+        render_config.has_printed_non_running_progress_atleast_once = true;
+        render_config.has_printed_finished_progress = false;
     }
 
     #[throws(Error)]
     fn print_running_progress_log(
         stdout: &mut Stdout,
+        render_config: &mut RenderConfig,
         progress_log: &ProgressLog,
-        max_height: usize,
-        width: usize,
-        frames: &mut impl Iterator<Item = usize>,
-        is_paused: bool,
-        previous_height: &mut usize,
-        has_printed: &mut bool,
     ) {
-        Self::clear_previous_progress_log(stdout, *previous_height, has_printed)?;
+        let starting_height = if render_config.has_printed_non_running_progress_atleast_once {
+            println!();
+            1
+        } else {
+            0
+        };
 
-        let frame = frames.next().expect("animation frames should be infinite");
-        *previous_height = progress_log.render(stdout, max_height, width, 0, frame, is_paused)?;
+        Self::clear_previous_running_progress_log(stdout, render_config)?;
+        render_config.rendered_running_progress_height = starting_height;
+
+        render_config.rendered_running_progress_height += progress_log.render(
+            stdout,
+            render_config.max_running_progress_height,
+            render_config.width,
+            0,
+            render_config.next_frame(),
+            render_config.is_paused,
+        )?;
+
+        if render_config.is_paused {
+            println!();
+            render_config.rendered_running_progress_height += 1;
+        }
+
+        render_config.has_printed_finished_progress = false;
     }
 
     #[throws(Error)]
     fn print_finished_progress_log(
         stdout: &mut Stdout,
+        render_config: &mut RenderConfig,
         progress_log: &ProgressLog,
-        previous_height: &mut usize,
-        has_printed: &mut bool,
     ) {
-        Self::clear_previous_progress_log(stdout, *previous_height, has_printed)?;
+        Self::clear_previous_running_progress_log(stdout, render_config)?;
 
         // Render finished progress to a vector of strings.
         let mut buffer = StringBuffer::new();
         let rendered_height = progress_log.render_to_strings(&mut buffer, 0)?;
-        *previous_height = 0;
 
         // Print rendered strings.
+        println!();
         for (i, line) in buffer.0.iter().enumerate().take(rendered_height) {
             stdout.queue(style::Print(line))?;
             stdout.queue(terminal::Clear(terminal::ClearType::UntilNewLine))?;
@@ -535,25 +537,26 @@ impl LogRenderer {
                 stdout.queue(style::Print("\n"))?;
             }
         }
+
+        render_config.has_printed_non_running_progress_atleast_once = true;
+        render_config.has_printed_finished_progress = true;
     }
 
     #[throws(Error)]
-    fn clear_previous_progress_log(
-        stdout: &mut Stdout,
-        previous_height: usize,
-        has_printed: &mut bool,
-    ) {
-        if previous_height >= 1 {
-            if previous_height >= 2 {
-                stdout.queue(cursor::MoveToPreviousLine(previous_height as u16 - 1))?;
+    fn clear_previous_running_progress_log(stdout: &mut Stdout, render_config: &mut RenderConfig) {
+        if render_config.rendered_running_progress_height >= 1 {
+            if render_config.rendered_running_progress_height >= 2 {
+                stdout.queue(cursor::MoveToPreviousLine(
+                    render_config.rendered_running_progress_height as u16 - 1,
+                ))?;
             }
 
             stdout.queue(cursor::MoveToColumn(0))?;
-        } else if *has_printed {
+        } else if render_config.has_printed_non_running_progress_atleast_once {
             stdout.queue(style::Print("\n"))?;
-        } else {
-            *has_printed = true;
         }
+
+        render_config.rendered_running_progress_height = 0;
     }
 
     pub fn push_progress(&self, message: String) -> ProgressHandle {
@@ -561,7 +564,7 @@ impl LogRenderer {
 
         // Find the current progress log.
         let mut logs_lock = self.logs.lock().expect(EXPECT_THREAD_NOT_POSIONED);
-        let (_, ref mut logs) = *logs_lock;
+        let logs = &mut *logs_lock;
         let progress_log = logs.iter_mut().last().and_then(|log| {
             if let Log::Progress(progress_log) = log {
                 (!progress_log.is_finished()).then_some(progress_log)
@@ -595,6 +598,36 @@ impl LogRenderer {
             // Print a final new line.
             println!();
         }
+    }
+}
+
+struct RenderConfig {
+    has_printed_non_running_progress_atleast_once: bool,
+    has_printed_finished_progress: bool,
+    is_paused: bool,
+    rendered_running_progress_height: usize,
+    max_running_progress_height: usize,
+    width: usize,
+    frames: animation::Frames,
+}
+
+impl RenderConfig {
+    fn new() -> Self {
+        Self {
+            has_printed_non_running_progress_atleast_once: false,
+            has_printed_finished_progress: false,
+            is_paused: false,
+            rendered_running_progress_height: 0,
+            max_running_progress_height: 0,
+            width: 0,
+            frames: animation::Frames::new(),
+        }
+    }
+
+    fn next_frame(&mut self) -> usize {
+        self.frames
+            .next()
+            .expect("animation frames should be infinite")
     }
 }
 
