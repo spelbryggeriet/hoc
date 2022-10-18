@@ -12,8 +12,8 @@ use std::{
 };
 
 use crossterm::{cursor, execute, queue, style, terminal, ExecutableCommand, QueueableCommand};
-use lazy_static::lazy_static;
 use log::Level;
+use once_cell::sync::OnceCell;
 use spin_sleep::{SpinSleeper, SpinStrategy};
 use thiserror::Error;
 
@@ -21,16 +21,14 @@ use crate::prelude::*;
 
 mod animation;
 
-const EXPECT_THREAD_NOT_POSIONED: &'static str = "thread should not be poisoned";
-
-lazy_static! {
-    pub static ref RENDER_THREAD: RenderThread = RenderThread::init();
-}
+pub static RENDER_THREAD: OnceCell<RenderThread> = OnceCell::new();
 
 #[throws(Error)]
 pub fn pause() -> RenderThreadPauseLock {
+    let render_thread = RENDER_THREAD.get().expect(EXPECT_RENDER_THREAD_INITIALIZED);
+
     {
-        let (wants_pause_mutex, wants_pause_cvar) = &*RENDER_THREAD.wants_pause;
+        let (wants_pause_mutex, wants_pause_cvar) = &*render_thread.wants_pause;
         let mut wants_pause_lock = wants_pause_mutex.lock().expect(EXPECT_THREAD_NOT_POSIONED);
 
         if *wants_pause_lock {
@@ -42,7 +40,7 @@ pub fn pause() -> RenderThreadPauseLock {
     }
 
     {
-        let (is_paused_mutex, is_paused_cvar) = &*RENDER_THREAD.is_paused;
+        let (is_paused_mutex, is_paused_cvar) = &*render_thread.is_paused;
         let is_paused_lock = is_paused_mutex.lock().expect(EXPECT_THREAD_NOT_POSIONED);
         let _ = is_paused_cvar
             .wait_while(is_paused_lock, |is_paused| !*is_paused)
@@ -147,7 +145,10 @@ impl RenderThread {
                             .expect(EXPECT_THREAD_NOT_POSIONED);
 
                         {
-                            let (is_paused_mutex, is_paused_cvar) = &*RENDER_THREAD.is_paused;
+                            let (is_paused_mutex, is_paused_cvar) = &*RENDER_THREAD
+                                .get()
+                                .expect(EXPECT_RENDER_THREAD_INITIALIZED)
+                                .is_paused;
                             let mut is_paused_lock =
                                 is_paused_mutex.lock().expect(EXPECT_THREAD_NOT_POSIONED);
                             *is_paused_lock = false;
@@ -361,7 +362,12 @@ impl RenderThread {
         let simple_log = SimpleLog::new(level, message);
 
         // Find the current progress log.
-        let mut logs_lock = RENDER_THREAD.logs.lock().expect(EXPECT_THREAD_NOT_POSIONED);
+        let mut logs_lock = RENDER_THREAD
+            .get()
+            .expect(EXPECT_RENDER_THREAD_INITIALIZED)
+            .logs
+            .lock()
+            .expect(EXPECT_THREAD_NOT_POSIONED);
         let logs = &mut *logs_lock;
         let progress_log = logs.iter_mut().last().and_then(|log| {
             if let Log::Progress(progress_log) = log {
@@ -394,15 +400,17 @@ pub struct RenderThreadPauseLock;
 
 impl Drop for RenderThreadPauseLock {
     fn drop(&mut self) {
+        let render_thread = RENDER_THREAD.get().expect(EXPECT_RENDER_THREAD_INITIALIZED);
+
         {
-            let (wants_pause_mutex, wants_pause_cvar) = &*RENDER_THREAD.wants_pause;
+            let (wants_pause_mutex, wants_pause_cvar) = &*render_thread.wants_pause;
             let mut wants_pause_lock = wants_pause_mutex.lock().expect(EXPECT_THREAD_NOT_POSIONED);
             *wants_pause_lock = false;
             wants_pause_cvar.notify_one();
         }
 
         {
-            let (is_paused_mutex, is_paused_cvar) = &*RENDER_THREAD.is_paused;
+            let (is_paused_mutex, is_paused_cvar) = &*render_thread.is_paused;
             let is_paused_lock = is_paused_mutex.lock().expect(EXPECT_THREAD_NOT_POSIONED);
             let _ = is_paused_cvar
                 .wait_while(is_paused_lock, |is_paused| *is_paused)

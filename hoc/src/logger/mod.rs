@@ -50,13 +50,19 @@ impl Logger {
 
         log::set_boxed_logger(Box::new(logger))?;
         log::set_max_level(LevelFilter::Trace);
-        lazy_static::initialize(&render::RENDER_THREAD);
+
+        render::RENDER_THREAD
+            .set(render::RenderThread::init())
+            .unwrap_or_else(|_| panic!("render thread already initialized"));
     }
 
     #[throws(Error)]
     pub fn cleanup() {
         log::logger().flush();
-        render::RENDER_THREAD.terminate()?;
+        render::RENDER_THREAD
+            .get()
+            .expect(EXPECT_RENDER_THREAD_INITIALIZED)
+            .terminate()?;
     }
 }
 
@@ -69,7 +75,10 @@ impl Log for Logger {
         let args_str = record.args().to_string();
 
         if self.enabled(record.metadata()) {
-            render::RENDER_THREAD.push_simple_log(record.level(), args_str.clone());
+            render::RENDER_THREAD
+                .get()
+                .expect(EXPECT_RENDER_THREAD_INITIALIZED)
+                .push_simple_log(record.level(), args_str.clone());
         }
 
         let mut buffer_lock = self.buffer.lock().unwrap_or_else(|err| panic!("{err}"));

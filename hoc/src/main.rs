@@ -1,6 +1,8 @@
 use std::{env, process::ExitCode};
 
 use clap::{CommandFactory, Parser, Subcommand};
+use scopeguard::defer;
+
 use context::Context;
 
 #[macro_use]
@@ -33,13 +35,22 @@ impl App {
         debug!("Feching HOME environment variable");
         let home_dir = env::var("HOME")?;
 
-        debug!("Loading context");
-        let mut context = Context::load(format!("{home_dir}/.config/hoc/context.yaml"))?;
+        let context = Context::load(format!("{home_dir}/.config/hoc/context.yaml"))?;
+        context::CONTEXT
+            .set(context)
+            .unwrap_or_else(|_| panic!("context already initialized"));
+
+        defer! {
+            context::CONTEXT
+                .get()
+                .expect(EXPECT_CONTEXT_INITIALIZED)
+                .persist().unwrap_or_else(|err| panic!("{err}"));
+        }
 
         match self.command {
             Command::Init(init_command) => {
                 debug!("Running {} command", init::Command::command().get_name());
-                init_command.run(&mut context).await?;
+                init_command.run().await?;
             }
             _ => (),
         }
@@ -76,6 +87,10 @@ async fn main() -> ExitCode {
 
     logger::Logger::init()?;
 
+    defer! {
+        logger::Logger::cleanup().unwrap_or_else(|err| panic!("{err}"));
+    }
+
     let exit_code = match app.run().await {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
@@ -83,8 +98,6 @@ async fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     };
-
-    logger::Logger::cleanup()?;
 
     exit_code
 }

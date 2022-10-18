@@ -1,19 +1,24 @@
 use std::{
+    borrow::Cow,
     fs::{self, File},
     io,
     path::PathBuf,
+    sync::Mutex,
 };
 
+use once_cell::sync::OnceCell;
 use serde::{Deserialize, Serialize};
 
-use self::kv::Kv;
 use crate::prelude::*;
+use kv::{Kv, Value};
 
 mod kv;
 
+pub static CONTEXT: OnceCell<Context> = OnceCell::new();
+
 #[derive(Serialize, Deserialize)]
 pub struct Context {
-    pub kv: Kv,
+    pub kv: Mutex<Kv>,
 
     #[serde(skip)]
     file_path: PathBuf,
@@ -22,6 +27,8 @@ pub struct Context {
 impl Context {
     #[throws(anyhow::Error)]
     pub fn load<P: Into<PathBuf>>(context_path: P) -> Self {
+        debug!("Loading context");
+
         let context_path = context_path.into();
 
         debug!("Retrieving parent directory to context path");
@@ -50,7 +57,7 @@ impl Context {
 
                 debug!("Creating context object");
                 let context = Self {
-                    kv: Kv::new(),
+                    kv: Mutex::new(Kv::new()),
                     file_path: context_path,
                 };
 
@@ -61,29 +68,27 @@ impl Context {
             Err(error) => throw!(error),
         }
     }
-}
 
-impl Drop for Context {
-    fn drop(&mut self) {
+    #[throws(anyhow::Error)]
+    pub async fn kv_put_value(&self, key: Cow<'static, str>, value: impl Into<Value>) {
+        self.kv
+            .lock()
+            .expect(EXPECT_THREAD_NOT_POSIONED)
+            .put_value(&*key, value)
+            .await?
+    }
+
+    #[throws(anyhow::Error)]
+    pub fn persist(&self) {
         info!("Persisting context");
 
         debug!("Opening context file for writing");
-        let file = match File::options()
+        let file = File::options()
             .write(true)
             .truncate(true)
-            .open(&self.file_path)
-        {
-            Ok(file) => file,
-            Err(err) => {
-                error!("Failed to open file for writing: {err}");
-                return;
-            }
-        };
+            .open(&self.file_path)?;
 
         debug!("Serializing context to file");
-        if let Err(err) = serde_yaml::to_writer(file, self) {
-            error!("Failed to persist context: {err}");
-            return;
-        }
+        serde_yaml::to_writer(file, self)?;
     }
 }

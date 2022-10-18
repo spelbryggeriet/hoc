@@ -215,11 +215,7 @@ impl Kv {
     }
 
     #[throws(Error)]
-    pub async fn put_value<Q: AsRef<Path>, V: Into<Value>>(
-        &mut self,
-        key: Q,
-        value: V,
-    ) -> &mut Self {
+    pub async fn put_value<Q: AsRef<Path>, V: Into<Value>>(&mut self, key: Q, value: V) {
         let key = self.check_key(key)?.as_ref().to_path_buf();
         let value = value.into();
 
@@ -247,7 +243,7 @@ impl Kv {
                 }
                 Action::Skip => {
                     info!("Skipping to put value for key {key:?}");
-                    return self;
+                    return;
                 }
                 Action::Overwrite => {
                     warn!("Overwriting existing value for key {key:?}");
@@ -263,8 +259,6 @@ impl Kv {
         }
 
         self.map.insert(key, Item::Value(value));
-
-        self
     }
 
     #[throws(Error)]

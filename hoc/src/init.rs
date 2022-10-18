@@ -2,7 +2,7 @@ use std::net::IpAddr;
 
 use clap::Parser;
 
-use crate::{cidr::Cidr, context::Context, prelude::*};
+use crate::{cidr::Cidr, prelude::*};
 
 args_summary! {
     gateway {
@@ -53,7 +53,7 @@ pub struct Command {
 
 impl Command {
     #[throws(anyhow::Error)]
-    pub async fn run(self, context: &mut Context) {
+    pub async fn run(self) {
         let node_addresses = prompt_arg_default!(self, node_addresses).await?;
         let gateway = prompt_arg_default!(self, gateway).await?;
 
@@ -68,13 +68,8 @@ impl Command {
 
         let _store_progress = progress!("Storing network information");
 
-        context
-            .kv
-            .put_value("network/start_address", node_addresses.ip_addr.to_string())
-            .await?
-            .put_value("network/prefix_len", node_addresses.prefix_len)
-            .await?
-            .put_value("network/gateway", gateway.to_string())
-            .await?;
+        put!(node_addresses.ip_addr.to_string() => "network/start_address").await?;
+        put!(node_addresses.prefix_len => "network/prefix_len").await?;
+        put!(gateway.to_string() => "network/gateway").await?;
     }
 }
