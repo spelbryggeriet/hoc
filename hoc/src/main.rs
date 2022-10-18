@@ -23,12 +23,9 @@ struct App {
 
 impl App {
     #[throws(anyhow::Error)]
-    async fn run() {
-        debug!("Parsing command-line arguments");
-        let app = Self::from_args();
-
+    async fn run(self) {
         #[cfg(debug_assertions)]
-        if matches!(app.command, Command::Debug) {
+        if matches!(self.command, Command::Debug) {
             run_debug();
             return;
         }
@@ -39,7 +36,7 @@ impl App {
         debug!("Loading context");
         let mut context = Context::load(format!("{home_dir}/.config/hoc/context.yaml"))?;
 
-        match app.command {
+        match self.command {
             Command::Init(init_command) => {
                 debug!("Running {} command", init::Command::command().get_name());
                 init_command.run(&mut context).await?;
@@ -75,9 +72,11 @@ struct SdCardCommand {}
 #[throws(anyhow::Error)]
 #[async_std::main]
 async fn main() -> ExitCode {
+    let app = App::from_args();
+
     logger::Logger::init()?;
 
-    let exit_code = match App::run().await {
+    let exit_code = match app.run().await {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             error!("{error}");
