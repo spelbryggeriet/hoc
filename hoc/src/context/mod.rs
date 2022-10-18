@@ -18,7 +18,7 @@ pub static CONTEXT: OnceCell<Context> = OnceCell::new();
 
 #[derive(Serialize, Deserialize)]
 pub struct Context {
-    pub kv: Mutex<Kv>,
+    kv: Mutex<Kv>,
 
     #[serde(skip)]
     file_path: PathBuf,
@@ -75,7 +75,7 @@ impl Context {
             .lock()
             .expect(EXPECT_THREAD_NOT_POSIONED)
             .put_value(&*key, value)
-            .await?
+            .await?;
     }
 
     #[throws(anyhow::Error)]

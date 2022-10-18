@@ -1,16 +1,17 @@
 use std::{env, process::ExitCode};
 
-use clap::{CommandFactory, Parser, Subcommand};
+use clap::Parser;
 use scopeguard::defer;
 
+use action::Action;
 use context::Context;
 
 #[macro_use]
 mod macros;
 
+mod action;
 mod cidr;
 mod context;
-mod init;
 mod logger;
 mod prelude;
 mod prompt;
@@ -20,15 +21,15 @@ use prelude::*;
 #[derive(Parser)]
 struct App {
     #[clap(subcommand)]
-    command: Command,
+    action: Action,
 }
 
 impl App {
     #[throws(anyhow::Error)]
     async fn run(self) {
         #[cfg(debug_assertions)]
-        if matches!(self.command, Command::Debug) {
-            run_debug();
+        if matches!(self.action, Action::Debug) {
+            action::debug::run();
             return;
         }
 
@@ -47,38 +48,9 @@ impl App {
                 .persist().unwrap_or_else(|err| panic!("{err}"));
         }
 
-        match self.command {
-            Command::Init(init_command) => {
-                debug!("Running {} command", init::Command::command().get_name());
-                init_command.run().await?;
-            }
-            _ => (),
-        }
+        self.action.run().await?;
     }
 }
-
-#[derive(Subcommand)]
-enum Command {
-    #[cfg(debug_assertions)]
-    Debug,
-
-    Deploy(DeployCommand),
-    Init(init::Command),
-    Node(NodeCommand),
-    SdCard(SdCardCommand),
-}
-
-/// Deploy an application
-#[derive(Parser)]
-struct DeployCommand {}
-
-/// Manage a node
-#[derive(Parser)]
-struct NodeCommand {}
-
-/// Manage an SD card
-#[derive(Parser)]
-struct SdCardCommand {}
 
 #[throws(anyhow::Error)]
 #[async_std::main]
@@ -100,63 +72,4 @@ async fn main() -> ExitCode {
     };
 
     exit_code
-}
-
-#[cfg(debug_assertions)]
-fn run_debug() {
-    let mut rng = <rand_chacha::ChaCha8Rng as rand::SeedableRng>::seed_from_u64(2);
-    let mut progresses = Vec::<(_, i32)>::new();
-
-    for i in 0.. {
-        let d = progresses.len();
-
-        if rand::Rng::gen_ratio(&mut rng, 1, 5) {
-            let ttl = if rand::Rng::gen_ratio(&mut rng, 1, 20) {
-                rand::Rng::gen_range(&mut rng, 50..100)
-            } else {
-                rand::Rng::gen_range(&mut rng, 0..5)
-            };
-
-            progresses.push((progress!("Progress {}-{i}", d + 1), ttl));
-            progresses.iter_mut().rev().fold(0, |max, (_, ttl)| {
-                if *ttl <= max {
-                    *ttl = max + 1;
-                }
-                *ttl
-            });
-        } else {
-            if rand::Rng::gen_ratio(&mut rng, 1, 2) {
-                trace!("Trace {d}-{i}");
-            } else if rand::Rng::gen_ratio(&mut rng, 1, 2) {
-                debug!("Debug {d}-{i}");
-            } else if rand::Rng::gen_ratio(&mut rng, 9, 10) {
-                info!("Info {d}-{i}");
-            } else if rand::Rng::gen_ratio(&mut rng, 1, 2) {
-                warn!("Warning {d}-{i}");
-            } else {
-                error!("Error {d}-{i}");
-            }
-        }
-
-        progresses.retain_mut(|(_, ttl)| {
-            if *ttl == 0 {
-                false
-            } else {
-                *ttl -= 1;
-                true
-            }
-        });
-
-        if rand::Rng::gen_ratio(&mut rng, 3, 4) {
-            std::thread::sleep(std::time::Duration::from_millis(rand::Rng::gen_range(
-                &mut rng,
-                5..50,
-            )));
-        } else {
-            std::thread::sleep(std::time::Duration::from_millis(rand::Rng::gen_range(
-                &mut rng,
-                100..1000,
-            )));
-        }
-    }
 }

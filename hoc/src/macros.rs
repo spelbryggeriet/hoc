@@ -202,7 +202,7 @@ macro_rules! progress {
     ($($args:tt)*) => {
         $crate::logger::render::RENDER_THREAD
             .get()
-            .expect(EXPECT_RENDER_THREAD_INITIALIZED)
+            .expect($crate::prelude::EXPECT_RENDER_THREAD_INITIALIZED)
             .push_progress(format!($($args)*))
     };
 }
@@ -217,7 +217,7 @@ macro_rules! put {
     ($value:expr => $($args:tt)*) => {
         $crate::context::CONTEXT
             .get()
-            .expect(EXPECT_CONTEXT_INITIALIZED)
+            .expect($crate::prelude::EXPECT_CONTEXT_INITIALIZED)
             .kv_put_value(
                 {
                     let __args = format_args!($($args)*);
