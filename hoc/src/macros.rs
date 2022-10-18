@@ -1,97 +1,187 @@
-macro_rules! concat_const {
-    ($first_segment:expr $(, $segments:expr)* $(,)?) => {{
-        const __LEN: usize = $first_segment.len() $(+ $segments.len())*;
-
-        const fn __copy_slice(
-            input: &[u8],
-            mut output: [u8; __LEN],
-            offset: usize,
-        ) -> (usize, [u8; __LEN]) {
-            let mut index = 0;
-            loop {
-                output[offset + index] = input[index];
-                index += 1;
-                if index == input.len() {
-                    break;
-                }
-            }
-            (index + offset, output)
-        }
-
-        static mut __OUT: [u8; __LEN] = [0u8; __LEN];
-
-        // FIXME: This is unsound. The returned `&str` can change if this macro is called
-        // again.
-        unsafe {
-            let mut __offset = 0;
-            (__offset, __OUT) = __copy_slice($first_segment.as_bytes(), __OUT, __offset);
-            $(
-            (__offset, __OUT) = __copy_slice($segments.as_bytes(), __OUT, __offset);
-            )*
-
-            ::std::str::from_utf8(&__OUT).unwrap_unchecked()
-        }
-    }};
-}
-
 macro_rules! args_summary {
-    ($($field:ident(
-        $(default = $default:literal,)?
-        help = $help:literal
-        $(, long_help = $long_help:literal)? $(,)?))+
-    ) => {
-        mod default {
-            $(
-            $(
-            pub fn $field() -> &'static str {
-                $default
+    {
+        $($field:ident {
+            $($args:ident = $values:literal),* $(,)?
+        })+
+    } => {
+        args_summary! {
+            @impl ($($field {
+                $($args = $values,)*
+            })+) => {
+                default_output: {}
+                help_output: {}
+                long_help_output: {}
             }
-            )?
-            )+
         }
+    };
 
-        mod help {
-            $(
-            mod $field {
-                pub const DEFAULT: (bool, &'static str) = {
-                    #[allow(unused_variables)]
-                    let val = (false, "");
-                    $(
-                    let val = (true, $default);
-                    )?
-                    val
-                };
+    {
+        @impl ($field:ident {
+            help = $help:literal,
+        } $($fields:tt)*) => {
+            default_output: {
+                $($default_output:tt)*
             }
-            )+
-
-            $(
-            pub fn $field() -> &'static str {
-                if $field::DEFAULT.0 {
-                    concat_const!($help, " [default: ", $field::DEFAULT.1, "]")
-                } else {
-                    $help
+            help_output: {
+                $($help_output:tt)*
+            }
+            long_help_output: {
+                $($long_help_output:tt)*
+            }
+        }
+    } => {
+        args_summary! {
+            @impl ($($fields)*) => {
+                default_output: {
+                    $($default_output)*
+                }
+                help_output: {
+                    $($help_output)*
+                    pub fn $field() -> &'static str {
+                        $help
+                    }
+                }
+                long_help_output: {
+                    $($long_help_output)*
                 }
             }
+        }
+    };
 
-            $(
-            pub mod long {
-                pub fn $field() -> &'static str {
-                    if super::$field::DEFAULT.0 {
-                        concat_const!(
-                            $help,
-                            "\n\n",
-                            $long_help,
-                            "\n\n[default: ",
-                            super::$field::DEFAULT.1,
-                            "]",
-                        )
-                    } else {
-                        concat_const!($help, "\n\n", $long_help)
+    {
+        @impl ($field:ident {
+            default = $default:literal,
+            help = $help:literal,
+        } $($fields:tt)*) => {
+            default_output: {
+                $($default_output:tt)*
+            }
+            help_output: {
+                $($help_output:tt)*
+            }
+            long_help_output: {
+                $($long_help_output:tt)*
+            }
+        }
+    } => {
+        args_summary! {
+            @impl ($($fields)*) => {
+                default_output: {
+                    $($default_output)*
+                    pub fn $field() -> &'static str {
+                        $default
+                    }
+                }
+                help_output: {
+                    $($help_output)*
+                    pub fn $field() -> &'static str {
+                        concat!($help, " [default: ", $default, "]")
+                    }
+                }
+                long_help_output: {
+                    $($long_help_output)*
+                }
+            }
+        }
+    };
+
+    {
+        @impl ($field:ident {
+            help = $help:literal,
+            long_help = $long_help:literal,
+        } $($fields:tt)*) => {
+            default_output: {
+                $($default_output:tt)*
+            }
+            help_output: {
+                $($help_output:tt)*
+            }
+            long_help_output: {
+                $($long_help_output:tt)*
+            }
+        }
+    } => {
+        args_summary! {
+            @impl ($field {
+                help = $help,
+            } $($fields)*) => {
+                default_output: {
+                    $($default_output)*
+                }
+                help_output: {
+                    $($help_output)*
+                }
+                long_help_output: {
+                    $($long_help_output)*
+                    pub fn $field() -> &'static str {
+                        concat!($help, "\n\n", $long_help)
                     }
                 }
             }
-            )?
-            )+
+        }
+    };
+
+    {
+        @impl ($field:ident {
+            default = $default:literal,
+            help = $help:literal,
+            long_help = $long_help:literal,
+        } $($fields:tt)*) => {
+            default_output: {
+                $($default_output:tt)*
+            }
+            help_output: {
+                $($help_output:tt)*
+            }
+            long_help_output: {
+                $($long_help_output:tt)*
+            }
+        }
+    } => {
+        args_summary! {
+            @impl ($field {
+                default = $default,
+                help = $help,
+            } $($fields)*) => {
+                default_output: {
+                    $($default_output)*
+                }
+                help_output: {
+                    $($help_output)*
+                }
+                long_help_output: {
+                    $($long_help_output)*
+                    pub fn $field() -> &'static str {
+                        concat!($help, "\n\n", $long_help, "\n\n[default: ", $default, "]")
+                    }
+                }
+            }
+        }
+    };
+
+    {
+        @impl () => {
+            default_output: {
+                $($default_output:tt)*
+            }
+            help_output: {
+                $($help_output:tt)*
+            }
+            long_help_output: {
+                $($long_help_output:tt)*
+            }
+        }
+    } => {
+        mod default {
+            $($default_output)*
+        }
+
+        mod help {
+            $($help_output)*
+
+            pub mod long {
+                $($long_help_output)*
+            }
         }
     };
 }

@@ -5,17 +5,19 @@ use clap::Parser;
 use crate::{cidr::Cidr, context::Context, prelude::*};
 
 args_summary! {
-    gateway(
+    gateway {
         default = "172.16.0.1",
         help = "The default gateway for the cluster to use",
-    )
-    node_addresses(
+    }
+    node_addresses {
         default = "172.16.4.0/12",
         help = "The node addresses for the cluster to use",
         long_help = "The IP address denote the starting address of the allocation range, and the \
             prefix length denote the network subnet mask.",
-    )
-    admin_username(help = "The username for the cluster administrator")
+    }
+    admin_username {
+        help = "The username for the cluster administrator"
+    }
 }
 
 /// Initialize a cluster
@@ -44,7 +46,7 @@ pub struct Command {
 
     /// Skip prompts for fields that have defaults
     ///
-    /// This is equivalent to setting all defaultable flags without a value.
+    /// This is equivalent to providing all defaultable flags without a value.
     #[clap(short, long)]
     defaults: bool,
 }
