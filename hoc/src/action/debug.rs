@@ -1,4 +1,4 @@
-use crate::prelude::*;
+use crate::{logger, prelude::*};
 
 pub fn run() {
     let mut rng = <rand_chacha::ChaCha8Rng as rand::SeedableRng>::seed_from_u64(2);
@@ -14,7 +14,9 @@ pub fn run() {
                 rand::Rng::gen_range(&mut rng, 0..5)
             };
 
-            progresses.push((progress!("Progress {}-{i}", d + 1), ttl));
+            let progress = logger::progress(format!("Progress {}-{i}", d + 1));
+
+            progresses.push((progress, ttl));
             progresses.iter_mut().rev().fold(0, |max, (_, ttl)| {
                 if *ttl <= max {
                     *ttl = max + 1;

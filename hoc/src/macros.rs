@@ -200,10 +200,7 @@ macro_rules! prompt_arg_default {
 
 macro_rules! progress {
     ($($args:tt)*) => {
-        $crate::logger::render::RENDER_THREAD
-            .get()
-            .expect($crate::prelude::EXPECT_RENDER_THREAD_INITIALIZED)
-            .push_progress(format!($($args)*))
+        let __progress = $crate::logger::progress(format!($($args)*));
     };
 }
 

@@ -12,8 +12,9 @@ use log::{Level, LevelFilter, Log, Metadata, Record};
 use thiserror::Error;
 
 use crate::prelude::*;
+pub use render::{pause, progress, Error as RenderError};
 
-pub mod render;
+mod render;
 
 const MAX_DEFAULT_LEVEL: Level = if cfg!(debug_assertions) {
     Level::Trace

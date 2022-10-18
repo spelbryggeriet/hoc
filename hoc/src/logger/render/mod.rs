@@ -23,6 +23,13 @@ mod animation;
 
 pub static RENDER_THREAD: OnceCell<RenderThread> = OnceCell::new();
 
+pub fn progress(message: String) -> ProgressHandle {
+    RENDER_THREAD
+        .get()
+        .expect(EXPECT_RENDER_THREAD_INITIALIZED)
+        .push_progress(message)
+}
+
 #[throws(Error)]
 pub fn pause() -> RenderThreadPauseLock {
     let render_thread = RENDER_THREAD.get().expect(EXPECT_RENDER_THREAD_INITIALIZED);
