@@ -6,12 +6,12 @@ edition = "2021"
 [dependencies]
 anyhow = "1.0.65"
 async-std = { version = "1.12.0", features = ["attributes"] }
-async-trait = "0.1.57"
 chrono = "0.4.22"
 clap = { version = "3.2.22", features = ["derive"] }
 crossterm = "0.25.0"
 fehler = "1.0.0"
 futures = "0.3.24"
+heck = "0.4.0"
 indexmap = { version = "1.9.1", features = ["serde"] }
 inquire = "0.3.0"
 log = { version = "0.4.17", features = ["std"] }

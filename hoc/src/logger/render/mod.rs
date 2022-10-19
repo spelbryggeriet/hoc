@@ -136,6 +136,8 @@ impl RenderThread {
                                         break;
                                     }
                                 }
+
+                                stdout.flush()?;
                             }
                         }
 

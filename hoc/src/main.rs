@@ -15,6 +15,7 @@ mod context;
 mod logger;
 mod prelude;
 mod prompt;
+mod util;
 
 use prelude::*;
 

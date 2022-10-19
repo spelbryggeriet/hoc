@@ -3,11 +3,30 @@ use std::net::IpAddr;
 use clap::{CommandFactory, Parser, Subcommand};
 
 use crate::{cidr::Cidr, prelude::*};
+pub use run::*;
 
-mod init;
+mod run;
 
-#[cfg(debug_assertions)]
-pub mod debug;
+#[macro_use]
+mod macros;
+
+actions_summary! {
+    init {
+        gateway {
+            default = "172.16.0.1",
+            help = "The default gateway for the cluster to use",
+        }
+        node_addresses {
+            default = "172.16.4.0/12",
+            help = "The node addresses for the cluster to use",
+            long_help = "The IP address denote the starting address of the allocation range, and the \
+                prefix length denote the network subnet mask.",
+        }
+        admin_username {
+            help = "The username for the cluster administrator"
+        }
+    }
+}
 
 #[derive(Subcommand)]
 pub enum Action {
@@ -16,9 +35,9 @@ pub enum Action {
     Debug,
 
     Init(InitAction),
-    Deploy(DeployCommand),
-    Node(NodeCommand),
-    SdCard(SdCardCommand),
+    Deploy(DeployAction),
+    Node(NodeAction),
+    SdCard(SdCardAction),
 }
 
 impl Action {
@@ -26,10 +45,10 @@ impl Action {
     pub async fn run(self) {
         match self {
             Action::Init(init_action) => {
-                debug!("Running {} action", InitAction::command().get_name(),);
+                diagnostics!(InitAction);
 
-                let node_addresses = prompt_arg_default!(init_action, node_addresses).await?;
-                let gateway = prompt_arg_default!(init_action, gateway).await?;
+                let node_addresses = get_arg!(init_action.node_addresses, default = init).await?;
+                let gateway = get_arg!(init_action.gateway, default = init).await?;
 
                 debug!("Checking gateway");
                 ensure!(
@@ -38,7 +57,7 @@ impl Action {
                     node_addresses.prefix_len
                 );
 
-                let admin_username = prompt_arg!(init_action, admin_username).await?;
+                let admin_username = get_arg!(init_action.admin_username).await?;
 
                 init::run(node_addresses, gateway, admin_username).await?;
             }
@@ -47,44 +66,28 @@ impl Action {
     }
 }
 
-args_summary! {
-    gateway {
-        default = "172.16.0.1",
-        help = "The default gateway for the cluster to use",
-    }
-    node_addresses {
-        default = "172.16.4.0/12",
-        help = "The node addresses for the cluster to use",
-        long_help = "The IP address denote the starting address of the allocation range, and the \
-            prefix length denote the network subnet mask.",
-    }
-    admin_username {
-        help = "The username for the cluster administrator"
-    }
-}
-
 /// Initialize a cluster
 #[derive(Parser)]
 #[clap(name = "init")]
 pub struct InitAction {
     #[clap(
-        help = help::gateway(),
+        help = help::init::gateway(),
         long,
-        default_missing_value = default::gateway(),
-        default_value_if("defaults", None, Some(default::gateway())),
+        default_missing_value = default::init::gateway(),
+        default_value_if("defaults", None, Some(default::init::gateway())),
     )]
     gateway: Option<IpAddr>,
 
     #[clap(
-        help = help::node_addresses(),
-        long_help = help::long::node_addresses(),
+        help = help::init::node_addresses(),
+        long_help = long_help::init::node_addresses(),
         long,
-        default_missing_value = default::node_addresses(),
-        default_value_if("defaults", None, Some(default::node_addresses())),
+        default_missing_value = default::init::node_addresses(),
+        default_value_if("defaults", None, Some(default::init::node_addresses())),
     )]
     node_addresses: Option<Cidr>,
 
-    #[clap(help = help::admin_username(), long)]
+    #[clap(help = help::init::admin_username(), long)]
     admin_username: Option<String>,
 
     /// Skip prompts for fields that have defaults
@@ -96,12 +99,12 @@ pub struct InitAction {
 
 /// Deploy an application
 #[derive(Parser)]
-pub struct DeployCommand {}
+pub struct DeployAction {}
 
 /// Manage a node
 #[derive(Parser)]
-pub struct NodeCommand {}
+pub struct NodeAction {}
 
 /// Manage an SD card
 #[derive(Parser)]
-pub struct SdCardCommand {}
+pub struct SdCardAction {}

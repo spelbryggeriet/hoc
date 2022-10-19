@@ -1,4 +1,5 @@
 use std::{
+    borrow::Cow,
     fmt::{Debug, Display},
     future::{Future, IntoFuture},
     marker::PhantomData,
@@ -7,7 +8,6 @@ use std::{
 };
 
 use async_std::task;
-use async_trait::async_trait;
 use crossterm::{
     cursor::{self, MoveToPreviousLine},
     terminal::{Clear, ClearType},
@@ -37,28 +37,49 @@ fn clear_prompt() -> String {
     clear_section
 }
 
-#[throws(Error)]
-async fn get_prompt<T>(field: &str, default: Option<&str>) -> T
+pub struct PromptBuilder<T> {
+    message: Cow<'static, str>,
+    default: Option<Cow<'static, str>>,
+    _output_type: PhantomData<T>,
+}
+
+impl<T> PromptBuilder<T> {
+    pub fn new(message: impl Into<Cow<'static, str>>) -> Self {
+        Self {
+            message: message.into(),
+            default: None,
+            _output_type: Default::default(),
+        }
+    }
+
+    pub fn with_default(mut self, default: impl Into<Cow<'static, str>>) -> Self {
+        self.default.replace(default.into());
+        self
+    }
+}
+
+impl<T> PromptBuilder<T>
 where
     T: FromStr,
     T::Err: Display,
 {
-    let default_owned = default.map(<str>::to_string);
-    let prompt = format!("{field}:");
+    #[throws(Error)]
+    async fn get(self) -> T {
+        let default_clone = self.default.clone();
+        let prompt = format!("{}:", self.message);
 
-    let prompt_fut = task::spawn_blocking(move || {
-        let _pause_lock = logger::pause()?;
+        let prompt_fut = task::spawn_blocking(move || {
+            let _pause_lock = logger::pause()?;
 
-        let default_clone = default_owned.clone();
-        let mut text =
-            Text::new(&prompt)
+            let default_clone_2 = default_clone.clone();
+            let mut text = Text::new(&prompt)
                 .with_validator(move |s: &str| {
                     let s = s.trim();
                     if s.is_empty() {
-                        return if let Some(ref default) = default_clone {
-                            match T::from_str(default) {
+                        return if let Some(ref default) = default_clone_2 {
+                            match T::from_str(default.as_ref()) {
                                 Ok(_) => Ok(Validation::Valid),
-                                Err(_) => Err(Box::new(InvalidDefaultError(default.clone()))
+                                Err(_) => Err(Box::new(InvalidDefaultError(default.to_string()))
                                     as CustomUserError),
                             }
                         } else {
@@ -75,30 +96,46 @@ where
                 })
                 .with_formatter(&|_| clear_prompt());
 
-        if let Some(ref default) = default_owned {
-            text = text.with_default(default);
-        }
-
-        let resp = text.prompt()?;
-
-        Ok(resp)
-    });
-
-    match prompt_fut.await {
-        Ok(resp) => T::from_str(resp.trim()).unwrap_or_else(|_| unreachable!()),
-        Err(Error::Render(err)) => throw!(err),
-        Err(Error::Inquire(err)) => match err {
-            err @ (inquire::InquireError::Custom(_)
-            | inquire::InquireError::OperationCanceled
-            | inquire::InquireError::OperationInterrupted) => throw!(err),
-            err => {
-                if let Some(default) = default {
-                    T::from_str(default).unwrap_or_else(|_| unreachable!())
-                } else {
-                    throw!(err)
-                }
+            if let Some(ref default) = default_clone {
+                text = text.with_default(default);
             }
-        },
+
+            let resp = text.prompt()?;
+
+            Ok(resp)
+        });
+
+        match prompt_fut.await {
+            Ok(resp) => T::from_str(resp.trim()).unwrap_or_else(|_| unreachable!()),
+            Err(Error::Render(err)) => throw!(err),
+            Err(Error::Inquire(err)) => match err {
+                err @ (inquire::InquireError::Custom(_)
+                | inquire::InquireError::OperationCanceled
+                | inquire::InquireError::OperationInterrupted) => throw!(err),
+                err => {
+                    if let Some(default) = self.default {
+                        T::from_str(default.as_ref()).unwrap_or_else(|_| unreachable!())
+                    } else {
+                        throw!(err)
+                    }
+                }
+            },
+        }
+    }
+}
+
+pub type BuilderFuture<T> = Pin<Box<dyn Future<Output = Result<T, Error>> + Send + 'static>>;
+
+impl<T> IntoFuture for PromptBuilder<T>
+where
+    T: FromStr + Send + 'static,
+    T::Err: Display,
+{
+    type IntoFuture = BuilderFuture<T>;
+    type Output = <BuilderFuture<T> as Future>::Output;
+
+    fn into_future(self) -> Self::IntoFuture {
+        Box::pin(self.get())
     }
 }
 
@@ -128,11 +165,6 @@ impl<T, S> SelectBuilder<T, S> {
         }
     }
 
-    pub fn with_option(mut self, option: T) -> SelectBuilder<T, NonEmpty> {
-        self.options.push(option);
-        self.into_non_empty()
-    }
-
     pub fn with_options(
         mut self,
         options: impl IntoIterator<Item = T>,
@@ -158,11 +190,9 @@ impl<T: Display + Send + 'static> SelectBuilder<T, NonEmpty> {
     }
 }
 
-pub type SelectBuilderFuture<T> = Pin<Box<dyn Future<Output = Result<T, Error>> + Send + 'static>>;
-
 impl<T: Display + Send + 'static> IntoFuture for SelectBuilder<T, NonEmpty> {
-    type IntoFuture = SelectBuilderFuture<T>;
-    type Output = <SelectBuilderFuture<T> as Future>::Output;
+    type IntoFuture = BuilderFuture<T>;
+    type Output = <BuilderFuture<T> as Future>::Output;
 
     fn into_future(self) -> Self::IntoFuture {
         Box::pin(self.get())
@@ -172,42 +202,6 @@ impl<T: Display + Send + 'static> IntoFuture for SelectBuilder<T, NonEmpty> {
 #[derive(Debug, Error)]
 #[error("Invalid default value: {0}")]
 struct InvalidDefaultError(String);
-
-#[async_trait]
-pub trait Prompt<T: FromStr>: private::Sealed {
-    async fn get(self, field: &str) -> Result<T, Error>;
-
-    async fn get_or(self, field: &str, default: &str) -> Result<T, Error>;
-}
-
-#[async_trait]
-impl<T> Prompt<T> for Option<T>
-where
-    T: FromStr + ToString + Send,
-    T::Err: Display,
-{
-    async fn get(self, field: &str) -> Result<T, Error> {
-        if let Some(inner) = self {
-            info!("{field}: {}", inner.to_string());
-            Ok(inner)
-        } else {
-            let value: T = get_prompt(field, None).await?;
-            info!("{field}: {}", value.to_string());
-            Ok(value)
-        }
-    }
-
-    async fn get_or(self, field: &str, default: &str) -> Result<T, Error> {
-        if let Some(inner) = self {
-            info!("{field}: {}", inner.to_string());
-            Ok(inner)
-        } else {
-            let value: T = get_prompt(field, Some(default)).await?;
-            info!("{field}: {}", value.to_string());
-            Ok(value)
-        }
-    }
-}
 
 #[derive(Debug, Error)]
 pub enum Error {
