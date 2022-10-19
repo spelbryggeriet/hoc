@@ -20,7 +20,9 @@ macro_rules! prompt {
 
 macro_rules! select {
     ($($args:tt)*) => {{
-        $crate::prompt::select(format!($($args)*))
+        $crate::prompt::SelectBuilder::new(
+            $crate::util::from_arguments_to_cow(format_args!($($args)*)),
+        )
     }};
 }
 

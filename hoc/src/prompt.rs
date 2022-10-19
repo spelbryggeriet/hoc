@@ -76,8 +76,8 @@ where
                 .with_validator(move |s: &str| {
                     let s = s.trim();
                     if s.is_empty() {
-                        return if let Some(ref default) = default_clone_2 {
-                            match T::from_str(default.as_ref()) {
+                        return if let Some(default) = &default_clone_2 {
+                            match T::from_str(default) {
                                 Ok(_) => Ok(Validation::Valid),
                                 Err(_) => Err(Box::new(InvalidDefaultError(default.to_string()))
                                     as CustomUserError),
@@ -113,8 +113,8 @@ where
                 | inquire::InquireError::OperationCanceled
                 | inquire::InquireError::OperationInterrupted) => throw!(err),
                 err => {
-                    if let Some(default) = self.default {
-                        T::from_str(default.as_ref()).unwrap_or_else(|_| unreachable!())
+                    if let Some(default) = &self.default {
+                        T::from_str(default).unwrap_or_else(|_| unreachable!())
                     } else {
                         throw!(err)
                     }
@@ -139,22 +139,24 @@ where
     }
 }
 
-pub fn select<T>(message: String) -> SelectBuilder<T, Empty> {
-    SelectBuilder {
-        message,
-        options: Vec::with_capacity(1),
-        _state: Default::default(),
-    }
-}
-
 pub struct SelectBuilder<T, S> {
-    message: String,
+    message: Cow<'static, str>,
     options: Vec<T>,
     _state: PhantomData<S>,
 }
 
 pub enum Empty {}
 pub enum NonEmpty {}
+
+impl<T> SelectBuilder<T, Empty> {
+    pub fn new(message: impl Into<Cow<'static, str>>) -> Self {
+        Self {
+            message: message.into(),
+            options: Vec::with_capacity(1),
+            _state: Default::default(),
+        }
+    }
+}
 
 impl<T, S> SelectBuilder<T, S> {
     fn into_non_empty(self) -> SelectBuilder<T, NonEmpty> {
