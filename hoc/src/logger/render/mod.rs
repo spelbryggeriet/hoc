@@ -368,8 +368,6 @@ impl RenderThread {
     }
 
     pub(super) fn push_simple_log(&self, level: Level, message: String) {
-        let simple_log = SimpleLog::new(level, message);
-
         // Find the current progress log.
         let mut logs_lock = RENDER_THREAD
             .get()
@@ -387,9 +385,13 @@ impl RenderThread {
         });
 
         if let Some(progress_log) = progress_log {
-            progress_log.push_simple_log(simple_log);
+            for line in message.lines() {
+                progress_log.push_simple_log(SimpleLog::new(level, line.to_string()));
+            }
         } else {
-            logs.push_back(Log::Simple(simple_log));
+            for line in message.lines() {
+                logs.push_back(Log::Simple(SimpleLog::new(level, line.to_string())));
+            }
         }
     }
 

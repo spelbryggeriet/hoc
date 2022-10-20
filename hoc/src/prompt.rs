@@ -14,7 +14,7 @@ use crossterm::{
 };
 use inquire::{
     error::CustomUserError,
-    ui::{Color, RenderConfig, StyleSheet, Styled},
+    ui::{Color, RenderConfig, StyleSheet},
     validator::{ErrorMessage, Validation},
     Password, PasswordDisplayMode, Select, Text,
 };
