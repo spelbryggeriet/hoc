@@ -22,6 +22,22 @@ macro_rules! get_arg {
     };
 }
 
+macro_rules! get_secret_arg {
+    ($self:ident.$field:ident $(,)?) => {
+        async {
+            let __message = ::heck::ToTitleCase::to_title_case(stringify!($field));
+            if let Some(__inner) = $self.$field {
+                info!("{__message}: {__inner}");
+                Result::<_, ::anyhow::Error>::Ok(__inner)
+            } else {
+                let __value = prompt!("{__message}").as_secret().await?;
+                info!("{__message}: {__value}");
+                Result::<_, ::anyhow::Error>::Ok(__value)
+            }
+        }
+    };
+}
+
 macro_rules! actions_summary {
     {
         $( $action:ident { $($inner_tokens:tt)* } )*

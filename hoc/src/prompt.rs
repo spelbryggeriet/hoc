@@ -14,12 +14,13 @@ use crossterm::{
 };
 use inquire::{
     error::CustomUserError,
+    ui::{Color, RenderConfig, StyleSheet, Styled},
     validator::{ErrorMessage, Validation},
-    Select, Text,
+    Password, PasswordDisplayMode, Select, Text,
 };
 use thiserror::Error;
 
-use crate::{logger, prelude::*};
+use crate::{logger, prelude::*, util::Secret};
 
 fn clear_prompt() -> String {
     use std::fmt::Write;
@@ -37,31 +38,61 @@ fn clear_prompt() -> String {
     clear_section
 }
 
-pub struct PromptBuilder<T> {
+pub struct PromptBuilder<T, S> {
     message: Cow<'static, str>,
     default: Option<Cow<'static, str>>,
     _output_type: PhantomData<T>,
+    _state: PhantomData<S>,
 }
 
-impl<T> PromptBuilder<T> {
+pub trait NonSecret {}
+
+pub enum Normal {}
+impl NonSecret for Normal {}
+
+pub enum WithDefault {}
+impl NonSecret for WithDefault {}
+
+pub enum AsSecret {}
+
+impl<T, S> PromptBuilder<T, S> {
+    fn convert<U>(self) -> PromptBuilder<T, U> {
+        PromptBuilder {
+            message: self.message,
+            default: self.default,
+            _output_type: self._output_type,
+            _state: Default::default(),
+        }
+    }
+}
+impl<T> PromptBuilder<T, Normal> {
     pub fn new(message: impl Into<Cow<'static, str>>) -> Self {
         Self {
             message: message.into(),
             default: None,
             _output_type: Default::default(),
+            _state: Default::default(),
         }
     }
 
-    pub fn with_default(mut self, default: impl Into<Cow<'static, str>>) -> Self {
+    pub fn with_default(
+        mut self,
+        default: impl Into<Cow<'static, str>>,
+    ) -> PromptBuilder<T, WithDefault> {
         self.default.replace(default.into());
-        self
+        self.convert()
+    }
+
+    pub fn as_secret(self) -> PromptBuilder<T, AsSecret> {
+        self.convert()
     }
 }
 
-impl<T> PromptBuilder<T>
+impl<T, S> PromptBuilder<T, S>
 where
     T: FromStr,
     T::Err: Display,
+    S: NonSecret,
 {
     #[throws(Error)]
     async fn get(self) -> T {
@@ -72,28 +103,30 @@ where
             let _pause_lock = logger::pause()?;
 
             let default_clone_2 = default_clone.clone();
-            let mut text = Text::new(&prompt)
-                .with_validator(move |s: &str| {
-                    let s = s.trim();
-                    if s.is_empty() {
-                        return if let Some(default) = &default_clone_2 {
-                            match T::from_str(default) {
-                                Ok(_) => Ok(Validation::Valid),
-                                Err(_) => Err(Box::new(InvalidDefaultError(default.to_string()))
-                                    as CustomUserError),
-                            }
-                        } else {
-                            Ok(Validation::Invalid(ErrorMessage::Custom(
-                                "input must not be empty".to_string(),
-                            )))
-                        };
-                    }
+            let validator = move |s: &str| {
+                let s = s.trim();
+                if s.is_empty() {
+                    return if let Some(default) = &default_clone_2 {
+                        match T::from_str(default) {
+                            Ok(_) => Ok(Validation::Valid),
+                            Err(_) => Err(Box::new(InvalidDefaultError(default.to_string()))
+                                as CustomUserError),
+                        }
+                    } else {
+                        Ok(Validation::Invalid(ErrorMessage::Custom(
+                            "input must not be empty".to_string(),
+                        )))
+                    };
+                }
 
-                    match T::from_str(s) {
-                        Ok(_) => Ok(Validation::Valid),
-                        Err(err) => Ok(Validation::Invalid(ErrorMessage::Custom(err.to_string()))),
-                    }
-                })
+                match T::from_str(s) {
+                    Ok(_) => Ok(Validation::Valid),
+                    Err(err) => Ok(Validation::Invalid(ErrorMessage::Custom(err.to_string()))),
+                }
+            };
+
+            let mut text = Text::new(&prompt)
+                .with_validator(validator)
                 .with_formatter(&|_| clear_prompt());
 
             if let Some(ref default) = default_clone {
@@ -124,15 +157,77 @@ where
     }
 }
 
+impl<T> PromptBuilder<T, AsSecret>
+where
+    T: FromStr,
+    T::Err: Display,
+{
+    #[throws(Error)]
+    async fn get(self) -> Secret<T> {
+        let prompt = format!("{}:", self.message);
+
+        let prompt_fut = task::spawn_blocking(move || {
+            let _pause_lock = logger::pause()?;
+
+            let validator = move |s: &str| {
+                let s = s.trim();
+                if s.is_empty() {
+                    return Ok(Validation::Invalid(ErrorMessage::Custom(
+                        "input must not be empty".to_string(),
+                    )));
+                }
+
+                match T::from_str(s) {
+                    Ok(_) => Ok(Validation::Valid),
+                    Err(err) => Ok(Validation::Invalid(ErrorMessage::Custom(err.to_string()))),
+                }
+            };
+
+            let render_config = RenderConfig::default()
+                .with_help_message(StyleSheet::default().with_fg(Color::DarkBlue));
+
+            let text = Password::new(&prompt)
+                .with_render_config(render_config)
+                .with_display_mode(PasswordDisplayMode::Masked)
+                .with_display_toggle_enabled()
+                .with_help_message("Ctrl-R to reveal/hide")
+                .with_validator(validator)
+                .with_formatter(&|_| clear_prompt());
+
+            let resp = text.prompt()?;
+
+            Result::<_, Error>::Ok(resp)
+        });
+
+        let resp = prompt_fut.await?;
+
+        Secret::new(T::from_str(resp.trim()).unwrap_or_else(|_| unreachable!()))
+    }
+}
+
 pub type BuilderFuture<T> = Pin<Box<dyn Future<Output = Result<T, Error>> + Send + 'static>>;
 
-impl<T> IntoFuture for PromptBuilder<T>
+impl<T, S> IntoFuture for PromptBuilder<T, S>
+where
+    T: FromStr + Send + 'static,
+    T::Err: Display,
+    S: NonSecret + Send + 'static,
+{
+    type IntoFuture = BuilderFuture<T>;
+    type Output = <BuilderFuture<T> as Future>::Output;
+
+    fn into_future(self) -> Self::IntoFuture {
+        Box::pin(self.get())
+    }
+}
+
+impl<T> IntoFuture for PromptBuilder<T, AsSecret>
 where
     T: FromStr + Send + 'static,
     T::Err: Display,
 {
-    type IntoFuture = BuilderFuture<T>;
-    type Output = <BuilderFuture<T> as Future>::Output;
+    type IntoFuture = BuilderFuture<Secret<T>>;
+    type Output = <BuilderFuture<Secret<T>> as Future>::Output;
 
     fn into_future(self) -> Self::IntoFuture {
         Box::pin(self.get())
@@ -200,10 +295,9 @@ impl<T: Display + Send + 'static> IntoFuture for SelectBuilder<T, NonEmpty> {
         Box::pin(self.get())
     }
 }
-
 #[derive(Debug, Error)]
 #[error("Invalid default value: {0}")]
-struct InvalidDefaultError(String);
+pub struct InvalidDefaultError(String);
 
 #[derive(Debug, Error)]
 pub enum Error {
