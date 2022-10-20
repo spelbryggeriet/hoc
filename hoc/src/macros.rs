@@ -12,28 +12,27 @@ macro_rules! progress_scoped {
 
 macro_rules! prompt {
     ($($args:tt)*) => {{
-        $crate::prompt::PromptBuilder::new(
-            $crate::util::from_arguments_to_cow(format_args!($($args)*)),
-        )
+        let __cow = $crate::util::from_arguments_to_cow(format_args!($($args)*));
+        $crate::prompt::PromptBuilder::new(__cow)
     }};
 }
 
 macro_rules! select {
     ($($args:tt)*) => {{
-        $crate::prompt::SelectBuilder::new(
-            $crate::util::from_arguments_to_cow(format_args!($($args)*)),
-        )
+        let __cow = $crate::util::from_arguments_to_cow(format_args!($($args)*));
+        $crate::prompt::SelectBuilder::new(__cow)
     }};
 }
 
 macro_rules! put {
-    ($value:expr => $($args:tt)*) => {
+    ($value:expr => $($args:tt)*) => {{
+        let __cow = $crate::util::from_arguments_to_cow(format_args!($($args)*));
         $crate::context::CONTEXT
             .get()
             .expect($crate::prelude::EXPECT_CONTEXT_INITIALIZED)
             .kv_put_value(
-                $crate::util::from_arguments_to_cow(format_args!($($args)*)),
+                __cow,
                 $value,
             )
-    };
+    }};
 }

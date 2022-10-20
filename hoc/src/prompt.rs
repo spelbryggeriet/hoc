@@ -8,30 +8,28 @@ use std::{
 };
 
 use async_std::task;
-use crossterm::{
-    cursor::{self, MoveToPreviousLine},
-    terminal::{Clear, ClearType},
-};
+use crossterm::{cursor, terminal};
 use inquire::{
     error::CustomUserError,
     ui::{Color, RenderConfig, StyleSheet},
     validator::{ErrorMessage, Validation},
     Password, PasswordDisplayMode, Select, Text,
 };
+use strum::{Display, EnumIter, IntoEnumIterator};
 use thiserror::Error;
 
 use crate::{logger, prelude::*, util::Secret};
 
-fn clear_prompt() -> String {
+fn clear_prompt(lines: u16) -> String {
     use std::fmt::Write;
 
     let mut clear_section = String::new();
     write!(
         clear_section,
-        "{clear_line}{move_line}{move_column}",
-        clear_line = Clear(ClearType::CurrentLine),
-        move_line = MoveToPreviousLine(2),
+        "{move_column}{clear_line}{move_line}",
+        clear_line = terminal::Clear(terminal::ClearType::CurrentLine),
         move_column = cursor::MoveToColumn(0),
+        move_line = cursor::MoveToPreviousLine(lines),
     )
     .expect("commands should be formatable");
 
@@ -127,7 +125,7 @@ where
 
             let mut text = Text::new(&prompt)
                 .with_validator(validator)
-                .with_formatter(&|_| clear_prompt());
+                .with_formatter(&|_| clear_prompt(2));
 
             if let Some(ref default) = default_clone {
                 text = text.with_default(default);
@@ -140,7 +138,6 @@ where
 
         match prompt_fut.await {
             Ok(resp) => T::from_str(resp.trim()).unwrap_or_else(|_| unreachable!()),
-            Err(Error::Render(err)) => throw!(err),
             Err(Error::Inquire(err)) => match err {
                 err @ (inquire::InquireError::Custom(_)
                 | inquire::InquireError::OperationCanceled
@@ -153,6 +150,7 @@ where
                     }
                 }
             },
+            Err(err) => throw!(err),
         }
     }
 }
@@ -164,42 +162,79 @@ where
 {
     #[throws(Error)]
     async fn get(self) -> Secret<T> {
-        let prompt = format!("{}:", self.message);
+        let resp = loop {
+            let prompt = format!("{}:", self.message);
+            let prompt_verify = format!("{} (verify):", self.message);
+            let prompt_fut = task::spawn_blocking(move || -> Result<_, Error> {
+                let _pause_lock = logger::pause()?;
 
-        let prompt_fut = task::spawn_blocking(move || {
-            let _pause_lock = logger::pause()?;
+                let validator = move |s: &str| {
+                    let s = s.trim();
+                    if s.is_empty() {
+                        return Ok(Validation::Invalid(ErrorMessage::Custom(
+                            "input must not be empty".to_string(),
+                        )));
+                    }
 
-            let validator = move |s: &str| {
-                let s = s.trim();
-                if s.is_empty() {
-                    return Ok(Validation::Invalid(ErrorMessage::Custom(
-                        "input must not be empty".to_string(),
-                    )));
+                    match T::from_str(s) {
+                        Ok(_) => Ok(Validation::Valid),
+                        Err(err) => Ok(Validation::Invalid(ErrorMessage::Custom(err.to_string()))),
+                    }
+                };
+
+                let render_config = RenderConfig::default()
+                    .with_help_message(StyleSheet::default().with_fg(Color::DarkBlue));
+
+                let text = Password::new(&prompt)
+                    .with_render_config(render_config)
+                    .with_display_mode(PasswordDisplayMode::Masked)
+                    .with_display_toggle_enabled()
+                    .with_help_message("Ctrl-R to reveal/hide")
+                    .with_validator(validator)
+                    .with_formatter(&|_| clear_prompt(1));
+                let text_verify = Password::new(&prompt_verify)
+                    .with_render_config(render_config)
+                    .with_display_mode(PasswordDisplayMode::Masked)
+                    .with_display_toggle_enabled()
+                    .with_help_message("Ctrl-R to reveal/hide")
+                    .with_validator(validator)
+                    .with_formatter(&|_| clear_prompt(2));
+
+                let resp = text.prompt()?;
+                let resp_verify = text_verify.prompt()?;
+
+                if resp == resp_verify {
+                    Ok(resp)
+                } else {
+                    Err(Error::MismatchedPasswords)
                 }
+            });
 
-                match T::from_str(s) {
-                    Ok(_) => Ok(Validation::Valid),
-                    Err(err) => Ok(Validation::Invalid(ErrorMessage::Custom(err.to_string()))),
+            match prompt_fut.await {
+                Ok(resp) => break resp,
+                Err(err @ Error::MismatchedPasswords) => {
+                    error!("{err}");
+
+                    #[derive(Display, EnumIter)]
+                    enum Action {
+                        Retry,
+                        Abort,
+                    }
+
+                    let option = select!("What do you want to do?")
+                        .with_options(Action::iter())
+                        .await?;
+
+                    match option {
+                        Action::Abort => {
+                            throw!(Error::Inquire(inquire::InquireError::OperationCanceled));
+                        }
+                        Action::Retry => continue,
+                    }
                 }
-            };
-
-            let render_config = RenderConfig::default()
-                .with_help_message(StyleSheet::default().with_fg(Color::DarkBlue));
-
-            let text = Password::new(&prompt)
-                .with_render_config(render_config)
-                .with_display_mode(PasswordDisplayMode::Masked)
-                .with_display_toggle_enabled()
-                .with_help_message("Ctrl-R to reveal/hide")
-                .with_validator(validator)
-                .with_formatter(&|_| clear_prompt());
-
-            let resp = text.prompt()?;
-
-            Result::<_, Error>::Ok(resp)
-        });
-
-        let resp = prompt_fut.await?;
+                Err(err) => throw!(err),
+            }
+        };
 
         Secret::new(T::from_str(resp.trim()).unwrap_or_else(|_| unreachable!()))
     }
@@ -278,7 +313,7 @@ impl<T: Display + Send + 'static> SelectBuilder<T, NonEmpty> {
             let _pause_lock = logger::pause()?;
 
             let resp = Select::new(&self.message, self.options)
-                .with_formatter(&|_| clear_prompt())
+                .with_formatter(&|_| clear_prompt(2))
                 .prompt()?;
 
             Result::<_, Error>::Ok(resp)
@@ -301,6 +336,9 @@ pub struct InvalidDefaultError(String);
 
 #[derive(Debug, Error)]
 pub enum Error {
+    #[error("The passwords don't match")]
+    MismatchedPasswords,
+
     #[error(transparent)]
     Render(#[from] logger::RenderError),
 
