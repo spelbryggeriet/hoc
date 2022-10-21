@@ -36,3 +36,13 @@ macro_rules! put {
             )
     }};
 }
+
+macro_rules! create_file {
+    ($($args:tt)*) => {{
+        let __cow = $crate::util::from_arguments_to_cow(format_args!($($args)*));
+        $crate::context::CONTEXT
+            .get()
+            .expect($crate::prelude::EXPECT_CONTEXT_INITIALIZED)
+            .kv_create_file(__cow)
+    }};
+}

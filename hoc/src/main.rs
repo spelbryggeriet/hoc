@@ -37,16 +37,23 @@ impl App {
         debug!("Feching HOME environment variable");
         let home_dir = env::var("HOME")?;
 
-        let context = Context::load(format!("{home_dir}/.config/hoc/context.yaml"))?;
+        let context = Context::load(format!("{home_dir}/.local/share/hoc"))?;
         context::CONTEXT
             .set(context)
             .unwrap_or_else(|_| panic!("context already initialized"));
 
         defer! {
-            context::CONTEXT
-                .get()
-                .expect(EXPECT_CONTEXT_INITIALIZED)
-                .persist().unwrap_or_else(|err| panic!("{err}"));
+            let context = if let Some(context) = context::CONTEXT.get() {
+                context
+            } else {
+                error!("{EXPECT_CONTEXT_INITIALIZED}");
+                return;
+            };
+
+            if let Err(err) = context.persist() {
+                error!("{err}");
+                return;
+            }
         }
 
         self.action.run().await?;
@@ -61,7 +68,10 @@ async fn main() -> ExitCode {
     logger::Logger::init()?;
 
     defer! {
-        logger::Logger::cleanup().unwrap_or_else(|err| panic!("{err}"));
+        if let Err(err) = logger::Logger::cleanup() {
+            eprintln!("{err}");
+            return;
+        }
     }
 
     let exit_code = match app.run().await {

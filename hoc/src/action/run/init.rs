@@ -1,5 +1,6 @@
 use std::net::IpAddr;
 
+use async_std::io::WriteExt;
 use osshkeys::{cipher::Cipher, keys::FingerprintHash, KeyPair, KeyType, PublicParts};
 
 use crate::{cidr::Cidr, prelude::*, util::Secret};
@@ -25,7 +26,7 @@ pub async fn run(
         put!(admin_username.to_string() => "admin/username").await?;
     }
 
-    let ssh_progress = progress!("Generating SSH key pair");
+    let ssh_gen_progress = progress!("Generating SSH key pair");
 
     let mut key_pair = KeyPair::generate(KeyType::ED25519, 256)?;
     *key_pair.comment_mut() = admin_username.clone();
@@ -36,5 +37,11 @@ pub async fn run(
     let randomart = key_pair.fingerprint_randomart(FingerprintHash::SHA256)?;
     info!("Fingerprint randomart:\n{randomart}");
 
-    ssh_progress.finish();
+    ssh_gen_progress.finish();
+    progress_scoped!("Storing SSH key pair");
+
+    let (mut pub_file, _) = create_file!("admin/ssh/pub").await?;
+    let (mut priv_file, _) = create_file!("admin/ssh/priv").await?;
+    pub_file.write_all(pub_key.as_bytes()).await?;
+    priv_file.write_all(priv_key.as_bytes()).await?;
 }

@@ -1,11 +1,6 @@
-use std::{
-    borrow::Cow,
-    fs::{self, File},
-    io,
-    path::PathBuf,
-    sync::Mutex,
-};
+use std::{borrow::Cow, fs, io, os::unix::fs::PermissionsExt, path::PathBuf, sync::Mutex};
 
+use async_std::fs::File;
 use once_cell::sync::OnceCell;
 use serde::{Deserialize, Serialize};
 
@@ -21,44 +16,53 @@ pub struct Context {
     kv: Mutex<Kv>,
 
     #[serde(skip)]
-    file_path: PathBuf,
+    data_dir: PathBuf,
 }
 
 impl Context {
     #[throws(anyhow::Error)]
-    pub fn load<P: Into<PathBuf>>(context_path: P) -> Self {
+    pub fn load<P: Into<PathBuf>>(data_dir: P) -> Self {
         debug!("Loading context");
 
-        let context_path = context_path.into();
+        let data_dir = data_dir.into();
 
-        debug!("Retrieving parent directory to context path");
-        let context_dir = context_path
-            .parent()
-            .context("context path does not have any parent directories")?;
+        debug!("Creating data directory");
+        fs::create_dir_all(&data_dir)?;
 
-        debug!("Creating context directories");
-        fs::create_dir_all(context_dir)?;
+        debug!("Setting data directory permissions");
+        let mut permissions = data_dir.metadata()?.permissions();
+        permissions.set_mode(0o700);
+        fs::set_permissions(&data_dir, permissions)?;
+
+        let context_path = data_dir.join("context.yaml");
 
         debug!("Opening context file");
-        match File::options().read(true).write(true).open(&context_path) {
+        match fs::File::options()
+            .read(true)
+            .write(true)
+            .open(&context_path)
+        {
             Ok(file) => {
                 trace!("Using pre-existing context file: {context_path:?}");
 
                 debug!("Deserializing context from file");
                 let mut context: Self = serde_yaml::from_reader(&file)?;
-                context.file_path = context_path;
+                context.data_dir = data_dir;
                 context
             }
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                info!("Creating new context file: {context_path:?}");
+                debug!("Creating new context file: {context_path:?}");
 
                 debug!("Opening context file for creation");
-                let file = File::create(&context_path)?;
+                let file = fs::File::options()
+                    .write(true)
+                    .create_new(true)
+                    .open(&context_path)?;
 
                 debug!("Creating context object");
                 let context = Self {
-                    kv: Mutex::new(Kv::new()),
-                    file_path: context_path,
+                    kv: Mutex::new(Kv::new(data_dir.join("files"))),
+                    data_dir,
                 };
 
                 debug!("Serializing context to file");
@@ -79,16 +83,27 @@ impl Context {
     }
 
     #[throws(anyhow::Error)]
+    pub async fn kv_create_file(&self, path: Cow<'static, str>) -> (File, PathBuf) {
+        self.kv
+            .lock()
+            .expect(EXPECT_THREAD_NOT_POSIONED)
+            .create_file(&*path)
+            .await?
+    }
+
+    #[throws(anyhow::Error)]
     pub fn persist(&self) {
         info!("Persisting context");
 
         debug!("Opening context file for writing");
-        let file = File::options()
+        let file = fs::File::options()
             .write(true)
             .truncate(true)
-            .open(&self.file_path)?;
+            .open(&self.data_dir.join("context.yaml"))?;
 
         debug!("Serializing context to file");
         serde_yaml::to_writer(file, self)?;
+
+        debug!("Context persisted");
     }
 }

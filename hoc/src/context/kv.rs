@@ -3,11 +3,13 @@ use std::{
     convert::Infallible,
     ffi::OsStr,
     fmt::{self, Debug, Display, Formatter},
-    io, iter,
+    io::{self, ErrorKind},
+    iter,
     os::unix::prelude::OsStrExt,
     path::{Component, Path, PathBuf},
 };
 
+use async_std::fs::{self, File, OpenOptions};
 use indexmap::{IndexMap, IndexSet};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -18,14 +20,16 @@ use crate::{logger, prelude::*, prompt};
 
 #[derive(Serialize, Deserialize)]
 pub struct Kv {
-    #[serde(flatten)]
     map: IndexMap<PathBuf, Item>,
+
+    files_dir: PathBuf,
 }
 
 impl Kv {
-    pub fn new() -> Self {
+    pub fn new<P: Into<PathBuf>>(files_dir: P) -> Self {
         Self {
             map: IndexMap::new(),
+            files_dir: files_dir.into(),
         }
     }
 
@@ -221,41 +225,42 @@ impl Kv {
 
         debug!("Put value: {key:?} => {value}");
 
-        if self.map.contains_key(&key) {
-            error!("Value for key {key:?} is already set");
-
-            #[derive(Display, EnumIter)]
-            enum Action {
-                Abort,
-                Skip,
-                Overwrite,
-            }
-
-            let option = select!("How do you want to resolve the key conflict?")
-                .with_options(Action::iter())
-                .await?;
-
-            match option {
-                Action::Abort => {
-                    throw!(Error::Prompt(prompt::Error::Inquire(
-                        inquire::InquireError::OperationCanceled
-                    )));
+        match self.map.get(&key) {
+            Some(item) => {
+                let same_item_type = matches!(item, Item::Value(_));
+                if same_item_type {
+                    error!("Value for key {key:?} is already set");
+                } else {
+                    error!("A different kind of item for key {key:?} is already set");
                 }
-                Action::Skip => {
-                    info!("Skipping to put value for key {key:?}");
-                    return;
-                }
-                Action::Overwrite => {
-                    warn!("Overwriting existing value for key {key:?}");
 
-                    if log_enabled!(Level::Debug) {
-                        trace!(
-                            "Old value for key {key:?}: {}",
-                            serde_json::to_string(&self.get(&key)?)?
-                        );
+                let option = select!("How do you want to resolve the key conflict?")
+                    .with_options(Action::iter())
+                    .await?;
+
+                match option {
+                    Action::Abort => {
+                        throw!(Error::Prompt(prompt::Error::Inquire(
+                            inquire::InquireError::OperationCanceled
+                        )));
+                    }
+                    Action::Skip => {
+                        warn!("Skipping to set value for key {key:?}");
+                        return;
+                    }
+                    Action::Overwrite => {
+                        warn!("Overwriting existing item for key {key:?}");
+
+                        if log_enabled!(Level::Debug) {
+                            trace!(
+                                "Old item for key {key:?}: {}",
+                                serde_json::to_string(&self.get(&key)?)?
+                            );
+                        }
                     }
                 }
             }
+            None => (),
         }
 
         self.map.insert(key, Item::Value(value));
@@ -288,6 +293,96 @@ impl Kv {
             let map_key = key_prefix.join(key);
             self.put_value(map_key, value).await?;
         }
+    }
+
+    #[throws(Error)]
+    pub async fn create_file<Q: AsRef<Path>>(&mut self, key: Q) -> (File, PathBuf) {
+        let key = self.check_key(key)?.as_ref().to_path_buf();
+
+        debug!("Create file: {key:?}");
+
+        let mut file_options = OpenOptions::new();
+        file_options.write(true).read(true);
+
+        if let Some(item) = self.map.get(&key) {
+            let same_item_type = matches!(item, Item::File(_));
+            if same_item_type {
+                error!("File for key {key:?} is already created");
+            } else {
+                error!("A different kind of item for key {key:?} is already set");
+            }
+
+            let option = select!("How do you want to resolve the key conflict?")
+                .with_options(
+                    Action::iter()
+                        .filter(|action| same_item_type || !matches!(action, Action::Skip)),
+                )
+                .await?;
+
+            match (option, item) {
+                (Action::Abort, _) => {
+                    throw!(Error::Prompt(prompt::Error::Inquire(
+                        inquire::InquireError::OperationCanceled
+                    )));
+                }
+                (Action::Skip, Item::File(path)) => {
+                    warn!("Skipping to create file for key {key:?}");
+                    return (
+                        file_options.open(self.files_dir.join(&path)).await?,
+                        path.clone(),
+                    );
+                }
+                (Action::Overwrite, _) => {
+                    warn!("Overwriting existing file for key {key:?}");
+                    file_options.truncate(true);
+                }
+                _ => unreachable!(),
+            }
+        } else {
+            file_options.create_new(true);
+        }
+
+        let path = self.files_dir.join(&key);
+
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).await?;
+        }
+
+        let file = match file_options.open(&path).await {
+            Ok(file) => file,
+            Err(err) if err.kind() == ErrorKind::AlreadyExists => {
+                error!("File at path {path:?} already exists");
+
+                let option = select!("How do you want to resolve the file path conflict?")
+                    .with_options(Action::iter())
+                    .await?;
+
+                match option {
+                    Action::Abort => {
+                        throw!(Error::Prompt(prompt::Error::Inquire(
+                            inquire::InquireError::OperationCanceled
+                        )));
+                    }
+                    Action::Skip => {
+                        warn!("Skipping to create file for key {key:?}");
+                        file_options.create_new(false).open(&path).await?
+                    }
+                    Action::Overwrite => {
+                        warn!("Overwriting existing file at path {path:?}");
+                        file_options
+                            .create_new(false)
+                            .truncate(true)
+                            .open(&path)
+                            .await?
+                    }
+                }
+            }
+            Err(err) => throw!(err),
+        };
+
+        self.map.insert(key.clone(), Item::File(key.clone()));
+
+        (file, key)
     }
 
     #[throws(Error)]
@@ -369,10 +464,10 @@ impl From<Infallible> for Error {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(untagged)]
+#[serde(tag = "item", content = "content")]
 pub enum Item {
     Value(Value),
-    // File(FileRef),
+    File(PathBuf),
     Array(Vec<Item>),
     Map(IndexMap<String, Item>),
 }
@@ -381,12 +476,13 @@ impl Item {
     fn type_description(&self) -> TypeDescription {
         match self {
             Self::Value(value) => value.type_description(),
+            Self::File(_) => TypeDescription::File,
             Self::Array(arr) => {
                 TypeDescription::Array(arr.iter().map(Self::type_description).collect())
             }
             Self::Map(map) => {
                 TypeDescription::Map(map.iter().map(|(_, i)| i.type_description()).collect())
-            } // Self::File(_) => TypeDescription::File,
+            }
         }
     }
 }
@@ -464,10 +560,9 @@ impl_try_from_item!(Value::SignedInteger for i64);
 impl_try_from_item!(Value::FloatingPointNumber for f32);
 impl_try_from_item!(Value::FloatingPointNumber for f64);
 impl_try_from_item!(Value::String for String);
-// impl_try_from_item!(File::File for PathBuf);
+impl_try_from_item!(File::File for PathBuf);
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(untagged)]
 pub enum Value {
     Bool(bool),
     UnsignedInteger(u64),
@@ -669,6 +764,8 @@ impl Display for TypeDescription {
 mod tests {
     use std::fmt::Debug;
 
+    use async_std::task;
+
     use super::*;
 
     macro_rules! item_map {
@@ -744,42 +841,48 @@ mod tests {
 
     #[throws(Error)]
     fn kv() -> Kv {
-        let mut kv = Kv::new("fakedir");
-        let ttokens = ["t1", "t2", "t3", "t4"];
-        let rtokens = ["r1", "r2", "r3", "r4"];
-        let alpha = value_map! {
-            "string" => "hello",
-            "int" => 1u32,
-        };
-        let alpha2 = value_map! {
-            "string" => "hello",
-            "int" => 2u32,
-        };
-        let extra = value_map! {
-            "bool" => false,
-            "i64" => i64::MIN,
-        };
-        let two = ["t1", "t2", "t3", "t4", "r1", "r2", "r3", "r4"];
-        kv.put_value("unsigned", 1u32)?;
-        kv.put_value("signed", -1)?;
-        kv.put_value("float", 1.0)?;
-        kv.put_value("u64", u64::MAX)?;
-        kv.put_value("bool", false)?;
-        kv.put_value("string", "hello")?;
-        kv.put_value("nested/one", true)?;
-        kv.put_value("nested/two/adam", false)?;
-        kv.put_value("nested/two/betsy/alpha/token", ttokens[0])?;
-        kv.put_value("nested/two/betsy/beta/token", ttokens[1])?;
-        kv.put_value("nested/two/betsy/delta/token", ttokens[2])?;
-        kv.put_value("nested/two/betsy/gamma/token", ttokens[3])?;
-        kv.put_array("array/one", ttokens)?;
-        kv.put_array("array/two", rtokens.clone())?;
-        kv.put_map("map/one/adam/alpha", alpha)?;
-        kv.put_array("map/one/adam/beta", rtokens)?;
-        kv.put_map("map/one/betsy/alpha", alpha2)?;
-        kv.put_map("map/one/betsy/alpha/extra", extra)?;
-        kv.put_array("map/two", two)?;
-        kv
+        task::block_on(async {
+            let mut kv = Kv::new("fakedir");
+            let ttokens = ["t1", "t2", "t3", "t4"];
+            let rtokens = ["r1", "r2", "r3", "r4"];
+            let alpha = value_map! {
+                "string" => "hello",
+                "int" => 1u32,
+            };
+            let alpha2 = value_map! {
+                "string" => "hello",
+                "int" => 2u32,
+            };
+            let extra = value_map! {
+                "bool" => false,
+                "i64" => i64::MIN,
+            };
+            let two = ["t1", "t2", "t3", "t4", "r1", "r2", "r3", "r4"];
+            kv.put_value("unsigned", 1u32).await?;
+            kv.put_value("signed", -1).await?;
+            kv.put_value("float", 1.0).await?;
+            kv.put_value("u64", u64::MAX).await?;
+            kv.put_value("bool", false).await?;
+            kv.put_value("string", "hello").await?;
+            kv.put_value("nested/one", true).await?;
+            kv.put_value("nested/two/adam", false).await?;
+            kv.put_value("nested/two/betsy/alpha/token", ttokens[0])
+                .await?;
+            kv.put_value("nested/two/betsy/beta/token", ttokens[1])
+                .await?;
+            kv.put_value("nested/two/betsy/delta/token", ttokens[2])
+                .await?;
+            kv.put_value("nested/two/betsy/gamma/token", ttokens[3])
+                .await?;
+            kv.put_array("array/one", ttokens).await?;
+            kv.put_array("array/two", rtokens.clone()).await?;
+            kv.put_map("map/one/adam/alpha", alpha).await?;
+            kv.put_array("map/one/adam/beta", rtokens).await?;
+            kv.put_map("map/one/betsy/alpha", alpha2).await?;
+            kv.put_map("map/one/betsy/alpha/extra", extra).await?;
+            kv.put_array("map/two", two).await?;
+            Result::<_, Error>::Ok(kv)
+        })?
     }
 
     #[throws(Error)]
@@ -951,7 +1054,14 @@ mod tests {
     #[throws(Error)]
     fn get_array_no_zero_index() {
         let mut kv = kv()?;
-        kv.put_value("invalid_array/1", false)?;
+        task::block_on(kv.put_value("invalid_array/1", false))?;
         Vec::<bool>::try_from(kv.get("invalid_array/**")?)?;
     }
+}
+
+#[derive(Display, EnumIter)]
+enum Action {
+    Abort,
+    Skip,
+    Overwrite,
 }
