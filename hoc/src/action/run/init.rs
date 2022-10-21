@@ -1,6 +1,7 @@
 use std::net::IpAddr;
 
 use async_std::io::WriteExt;
+use futures::join;
 use osshkeys::{cipher::Cipher, keys::FingerprintHash, KeyPair, KeyType, PublicParts};
 
 use crate::{cidr::Cidr, prelude::*, util::Secret};
@@ -40,8 +41,18 @@ pub async fn run(
     ssh_gen_progress.finish();
     progress_scoped!("Storing SSH key pair");
 
-    let (mut pub_file, _) = create_file!("admin/ssh/pub").await?;
-    let (mut priv_file, _) = create_file!("admin/ssh/priv").await?;
-    pub_file.write_all(pub_key.as_bytes()).await?;
-    priv_file.write_all(priv_key.as_bytes()).await?;
+    let pub_fut = async {
+        let (mut pub_file, _) = create_file!("admin/ssh/pub").await?;
+        pub_file.write_all(pub_key.as_bytes()).await?;
+        anyhow::Ok(())
+    };
+    let priv_fut = async {
+        let (mut priv_file, _) = create_file!("admin/ssh/priv").await?;
+        priv_file.write_all(priv_key.as_bytes()).await?;
+        anyhow::Ok(())
+    };
+
+    let (pub_res, priv_res) = join!(pub_fut, priv_fut);
+    pub_res?;
+    priv_res?;
 }

@@ -1,8 +1,14 @@
-use std::{borrow::Cow, fs, io, os::unix::fs::PermissionsExt, path::PathBuf, sync::Mutex};
+use std::{
+    borrow::Cow,
+    fmt::{self, Formatter},
+    fs, io,
+    os::unix::fs::PermissionsExt,
+    path::PathBuf,
+};
 
-use async_std::fs::File;
+use async_std::{fs::File, sync::Mutex, task};
 use once_cell::sync::OnceCell;
-use serde::{Deserialize, Serialize};
+use serde::{de::Visitor, ser::SerializeMap, Deserialize, Deserializer, Serialize};
 
 use crate::prelude::*;
 use kv::{Kv, Value};
@@ -11,11 +17,8 @@ mod kv;
 
 pub static CONTEXT: OnceCell<Context> = OnceCell::new();
 
-#[derive(Serialize, Deserialize)]
 pub struct Context {
     kv: Mutex<Kv>,
-
-    #[serde(skip)]
     data_dir: PathBuf,
 }
 
@@ -75,20 +78,12 @@ impl Context {
 
     #[throws(anyhow::Error)]
     pub async fn kv_put_value(&self, key: Cow<'static, str>, value: impl Into<Value>) {
-        self.kv
-            .lock()
-            .expect(EXPECT_THREAD_NOT_POSIONED)
-            .put_value(&*key, value)
-            .await?;
+        self.kv.lock().await.put_value(&*key, value).await?;
     }
 
     #[throws(anyhow::Error)]
     pub async fn kv_create_file(&self, path: Cow<'static, str>) -> (File, PathBuf) {
-        self.kv
-            .lock()
-            .expect(EXPECT_THREAD_NOT_POSIONED)
-            .create_file(&*path)
-            .await?
+        self.kv.lock().await.create_file(&*path).await?
     }
 
     #[throws(anyhow::Error)]
@@ -105,5 +100,84 @@ impl Context {
         serde_yaml::to_writer(file, self)?;
 
         debug!("Context persisted");
+    }
+}
+
+impl Serialize for Context {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        task::block_on(async {
+            let mut context = serializer.serialize_map(Some(2))?;
+            context.serialize_entry("kv", &*self.kv.lock().await)?;
+            context.serialize_entry("data_dir", &self.data_dir)?;
+            context.end()
+        })
+    }
+}
+
+impl<'de> Deserialize<'de> for Context {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct KvField;
+
+        struct FieldVisitor;
+        impl<'de> Visitor<'de> for FieldVisitor {
+            type Value = KvField;
+
+            fn expecting(&self, f: &mut Formatter) -> fmt::Result {
+                write!(f, "a field identifier")
+            }
+
+            fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                match value {
+                    "kv" => Ok(KvField),
+                    key => return Err(serde::de::Error::custom(format!("unexpected key: {key}"))),
+                }
+            }
+        }
+
+        impl<'de> Deserialize<'de> for KvField {
+            fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+            where
+                D: Deserializer<'de>,
+            {
+                deserializer.deserialize_identifier(FieldVisitor)
+            }
+        }
+
+        struct ContextVisitor;
+        impl<'de> Visitor<'de> for ContextVisitor {
+            type Value = Context;
+
+            fn expecting(&self, formatter: &mut Formatter) -> fmt::Result {
+                formatter.write_str("a map")
+            }
+
+            fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+            where
+                A: serde::de::MapAccess<'de>,
+            {
+                let mut kv = None;
+                while let Some(_) = map.next_key::<KvField>()? {
+                    kv.replace(map.next_value()?);
+                }
+
+                let kv: Kv = kv.ok_or(serde::de::Error::custom("missing key: kv"))?;
+
+                Ok(Context {
+                    kv: Mutex::new(kv),
+                    data_dir: PathBuf::new(),
+                })
+            }
+        }
+
+        deserializer.deserialize_map(ContextVisitor)
     }
 }
