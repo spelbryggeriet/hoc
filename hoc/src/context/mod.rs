@@ -1,12 +1,13 @@
 use std::{
     borrow::Cow,
     fmt::{self, Formatter},
-    fs, io,
+    fs::{self, File},
+    io,
     os::unix::fs::PermissionsExt,
     path::PathBuf,
 };
 
-use async_std::{fs::File, sync::Mutex, task};
+use async_std::{fs::File as AsyncFile, path::PathBuf as AsyncPathBuf, sync::RwLock, task};
 use once_cell::sync::OnceCell;
 use serde::{de::Visitor, ser::SerializeMap, Deserialize, Deserializer, Serialize};
 
@@ -18,7 +19,7 @@ mod kv;
 pub static CONTEXT: OnceCell<Context> = OnceCell::new();
 
 pub struct Context {
-    kv: Mutex<Kv>,
+    kv: RwLock<Kv>,
     data_dir: PathBuf,
 }
 
@@ -40,11 +41,7 @@ impl Context {
         let context_path = data_dir.join("context.yaml");
 
         debug!("Opening context file");
-        match fs::File::options()
-            .read(true)
-            .write(true)
-            .open(&context_path)
-        {
+        match File::options().read(true).write(true).open(&context_path) {
             Ok(file) => {
                 trace!("Using pre-existing context file: {context_path:?}");
 
@@ -57,14 +54,14 @@ impl Context {
                 debug!("Creating new context file: {context_path:?}");
 
                 debug!("Opening context file for creation");
-                let file = fs::File::options()
+                let file = File::options()
                     .write(true)
                     .create_new(true)
                     .open(&context_path)?;
 
                 debug!("Creating context object");
                 let context = Self {
-                    kv: Mutex::new(Kv::new(data_dir.join("files"))),
+                    kv: RwLock::new(Kv::new(data_dir.join("files"))),
                     data_dir,
                 };
 
@@ -78,12 +75,12 @@ impl Context {
 
     #[throws(anyhow::Error)]
     pub async fn kv_put_value(&self, key: Cow<'static, str>, value: impl Into<Value>) {
-        self.kv.lock().await.put_value(&*key, value).await?;
+        self.kv.write().await.put_value(&*key, value)?;
     }
 
     #[throws(anyhow::Error)]
-    pub async fn kv_create_file(&self, path: Cow<'static, str>) -> (File, PathBuf) {
-        self.kv.lock().await.create_file(&*path).await?
+    pub async fn kv_create_file(&self, path: Cow<'static, str>) -> (AsyncFile, AsyncPathBuf) {
+        self.kv.write().await.create_file(&*path)?
     }
 
     #[throws(anyhow::Error)]
@@ -91,7 +88,7 @@ impl Context {
         info!("Persisting context");
 
         debug!("Opening context file for writing");
-        let file = fs::File::options()
+        let file = File::options()
             .write(true)
             .truncate(true)
             .open(&self.data_dir.join("context.yaml"))?;
@@ -109,9 +106,8 @@ impl Serialize for Context {
         S: serde::Serializer,
     {
         task::block_on(async {
-            let mut context = serializer.serialize_map(Some(2))?;
-            context.serialize_entry("kv", &*self.kv.lock().await)?;
-            context.serialize_entry("data_dir", &self.data_dir)?;
+            let mut context = serializer.serialize_map(Some(1))?;
+            context.serialize_entry("kv", &*self.kv.read().await)?;
             context.end()
         })
     }
@@ -172,7 +168,7 @@ impl<'de> Deserialize<'de> for Context {
                 let kv: Kv = kv.ok_or(serde::de::Error::custom("missing key: kv"))?;
 
                 Ok(Context {
-                    kv: Mutex::new(kv),
+                    kv: RwLock::new(kv),
                     data_dir: PathBuf::new(),
                 })
             }

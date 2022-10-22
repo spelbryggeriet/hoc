@@ -3,13 +3,14 @@ use std::{
     convert::Infallible,
     ffi::OsStr,
     fmt::{self, Debug, Display, Formatter},
+    fs::{self, File},
     io::{self, ErrorKind},
     iter,
     os::unix::prelude::OsStrExt,
     path::{Component, Path, PathBuf},
 };
 
-use async_std::fs::{self, File, OpenOptions};
+use async_std::{fs::File as AsyncFile, path::PathBuf as AsyncPathBuf};
 use indexmap::{IndexMap, IndexSet};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -219,7 +220,7 @@ impl Kv {
     }
 
     #[throws(Error)]
-    pub async fn put_value<Q: AsRef<Path>, V: Into<Value>>(&mut self, key: Q, value: V) {
+    pub fn put_value<Q: AsRef<Path>, V: Into<Value>>(&mut self, key: Q, value: V) {
         let key = self.check_key(key)?.as_ref().to_path_buf();
         let value = value.into();
 
@@ -236,7 +237,7 @@ impl Kv {
 
                 let option = select!("How do you want to resolve the key conflict?")
                     .with_options(Action::iter())
-                    .await?;
+                    .get()?;
 
                 match option {
                     Action::Abort => {
@@ -267,7 +268,7 @@ impl Kv {
     }
 
     #[throws(Error)]
-    pub async fn put_array<K, V, I>(&mut self, key_prefix: K, array: I)
+    pub fn put_array<K, V, I>(&mut self, key_prefix: K, array: I)
     where
         K: Into<PathBuf>,
         V: Into<Value>,
@@ -276,12 +277,12 @@ impl Kv {
         let key_prefix = key_prefix.into();
         for (index, value) in array.into_iter().enumerate() {
             let index_key = key_prefix.join(index.to_string());
-            self.put_value(index_key, value).await?;
+            self.put_value(index_key, value)?;
         }
     }
 
     #[throws(Error)]
-    pub async fn put_map<K, V, Q, I>(&mut self, key_prefix: K, map: I)
+    pub fn put_map<K, V, Q, I>(&mut self, key_prefix: K, map: I)
     where
         K: Into<PathBuf>,
         V: Into<Value>,
@@ -291,17 +292,17 @@ impl Kv {
         let key_prefix = key_prefix.into();
         for (key, value) in map.into_iter() {
             let map_key = key_prefix.join(key);
-            self.put_value(map_key, value).await?;
+            self.put_value(map_key, value)?;
         }
     }
 
     #[throws(Error)]
-    pub async fn create_file<Q: AsRef<Path>>(&mut self, key: Q) -> (File, PathBuf) {
+    pub fn create_file<Q: AsRef<Path>>(&mut self, key: Q) -> (AsyncFile, AsyncPathBuf) {
         let key = self.check_key(key)?.as_ref().to_path_buf();
 
         debug!("Create file: {key:?}");
 
-        let mut file_options = OpenOptions::new();
+        let mut file_options = File::options();
         file_options.write(true).read(true);
 
         if let Some(item) = self.map.get(&key) {
@@ -317,7 +318,7 @@ impl Kv {
                     Action::iter()
                         .filter(|action| same_item_type || !matches!(action, Action::Skip)),
                 )
-                .await?;
+                .get()?;
 
             match (option, item) {
                 (Action::Abort, _) => {
@@ -328,8 +329,8 @@ impl Kv {
                 (Action::Skip, Item::File(path)) => {
                     warn!("Skipping to create file for key {key:?}");
                     return (
-                        file_options.open(self.files_dir.join(&path)).await?,
-                        path.clone(),
+                        AsyncFile::from(file_options.open(self.files_dir.join(&path))?),
+                        AsyncPathBuf::from(path),
                     );
                 }
                 (Action::Overwrite, _) => {
@@ -345,17 +346,17 @@ impl Kv {
         let path = self.files_dir.join(&key);
 
         if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).await?;
+            fs::create_dir_all(parent)?;
         }
 
-        let file = match file_options.open(&path).await {
+        let file = match file_options.open(&path) {
             Ok(file) => file,
             Err(err) if err.kind() == ErrorKind::AlreadyExists => {
                 error!("File at path {path:?} already exists");
 
                 let option = select!("How do you want to resolve the file path conflict?")
                     .with_options(Action::iter())
-                    .await?;
+                    .get()?;
 
                 match option {
                     Action::Abort => {
@@ -365,15 +366,11 @@ impl Kv {
                     }
                     Action::Skip => {
                         warn!("Skipping to create file for key {key:?}");
-                        file_options.create_new(false).open(&path).await?
+                        file_options.create_new(false).open(&path)?
                     }
                     Action::Overwrite => {
                         warn!("Overwriting existing file at path {path:?}");
-                        file_options
-                            .create_new(false)
-                            .truncate(true)
-                            .open(&path)
-                            .await?
+                        file_options.create_new(false).truncate(true).open(&path)?
                     }
                 }
             }
@@ -382,7 +379,7 @@ impl Kv {
 
         self.map.insert(key.clone(), Item::File(key.clone()));
 
-        (file, key)
+        (AsyncFile::from(file), AsyncPathBuf::from(key))
     }
 
     #[throws(Error)]
@@ -419,42 +416,6 @@ impl Kv {
             )
         }
     }
-}
-
-#[derive(Debug, Error)]
-pub enum Error {
-    #[error(r#"Key already exists: "{0}""#)]
-    KeyAlreadyExists(PathBuf),
-
-    #[error(r#"Key does not exist: {0}""#)]
-    KeyDoesNotExist(PathBuf),
-
-    #[error(r#"Unexpected leading `/` in key: {0}""#)]
-    LeadingForwardSlash(PathBuf),
-
-    #[error(r#"Unexpected `.` in key: {0}""#)]
-    SingleDotComponent(PathBuf),
-
-    #[error(r#"Unexpected `..` in key: {0}""#)]
-    DoubleDotComponent(PathBuf),
-
-    #[error("Mismatched value types: {0} ≠ {1}")]
-    MismatchedTypes(TypeDescription, TypeDescription),
-
-    #[error("{0} out of range for `{1}`")]
-    OverflowingNumber(i128, &'static str),
-
-    #[error(transparent)]
-    Logger(#[from] logger::Error),
-
-    #[error(transparent)]
-    Prompt(#[from] prompt::Error),
-
-    #[error("An IO error occurred: {0}")]
-    Io(#[from] io::Error),
-
-    #[error(transparent)]
-    Serialization(#[from] serde_json::Error),
 }
 
 impl From<Infallible> for Error {
@@ -760,11 +721,52 @@ impl Display for TypeDescription {
     }
 }
 
+#[derive(Display, EnumIter)]
+enum Action {
+    Abort,
+    Skip,
+    Overwrite,
+}
+
+#[derive(Debug, Error)]
+pub enum Error {
+    #[error(r#"Key already exists: "{0}""#)]
+    KeyAlreadyExists(PathBuf),
+
+    #[error(r#"Key does not exist: {0}""#)]
+    KeyDoesNotExist(PathBuf),
+
+    #[error(r#"Unexpected leading `/` in key: {0}""#)]
+    LeadingForwardSlash(PathBuf),
+
+    #[error(r#"Unexpected `.` in key: {0}""#)]
+    SingleDotComponent(PathBuf),
+
+    #[error(r#"Unexpected `..` in key: {0}""#)]
+    DoubleDotComponent(PathBuf),
+
+    #[error("Mismatched value types: {0} ≠ {1}")]
+    MismatchedTypes(TypeDescription, TypeDescription),
+
+    #[error("{0} out of range for `{1}`")]
+    OverflowingNumber(i128, &'static str),
+
+    #[error(transparent)]
+    Logger(#[from] logger::Error),
+
+    #[error(transparent)]
+    Prompt(#[from] prompt::Error),
+
+    #[error("An IO error occurred: {0}")]
+    Io(#[from] io::Error),
+
+    #[error(transparent)]
+    Serialization(#[from] serde_json::Error),
+}
+
 #[cfg(test)]
 mod tests {
     use std::fmt::Debug;
-
-    use async_std::task;
 
     use super::*;
 
@@ -841,48 +843,42 @@ mod tests {
 
     #[throws(Error)]
     fn kv() -> Kv {
-        task::block_on(async {
-            let mut kv = Kv::new("fakedir");
-            let ttokens = ["t1", "t2", "t3", "t4"];
-            let rtokens = ["r1", "r2", "r3", "r4"];
-            let alpha = value_map! {
-                "string" => "hello",
-                "int" => 1u32,
-            };
-            let alpha2 = value_map! {
-                "string" => "hello",
-                "int" => 2u32,
-            };
-            let extra = value_map! {
-                "bool" => false,
-                "i64" => i64::MIN,
-            };
-            let two = ["t1", "t2", "t3", "t4", "r1", "r2", "r3", "r4"];
-            kv.put_value("unsigned", 1u32).await?;
-            kv.put_value("signed", -1).await?;
-            kv.put_value("float", 1.0).await?;
-            kv.put_value("u64", u64::MAX).await?;
-            kv.put_value("bool", false).await?;
-            kv.put_value("string", "hello").await?;
-            kv.put_value("nested/one", true).await?;
-            kv.put_value("nested/two/adam", false).await?;
-            kv.put_value("nested/two/betsy/alpha/token", ttokens[0])
-                .await?;
-            kv.put_value("nested/two/betsy/beta/token", ttokens[1])
-                .await?;
-            kv.put_value("nested/two/betsy/delta/token", ttokens[2])
-                .await?;
-            kv.put_value("nested/two/betsy/gamma/token", ttokens[3])
-                .await?;
-            kv.put_array("array/one", ttokens).await?;
-            kv.put_array("array/two", rtokens.clone()).await?;
-            kv.put_map("map/one/adam/alpha", alpha).await?;
-            kv.put_array("map/one/adam/beta", rtokens).await?;
-            kv.put_map("map/one/betsy/alpha", alpha2).await?;
-            kv.put_map("map/one/betsy/alpha/extra", extra).await?;
-            kv.put_array("map/two", two).await?;
-            Result::<_, Error>::Ok(kv)
-        })?
+        let mut kv = Kv::new("fakedir");
+        let ttokens = ["t1", "t2", "t3", "t4"];
+        let rtokens = ["r1", "r2", "r3", "r4"];
+        let alpha = value_map! {
+            "string" => "hello",
+            "int" => 1u32,
+        };
+        let alpha2 = value_map! {
+            "string" => "hello",
+            "int" => 2u32,
+        };
+        let extra = value_map! {
+            "bool" => false,
+            "i64" => i64::MIN,
+        };
+        let two = ["t1", "t2", "t3", "t4", "r1", "r2", "r3", "r4"];
+        kv.put_value("unsigned", 1u32)?;
+        kv.put_value("signed", -1)?;
+        kv.put_value("float", 1.0)?;
+        kv.put_value("u64", u64::MAX)?;
+        kv.put_value("bool", false)?;
+        kv.put_value("string", "hello")?;
+        kv.put_value("nested/one", true)?;
+        kv.put_value("nested/two/adam", false)?;
+        kv.put_value("nested/two/betsy/alpha/token", ttokens[0])?;
+        kv.put_value("nested/two/betsy/beta/token", ttokens[1])?;
+        kv.put_value("nested/two/betsy/delta/token", ttokens[2])?;
+        kv.put_value("nested/two/betsy/gamma/token", ttokens[3])?;
+        kv.put_array("array/one", ttokens)?;
+        kv.put_array("array/two", rtokens.clone())?;
+        kv.put_map("map/one/adam/alpha", alpha)?;
+        kv.put_array("map/one/adam/beta", rtokens)?;
+        kv.put_map("map/one/betsy/alpha", alpha2)?;
+        kv.put_map("map/one/betsy/alpha/extra", extra)?;
+        kv.put_array("map/two", two)?;
+        kv
     }
 
     #[throws(Error)]
@@ -1054,14 +1050,7 @@ mod tests {
     #[throws(Error)]
     fn get_array_no_zero_index() {
         let mut kv = kv()?;
-        task::block_on(kv.put_value("invalid_array/1", false))?;
+        kv.put_value("invalid_array/1", false)?;
         Vec::<bool>::try_from(kv.get("invalid_array/**")?)?;
     }
-}
-
-#[derive(Display, EnumIter)]
-enum Action {
-    Abort,
-    Skip,
-    Overwrite,
 }

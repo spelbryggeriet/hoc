@@ -5,37 +5,33 @@ macro_rules! diagnostics {
 }
 
 macro_rules! get_arg {
-    ($self:ident.$field:ident $(, default = $action:ident)? $(,)?) => {
-        async {
-            let __message = ::heck::ToTitleCase::to_title_case(stringify!($field));
-            if let Some(__inner) = $self.$field {
-                info!("{__message}: {__inner}");
-                Result::<_, ::anyhow::Error>::Ok(__inner)
-            } else {
-                let __value = prompt!("{__message}")
-                    $(.with_default(default::$action::$field()))?
-                    .await?;
-                info!("{__message}: {__value}");
-                Result::<_, ::anyhow::Error>::Ok(__value)
-            }
+    ($self:ident.$field:ident $(, default = $action:ident)? $(,)?) => {{
+        let __message = ::heck::ToTitleCase::to_title_case(stringify!($field));
+        if let Some(__inner) = $self.$field {
+            info!("{__message}: {__inner}");
+            ::anyhow::Ok(__inner)
+        } else {
+            let __value = prompt!("{__message}")
+                $(.with_default(default::$action::$field()))?
+                .get()?;
+            info!("{__message}: {__value}");
+            ::anyhow::Ok(__value)
         }
-    };
+    }};
 }
 
 macro_rules! get_secret_arg {
-    ($self:ident.$field:ident $(,)?) => {
-        async {
-            let __message = ::heck::ToTitleCase::to_title_case(stringify!($field));
-            if let Some(__inner) = $self.$field {
-                info!("{__message}: {__inner}");
-                Result::<_, ::anyhow::Error>::Ok(__inner)
-            } else {
-                let __value = prompt!("{__message}").as_secret().await?;
-                info!("{__message}: {__value}");
-                Result::<_, ::anyhow::Error>::Ok(__value)
-            }
+    ($self:ident.$field:ident $(,)?) => {{
+        let __message = ::heck::ToTitleCase::to_title_case(stringify!($field));
+        if let Some(__inner) = $self.$field {
+            info!("{__message}: {__inner}");
+            ::anyhow::Ok(__inner)
+        } else {
+            let __value = prompt!("{__message}").as_secret().get()?;
+            info!("{__message}: {__value}");
+            ::anyhow::Ok(__value)
         }
-    };
+    }};
 }
 
 macro_rules! actions_summary {

@@ -1,13 +1,10 @@
 use std::{
     borrow::Cow,
     fmt::{Debug, Display},
-    future::{Future, IntoFuture},
     marker::PhantomData,
-    pin::Pin,
     str::FromStr,
 };
 
-use async_std::task;
 use crossterm::{cursor, terminal};
 use inquire::{
     error::CustomUserError,
@@ -92,18 +89,17 @@ where
     S: NonSecret,
 {
     #[throws(Error)]
-    async fn get(self) -> T {
-        let default_clone = self.default.clone();
+    pub fn get(self) -> T {
         let prompt = format!("{}:", self.message);
 
-        let prompt_fut = task::spawn_blocking(move || {
-            let _pause_lock = logger::pause()?;
+        let _pause_lock = logger::pause()?;
 
-            let default_clone_2 = default_clone.clone();
-            let validator = move |s: &str| {
+        let default_clone = self.default.clone();
+        let validator =
+            move |s: &str| {
                 let s = s.trim();
                 if s.is_empty() {
-                    return if let Some(default) = &default_clone_2 {
+                    return if let Some(default) = &default_clone {
                         match T::from_str(default) {
                             Ok(_) => Ok(Validation::Valid),
                             Err(_) => Err(Box::new(InvalidDefaultError(default.to_string()))
@@ -122,34 +118,28 @@ where
                 }
             };
 
-            let mut text = Text::new(&prompt)
-                .with_validator(validator)
-                .with_formatter(&|_| clear_prompt(2));
+        let mut text = Text::new(&prompt)
+            .with_validator(validator)
+            .with_formatter(&|_| clear_prompt(2));
 
-            if let Some(ref default) = default_clone {
-                text = text.with_default(default);
-            }
+        if let Some(ref default) = self.default {
+            text = text.with_default(default);
+        }
 
-            let resp = text.prompt()?;
-
-            Ok(resp)
-        });
-
-        match prompt_fut.await {
+        match text.prompt() {
             Ok(resp) => T::from_str(resp.trim()).unwrap_or_else(|_| unreachable!()),
-            Err(Error::Inquire(err)) => match err {
+            Err(
                 err @ (inquire::InquireError::Custom(_)
                 | inquire::InquireError::OperationCanceled
-                | inquire::InquireError::OperationInterrupted) => throw!(err),
-                err => {
-                    if let Some(default) = &self.default {
-                        T::from_str(default).unwrap_or_else(|_| unreachable!())
-                    } else {
-                        throw!(err)
-                    }
+                | inquire::InquireError::OperationInterrupted),
+            ) => throw!(err),
+            Err(err) => {
+                if let Some(default) = &self.default {
+                    T::from_str(default).unwrap_or_else(|_| unreachable!())
+                } else {
+                    throw!(err);
                 }
-            },
-            Err(err) => throw!(err),
+            }
         }
     }
 }
@@ -160,73 +150,40 @@ where
     T::Err: Display,
 {
     #[throws(Error)]
-    async fn get(self) -> Secret<T> {
+    pub fn get(self) -> Secret<T> {
         let prompt = format!("{}:", self.message);
         let prompt_verify = format!("{} (verify):", self.message);
-        let prompt_fut = task::spawn_blocking(move || -> Result<_, Error> {
-            let _pause_lock = logger::pause()?;
+        let _pause_lock = logger::pause()?;
 
-            let validator = move |s: &str| {
-                let s = s.trim();
-                if s.is_empty() {
-                    return Ok(Validation::Invalid(ErrorMessage::Custom(
-                        "input must not be empty".to_string(),
-                    )));
-                }
+        let validator = move |s: &str| {
+            let s = s.trim();
+            if s.is_empty() {
+                return Ok(Validation::Invalid(ErrorMessage::Custom(
+                    "input must not be empty".to_string(),
+                )));
+            }
 
-                match T::from_str(s) {
-                    Ok(_) => Ok(Validation::Valid),
-                    Err(err) => Ok(Validation::Invalid(ErrorMessage::Custom(err.to_string()))),
-                }
-            };
+            match T::from_str(s) {
+                Ok(_) => Ok(Validation::Valid),
+                Err(err) => Ok(Validation::Invalid(ErrorMessage::Custom(err.to_string()))),
+            }
+        };
 
-            let render_config = RenderConfig::default()
-                .with_help_message(StyleSheet::default().with_fg(Color::DarkBlue));
+        let render_config = RenderConfig::default()
+            .with_help_message(StyleSheet::default().with_fg(Color::DarkBlue));
 
-            let text = Password::new(&prompt)
-                .with_render_config(render_config)
-                .with_verification_enabled()
-                .with_verification_message(&prompt_verify)
-                .with_display_mode(PasswordDisplayMode::Masked)
-                .with_display_toggle_enabled()
-                .with_help_message("Ctrl-R to reveal/hide")
-                .with_validator(validator)
-                .with_formatter(&|_| clear_prompt(2));
+        let text = Password::new(&prompt)
+            .with_render_config(render_config)
+            .with_verification_enabled()
+            .with_verification_message(&prompt_verify)
+            .with_display_mode(PasswordDisplayMode::Masked)
+            .with_display_toggle_enabled()
+            .with_help_message("Ctrl-R to reveal/hide")
+            .with_validator(validator)
+            .with_formatter(&|_| clear_prompt(2));
 
-            Ok(text.prompt()?)
-        });
-
-        let resp = prompt_fut.await?;
+        let resp = text.prompt()?;
         Secret::new(T::from_str(resp.trim()).unwrap_or_else(|_| unreachable!()))
-    }
-}
-
-pub type BuilderFuture<T> = Pin<Box<dyn Future<Output = Result<T, Error>> + Send + 'static>>;
-
-impl<T, S> IntoFuture for PromptBuilder<T, S>
-where
-    T: FromStr + Send + 'static,
-    T::Err: Display,
-    S: NonSecret + Send + 'static,
-{
-    type IntoFuture = BuilderFuture<T>;
-    type Output = <BuilderFuture<T> as Future>::Output;
-
-    fn into_future(self) -> Self::IntoFuture {
-        Box::pin(self.get())
-    }
-}
-
-impl<T> IntoFuture for PromptBuilder<T, AsSecret>
-where
-    T: FromStr + Send + 'static,
-    T::Err: Display,
-{
-    type IntoFuture = BuilderFuture<Secret<T>>;
-    type Output = <BuilderFuture<Secret<T>> as Future>::Output;
-
-    fn into_future(self) -> Self::IntoFuture {
-        Box::pin(self.get())
     }
 }
 
@@ -269,28 +226,15 @@ impl<T, S> SelectBuilder<T, S> {
 
 impl<T: Display + Send + 'static> SelectBuilder<T, NonEmpty> {
     #[throws(Error)]
-    pub async fn get(self) -> T {
-        task::spawn_blocking(move || {
-            let _pause_lock = logger::pause()?;
+    pub fn get(self) -> T {
+        let _pause_lock = logger::pause()?;
 
-            let resp = Select::new(&self.message, self.options)
-                .with_formatter(&|_| clear_prompt(2))
-                .prompt()?;
-
-            Result::<_, Error>::Ok(resp)
-        })
-        .await?
+        Select::new(&self.message, self.options)
+            .with_formatter(&|_| clear_prompt(2))
+            .prompt()?
     }
 }
 
-impl<T: Display + Send + 'static> IntoFuture for SelectBuilder<T, NonEmpty> {
-    type IntoFuture = BuilderFuture<T>;
-    type Output = <BuilderFuture<T> as Future>::Output;
-
-    fn into_future(self) -> Self::IntoFuture {
-        Box::pin(self.get())
-    }
-}
 #[derive(Debug, Error)]
 #[error("Invalid default value: {0}")]
 pub struct InvalidDefaultError(String);

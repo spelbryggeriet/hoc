@@ -98,8 +98,8 @@ impl Action {
             Action::Init(init_action) => {
                 diagnostics!(InitAction);
 
-                let node_addresses = get_arg!(init_action.node_addresses, default = init).await?;
-                let gateway = get_arg!(init_action.gateway, default = init).await?;
+                let node_addresses = get_arg!(init_action.node_addresses, default = init)?;
+                let gateway = get_arg!(init_action.gateway, default = init)?;
 
                 debug!("Checking gateway");
                 ensure!(
@@ -108,8 +108,8 @@ impl Action {
                     node_addresses.prefix_len
                 );
 
-                let admin_username = get_arg!(init_action.admin_username).await?;
-                let admin_password = get_secret_arg!(init_action.admin_password).await?;
+                let admin_username = get_arg!(init_action.admin_username)?;
+                let admin_password = get_secret_arg!(init_action.admin_password)?;
 
                 init::run(node_addresses, gateway, admin_username, admin_password).await?;
             }
