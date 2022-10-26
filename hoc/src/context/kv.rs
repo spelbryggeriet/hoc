@@ -3,59 +3,63 @@ use std::{
     convert::Infallible,
     ffi::OsStr,
     fmt::{self, Debug, Display, Formatter},
-    fs::{self, File},
-    io::{self, ErrorKind},
-    iter,
+    io, iter,
     os::unix::prelude::OsStrExt,
     path::{Component, Path, PathBuf},
 };
 
-use async_std::{fs::File as AsyncFile, path::PathBuf as AsyncPathBuf};
 use indexmap::{IndexMap, IndexSet};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
-use strum::{Display, EnumIter, IntoEnumIterator};
+use strum::IntoEnumIterator;
 use thiserror::Error;
 
-use crate::{logger, prelude::*, prompt};
+use crate::{
+    context::{
+        key::{self, Key, KeyOwned},
+        Action,
+    },
+    logger,
+    prelude::*,
+    prompt,
+};
 
 #[derive(Serialize, Deserialize)]
 pub struct Kv {
+    #[serde(flatten)]
     map: IndexMap<PathBuf, Item>,
-
-    files_dir: PathBuf,
 }
 
 impl Kv {
-    pub fn new<P: Into<PathBuf>>(files_dir: P) -> Self {
+    pub fn new() -> Self {
         Self {
             map: IndexMap::new(),
-            files_dir: files_dir.into(),
         }
     }
 
     #[throws(Error)]
-    pub fn get<Q: AsRef<Path>>(&self, key: Q) -> Item {
-        let key = self.check_key(key)?;
-        let key_ref = key.as_ref();
+    pub fn get_value<'key, K>(&self, key: K) -> Item
+    where
+        K: Into<Cow<'key, Key>>,
+    {
+        let key = key.into();
 
         // If key does not contain any wildcards, then it is a "leaf", i.e. we can fetch the value
         // directly.
-        if !key_ref.as_os_str().as_bytes().contains(&b'*') {
-            if let Some(item) = self.map.get(key_ref) {
+        if !key.as_os_str().as_bytes().contains(&b'*') {
+            if let Some(item) = self.map.get(&**key) {
                 return item.clone();
             } else {
-                throw!(Error::KeyDoesNotExist(key_ref.to_path_buf()));
+                throw!(key::Error::KeyDoesNotExist(key.into_owned()));
             };
         }
 
-        let mut comps = key_ref.components();
+        let mut comps = key.components();
 
         // A key is "nested" if it ends with a '**' component. Nested in this case means that it
         // will traverse further down to build a map or an array structure, given the expanded
         // components.
-        let is_nested =
-            matches!(key_ref.components().last(), Some(comp) if comp.as_os_str() == "**");
+        let is_nested = matches!(key.components().last(), Some(comp) if comp.as_os_str() == "**");
 
         // If the key is nested, we remove the '**' wildcard component, and use the remaining
         // components as the prefix expression for the regexes below.
@@ -170,8 +174,8 @@ impl Kv {
 
                     // Traverse through the suffixes.
                     for (index, suffix) in indices.into_iter().zip(suffixes) {
-                        let nested_key = prefix.join(suffix);
-                        if let Ok(item) = self.get(&nested_key) {
+                        let nested_key = KeyOwned::new_unchecked(prefix.join(suffix));
+                        if let Ok(item) = self.get_value(nested_key) {
                             if index >= array.len() {
                                 array.extend(
                                     iter::repeat_with(|| Item::Value(Value::Bool(false)))
@@ -201,8 +205,8 @@ impl Kv {
                     .unwrap()
                     .as_os_str()
                     .to_string_lossy();
-                let nested_key = prefix.join(&suffix);
-                if let Ok(item) = self.get(&nested_key) {
+                let nested_key = KeyOwned::new_unchecked(prefix.join(&suffix));
+                if let Ok(item) = self.get_value(nested_key) {
                     map.insert(field.to_string(), item);
                 };
             }
@@ -215,56 +219,53 @@ impl Kv {
         } else if result.len() > 1 {
             Item::Array(result)
         } else {
-            throw!(Error::KeyDoesNotExist(key_ref.to_path_buf()))
+            throw!(key::Error::KeyDoesNotExist(key.into_owned()))
         }
     }
 
     #[throws(Error)]
-    pub fn put_value<Q: AsRef<Path>, V: Into<Value>>(&mut self, key: Q, value: V) {
-        let key = self.check_key(key)?.as_ref().to_path_buf();
+    pub fn put_value<'key, K, V>(&mut self, key: K, value: V)
+    where
+        K: Into<Cow<'key, Key>>,
+        V: Into<Value>,
+    {
+        let key = key.into();
         let value = value.into();
 
-        debug!("Put value: {key:?} => {value}");
+        debug!("Put value: {key} => {value}");
 
-        match self.map.get(&key) {
-            Some(item) => {
-                let same_item_type = matches!(item, Item::Value(_));
-                if same_item_type {
-                    error!("Value for key {key:?} is already set");
-                } else {
-                    error!("A different kind of item for key {key:?} is already set");
+        if self.map.contains_key(&**key) {
+            error!("Value for key {key} is already set");
+
+            let option = select!("How do you want to resolve the key conflict?")
+                .with_options(Action::iter())
+                .get()?;
+
+            match option {
+                Action::Abort => {
+                    throw!(Error::Prompt(prompt::Error::Inquire(
+                        inquire::InquireError::OperationCanceled
+                    )));
                 }
+                Action::Skip => {
+                    warn!("Skipping to set value for key {key}");
+                    return;
+                }
+                Action::Overwrite => {
+                    warn!("Overwriting existing item for key {key}");
 
-                let option = select!("How do you want to resolve the key conflict?")
-                    .with_options(Action::iter())
-                    .get()?;
-
-                match option {
-                    Action::Abort => {
-                        throw!(Error::Prompt(prompt::Error::Inquire(
-                            inquire::InquireError::OperationCanceled
-                        )));
-                    }
-                    Action::Skip => {
-                        warn!("Skipping to set value for key {key:?}");
-                        return;
-                    }
-                    Action::Overwrite => {
-                        warn!("Overwriting existing item for key {key:?}");
-
-                        if log_enabled!(Level::Debug) {
-                            trace!(
-                                "Old item for key {key:?}: {}",
-                                serde_json::to_string(&self.get(&key)?)?
-                            );
-                        }
+                    if log_enabled!(Level::Debug) {
+                        trace!(
+                            "Old item for key {key}: {}",
+                            serde_json::to_string(&self.get_value(&*key)?)?
+                        );
                     }
                 }
             }
-            None => (),
         }
 
-        self.map.insert(key, Item::Value(value));
+        self.map
+            .insert(key.into_owned().into_path_buf(), Item::Value(value));
     }
 
     #[throws(Error)]
@@ -276,7 +277,7 @@ impl Kv {
     {
         let key_prefix = key_prefix.into();
         for (index, value) in array.into_iter().enumerate() {
-            let index_key = key_prefix.join(index.to_string());
+            let index_key = KeyOwned::new(key_prefix.join(index.to_string()))?;
             self.put_value(index_key, value)?;
         }
     }
@@ -291,116 +292,9 @@ impl Kv {
     {
         let key_prefix = key_prefix.into();
         for (key, value) in map.into_iter() {
-            let map_key = key_prefix.join(key);
+            let map_key = KeyOwned::new(key_prefix.join(key))?;
             self.put_value(map_key, value)?;
         }
-    }
-
-    #[throws(Error)]
-    pub fn create_file<Q: AsRef<Path>>(&mut self, key: Q) -> (AsyncFile, AsyncPathBuf) {
-        let key = self.check_key(key)?.as_ref().to_path_buf();
-
-        debug!("Create file: {key:?}");
-
-        let mut file_options = File::options();
-        file_options.write(true).read(true);
-
-        if let Some(item) = self.map.get(&key) {
-            let same_item_type = matches!(item, Item::File(_));
-            if same_item_type {
-                error!("File for key {key:?} is already created");
-            } else {
-                error!("A different kind of item for key {key:?} is already set");
-            }
-
-            let option = select!("How do you want to resolve the key conflict?")
-                .with_options(
-                    Action::iter()
-                        .filter(|action| same_item_type || !matches!(action, Action::Skip)),
-                )
-                .get()?;
-
-            match (option, item) {
-                (Action::Abort, _) => {
-                    throw!(Error::Prompt(prompt::Error::Inquire(
-                        inquire::InquireError::OperationCanceled
-                    )));
-                }
-                (Action::Skip, Item::File(path)) => {
-                    warn!("Skipping to create file for key {key:?}");
-                    return (
-                        AsyncFile::from(file_options.open(self.files_dir.join(&path))?),
-                        AsyncPathBuf::from(path),
-                    );
-                }
-                (Action::Overwrite, _) => {
-                    warn!("Overwriting existing file for key {key:?}");
-                    file_options.truncate(true);
-                }
-                _ => unreachable!(),
-            }
-        } else {
-            file_options.create_new(true);
-        }
-
-        let path = self.files_dir.join(&key);
-
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-
-        let file = match file_options.open(&path) {
-            Ok(file) => file,
-            Err(err) if err.kind() == ErrorKind::AlreadyExists => {
-                error!("File at path {path:?} already exists");
-
-                let option = select!("How do you want to resolve the file path conflict?")
-                    .with_options(Action::iter())
-                    .get()?;
-
-                match option {
-                    Action::Abort => {
-                        throw!(Error::Prompt(prompt::Error::Inquire(
-                            inquire::InquireError::OperationCanceled
-                        )));
-                    }
-                    Action::Skip => {
-                        warn!("Skipping to create file for key {key:?}");
-                        file_options.create_new(false).open(&path)?
-                    }
-                    Action::Overwrite => {
-                        warn!("Overwriting existing file at path {path:?}");
-                        file_options.create_new(false).truncate(true).open(&path)?
-                    }
-                }
-            }
-            Err(err) => throw!(err),
-        };
-
-        self.map.insert(key.clone(), Item::File(key.clone()));
-
-        (AsyncFile::from(file), AsyncPathBuf::from(key))
-    }
-
-    #[throws(Error)]
-    fn check_key<Q: AsRef<Path>>(&self, key: Q) -> Q {
-        let key_ref = key.as_ref();
-
-        if key_ref.is_absolute() {
-            throw!(Error::LeadingForwardSlash(key_ref.to_path_buf()));
-        }
-
-        for comp in key_ref.components() {
-            match comp {
-                Component::CurDir => throw!(Error::SingleDotComponent(key_ref.to_path_buf())),
-                Component::ParentDir => {
-                    throw!(Error::DoubleDotComponent(key_ref.to_path_buf()))
-                }
-                _ => (),
-            }
-        }
-
-        key
     }
 
     fn nested_suffix(full_suffix: &Path) -> Cow<Path> {
@@ -425,11 +319,14 @@ impl From<Infallible> for Error {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(tag = "item", content = "content")]
+#[serde(untagged)]
 pub enum Item {
     Value(Value),
-    File(PathBuf),
+
+    #[serde(skip)]
     Array(Vec<Item>),
+
+    #[serde(skip)]
     Map(IndexMap<String, Item>),
 }
 
@@ -437,7 +334,6 @@ impl Item {
     fn type_description(&self) -> TypeDescription {
         match self {
             Self::Value(value) => value.type_description(),
-            Self::File(_) => TypeDescription::File,
             Self::Array(arr) => {
                 TypeDescription::Array(arr.iter().map(Self::type_description).collect())
             }
@@ -521,9 +417,9 @@ impl_try_from_item!(Value::SignedInteger for i64);
 impl_try_from_item!(Value::FloatingPointNumber for f32);
 impl_try_from_item!(Value::FloatingPointNumber for f64);
 impl_try_from_item!(Value::String for String);
-impl_try_from_item!(File::File for PathBuf);
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "type", content = "value")]
 pub enum Value {
     Bool(bool),
     UnsignedInteger(u64),
@@ -676,7 +572,6 @@ pub enum TypeDescription {
     SignedInteger,
     FloatingPointNumber,
     String,
-    File,
     Value,
     Array(Vec<Self>),
     Map(Vec<Self>),
@@ -691,7 +586,6 @@ impl Display for TypeDescription {
             Self::SignedInteger => write!(f, "signed integer")?,
             Self::FloatingPointNumber => write!(f, "floating point number")?,
             Self::String => write!(f, "string")?,
-            Self::File => write!(f, "file")?,
             Self::Value => write!(f, "value")?,
             Self::Array(col) | Self::Map(col) => {
                 let col_ty = if matches!(self, Self::Array(_)) {
@@ -721,35 +615,16 @@ impl Display for TypeDescription {
     }
 }
 
-#[derive(Display, EnumIter)]
-enum Action {
-    Abort,
-    Skip,
-    Overwrite,
-}
-
 #[derive(Debug, Error)]
 pub enum Error {
-    #[error(r#"Key already exists: "{0}""#)]
-    KeyAlreadyExists(PathBuf),
-
-    #[error(r#"Key does not exist: {0}""#)]
-    KeyDoesNotExist(PathBuf),
-
-    #[error(r#"Unexpected leading `/` in key: {0}""#)]
-    LeadingForwardSlash(PathBuf),
-
-    #[error(r#"Unexpected `.` in key: {0}""#)]
-    SingleDotComponent(PathBuf),
-
-    #[error(r#"Unexpected `..` in key: {0}""#)]
-    DoubleDotComponent(PathBuf),
-
     #[error("Mismatched value types: {0} ≠ {1}")]
     MismatchedTypes(TypeDescription, TypeDescription),
 
     #[error("{0} out of range for `{1}`")]
     OverflowingNumber(i128, &'static str),
+
+    #[error(transparent)]
+    Key(#[from] key::Error),
 
     #[error(transparent)]
     Logger(#[from] logger::Error),
@@ -769,6 +644,12 @@ mod tests {
     use std::fmt::Debug;
 
     use super::*;
+
+    macro_rules! key {
+        ($key:literal) => {
+            Key::new_unchecked($key)
+        };
+    }
 
     macro_rules! item_map {
         ($map:ident => @impl $key:literal map=> $value:expr, $($rest:tt)*) => {
@@ -843,7 +724,7 @@ mod tests {
 
     #[throws(Error)]
     fn kv() -> Kv {
-        let mut kv = Kv::new("fakedir");
+        let mut kv = Kv::new();
         let ttokens = ["t1", "t2", "t3", "t4"];
         let rtokens = ["r1", "r2", "r3", "r4"];
         let alpha = value_map! {
@@ -859,18 +740,18 @@ mod tests {
             "i64" => i64::MIN,
         };
         let two = ["t1", "t2", "t3", "t4", "r1", "r2", "r3", "r4"];
-        kv.put_value("unsigned", 1u32)?;
-        kv.put_value("signed", -1)?;
-        kv.put_value("float", 1.0)?;
-        kv.put_value("u64", u64::MAX)?;
-        kv.put_value("bool", false)?;
-        kv.put_value("string", "hello")?;
-        kv.put_value("nested/one", true)?;
-        kv.put_value("nested/two/adam", false)?;
-        kv.put_value("nested/two/betsy/alpha/token", ttokens[0])?;
-        kv.put_value("nested/two/betsy/beta/token", ttokens[1])?;
-        kv.put_value("nested/two/betsy/delta/token", ttokens[2])?;
-        kv.put_value("nested/two/betsy/gamma/token", ttokens[3])?;
+        kv.put_value(key!("unsigned"), 1u32)?;
+        kv.put_value(key!("signed"), -1)?;
+        kv.put_value(key!("float"), 1.0)?;
+        kv.put_value(key!("u64"), u64::MAX)?;
+        kv.put_value(key!("bool"), false)?;
+        kv.put_value(key!("string"), "hello")?;
+        kv.put_value(key!("nested/one"), true)?;
+        kv.put_value(key!("nested/two/adam"), false)?;
+        kv.put_value(key!("nested/two/betsy/alpha/token"), ttokens[0])?;
+        kv.put_value(key!("nested/two/betsy/beta/token"), ttokens[1])?;
+        kv.put_value(key!("nested/two/betsy/delta/token"), ttokens[2])?;
+        kv.put_value(key!("nested/two/betsy/gamma/token"), ttokens[3])?;
         kv.put_array("array/one", ttokens)?;
         kv.put_array("array/two", rtokens.clone())?;
         kv.put_map("map/one/adam/alpha", alpha)?;
@@ -882,37 +763,38 @@ mod tests {
     }
 
     #[throws(Error)]
-    fn get_joined_vec(kv: &Kv, key: &str) -> String {
-        Vec::<String>::try_from(kv.get(key)?)?.join(",")
+    fn get_joined_vec(kv: &Kv, key: &Key) -> String {
+        Vec::<String>::try_from(kv.get_value(key)?)?.join(",")
     }
 
     #[test]
     #[throws(Error)]
     fn get_single_leaf() {
         let kv = kv()?;
-        u32::try_from(kv.get("unsigned")?)?.expect_val(1);
-        i32::try_from(kv.get("signed")?)?.expect_val(-1);
-        f32::try_from(kv.get("float")?)?.expect_val(1.0);
-        u64::try_from(kv.get("u64")?)?.expect_val(u64::MAX);
-        bool::try_from(kv.get("bool")?)?.expect_val(false);
-        String::try_from(kv.get("string")?)?.expect_val("hello".to_string());
-        bool::try_from(kv.get("nested/one")?)?.expect_val(true);
-        bool::try_from(kv.get("nested/*")?)?.expect_val(true);
-        bool::try_from(kv.get("nested/two/adam")?)?.expect_val(false);
+        u32::try_from(kv.get_value(key!("unsigned"))?)?.expect_val(1);
+        i32::try_from(kv.get_value(key!("signed"))?)?.expect_val(-1);
+        f32::try_from(kv.get_value(key!("float"))?)?.expect_val(1.0);
+        u64::try_from(kv.get_value(key!("u64"))?)?.expect_val(u64::MAX);
+        bool::try_from(kv.get_value(key!("bool"))?)?.expect_val(false);
+        String::try_from(kv.get_value(key!("string"))?)?.expect_val("hello".to_string());
+        bool::try_from(kv.get_value(key!("nested/one"))?)?.expect_val(true);
+        bool::try_from(kv.get_value(key!("nested/*"))?)?.expect_val(true);
+        bool::try_from(kv.get_value(key!("nested/two/adam"))?)?.expect_val(false);
     }
 
     #[test]
     #[throws(Error)]
     fn get_multiple_leafs() {
         let kv = kv()?;
-        get_joined_vec(&kv, "nested/two/betsy/*/token")?.expect_val("t1,t2,t3,t4".to_string());
-        get_joined_vec(&kv, "nested/two/betsy/*ta/token")?.expect_val("t2,t3".to_string());
-        get_joined_vec(&kv, "nested/two/*/*/token")?.expect_val("t1,t2,t3,t4".to_string());
-        get_joined_vec(&kv, "nested/*/*/*/token")?.expect_val("t1,t2,t3,t4".to_string());
-        get_joined_vec(&kv, "nested/*/*/*a*a/token")?.expect_val("t1,t4".to_string());
-        get_joined_vec(&kv, "nested/**/token")?.expect_val("t1,t2,t3,t4".to_string());
-        get_joined_vec(&kv, "nested/**/**/token")?.expect_val("t1,t2,t3,t4".to_string());
-        get_joined_vec(&kv, "nested/**/betsy/*l*/token")?.expect_val("t1,t3".to_string());
+        get_joined_vec(&kv, key!("nested/two/betsy/*/token"))?
+            .expect_val("t1,t2,t3,t4".to_string());
+        get_joined_vec(&kv, key!("nested/two/betsy/*ta/token"))?.expect_val("t2,t3".to_string());
+        get_joined_vec(&kv, key!("nested/two/*/*/token"))?.expect_val("t1,t2,t3,t4".to_string());
+        get_joined_vec(&kv, key!("nested/*/*/*/token"))?.expect_val("t1,t2,t3,t4".to_string());
+        get_joined_vec(&kv, key!("nested/*/*/*a*a/token"))?.expect_val("t1,t4".to_string());
+        get_joined_vec(&kv, key!("nested/**/token"))?.expect_val("t1,t2,t3,t4".to_string());
+        get_joined_vec(&kv, key!("nested/**/**/token"))?.expect_val("t1,t2,t3,t4".to_string());
+        get_joined_vec(&kv, key!("nested/**/betsy/*l*/token"))?.expect_val("t1,t3".to_string());
     }
 
     #[test]
@@ -921,7 +803,7 @@ mod tests {
         use Value::*;
 
         let kv = kv()?;
-        Vec::<Value>::try_from(kv.get("*")?)?.expect_val(vec![
+        Vec::<Value>::try_from(kv.get_value(key!("*"))?)?.expect_val(vec![
             UnsignedInteger(1),
             SignedInteger(-1),
             FloatingPointNumber(1.0),
@@ -929,18 +811,18 @@ mod tests {
             Bool(false),
             String("hello".into()),
         ]);
-        Vec::<bool>::try_from(kv.get("nested/*")?)?.expect_val(vec![true]);
-        Vec::<bool>::try_from(kv.get("nested/*/*")?)?.expect_val(vec![false]);
-        get_joined_vec(&kv, "array/one/*")?.expect_val("t1,t2,t3,t4".to_string());
-        get_joined_vec(&kv, "array/one/**")?.expect_val("t1,t2,t3,t4".to_string());
-        get_joined_vec(&kv, "array/*/*")?.expect_val("t1,t2,t3,t4,r1,r2,r3,r4".to_string());
+        Vec::<bool>::try_from(kv.get_value(key!("nested/*"))?)?.expect_val(vec![true]);
+        Vec::<bool>::try_from(kv.get_value(key!("nested/*/*"))?)?.expect_val(vec![false]);
+        get_joined_vec(&kv, key!("array/one/*"))?.expect_val("t1,t2,t3,t4".to_string());
+        get_joined_vec(&kv, key!("array/one/**"))?.expect_val("t1,t2,t3,t4".to_string());
+        get_joined_vec(&kv, key!("array/*/*"))?.expect_val("t1,t2,t3,t4,r1,r2,r3,r4".to_string());
     }
 
     #[test]
     #[throws(Error)]
     fn get_multiple_arrays() {
         let kv = kv()?;
-        Vec::<Vec<String>>::try_from(kv.get("array/*/**")?)?.expect_val(vec![
+        Vec::<Vec<String>>::try_from(kv.get_value(key!("array/*/**"))?)?.expect_val(vec![
             vec![
                 "t1".to_string(),
                 "t2".to_string(),
@@ -1018,31 +900,34 @@ mod tests {
             },
             "map" map=> map.clone(),
         };
-        IndexMap::<String, Item>::try_from(kv.get("map/one/adam/alpha/**")?)?.expect_val(alpha);
-        IndexMap::<String, Item>::try_from(kv.get("map/one/adam/**")?)?.expect_val(adam);
-        IndexMap::<String, Item>::try_from(kv.get("map/one/**")?)?.expect_val(one);
-        IndexMap::<String, Item>::try_from(kv.get("map/**")?)?.expect_val(map);
-        IndexMap::<String, Item>::try_from(kv.get("**")?)?.expect_val(root);
+        IndexMap::<String, Item>::try_from(kv.get_value(key!("map/one/adam/alpha/**"))?)?
+            .expect_val(alpha);
+        IndexMap::<String, Item>::try_from(kv.get_value(key!("map/one/adam/**"))?)?
+            .expect_val(adam);
+        IndexMap::<String, Item>::try_from(kv.get_value(key!("map/one/**"))?)?.expect_val(one);
+        IndexMap::<String, Item>::try_from(kv.get_value(key!("map/**"))?)?.expect_val(map);
+        IndexMap::<String, Item>::try_from(kv.get_value(key!("**"))?)?.expect_val(root);
     }
 
     #[test]
     #[throws(Error)]
     fn get_multiple_maps() {
         let kv = kv()?;
-        Vec::<IndexMap<String, Item>>::try_from(kv.get("map/**/alpha/**")?)?.expect_val(vec![
-            item_map! {
-                "string" => "hello",
-                "int" => 1u32,
-            },
-            item_map! {
-                "string" => "hello",
-                "int" => 2u32,
-                "extra" map=> item_map! {
-                    "bool" => false,
-                    "i64" => i64::MIN,
+        Vec::<IndexMap<String, Item>>::try_from(kv.get_value(key!("map/**/alpha/**"))?)?
+            .expect_val(vec![
+                item_map! {
+                    "string" => "hello",
+                    "int" => 1u32,
                 },
-            },
-        ]);
+                item_map! {
+                    "string" => "hello",
+                    "int" => 2u32,
+                    "extra" map=> item_map! {
+                        "bool" => false,
+                        "i64" => i64::MIN,
+                    },
+                },
+            ]);
     }
 
     #[test]
@@ -1050,7 +935,7 @@ mod tests {
     #[throws(Error)]
     fn get_array_no_zero_index() {
         let mut kv = kv()?;
-        kv.put_value("invalid_array/1", false)?;
-        Vec::<bool>::try_from(kv.get("invalid_array/**")?)?;
+        kv.put_value(key!("invalid_array/1"), false)?;
+        Vec::<bool>::try_from(kv.get_value(key!("invalid_array/**"))?)?;
     }
 }

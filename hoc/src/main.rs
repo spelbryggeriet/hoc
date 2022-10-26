@@ -37,7 +37,10 @@ impl App {
         debug!("Feching HOME environment variable");
         let home_dir = env::var("HOME")?;
 
-        let context = Context::load(format!("{home_dir}/.local/share/hoc"))?;
+        let context = Context::load(
+            format!("{home_dir}/.local/share/hoc"),
+            format!("{home_dir}/.cache/hoc"),
+        )?;
         context::CONTEXT
             .set(context)
             .unwrap_or_else(|_| panic!("context already initialized"));

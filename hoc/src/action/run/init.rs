@@ -42,12 +42,12 @@ pub async fn run(
     progress_scoped!("Storing SSH key pair");
 
     let pub_fut = async {
-        let (mut pub_file, _) = create_file!("admin/ssh/pub").await?;
+        let (mut pub_file, _) = context_file!("admin/ssh/pub").create().await?;
         pub_file.write_all(pub_key.as_bytes()).await?;
         anyhow::Ok(())
     };
     let priv_fut = async {
-        let (mut priv_file, _) = create_file!("admin/ssh/priv").await?;
+        let (mut priv_file, _) = context_file!("admin/ssh/priv").create().await?;
         priv_file.write_all(priv_key.as_bytes()).await?;
         anyhow::Ok(())
     };

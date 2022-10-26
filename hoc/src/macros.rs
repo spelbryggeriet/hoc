@@ -12,21 +12,21 @@ macro_rules! progress_scoped {
 
 macro_rules! prompt {
     ($($args:tt)*) => {{
-        let __cow = $crate::util::from_arguments_to_cow(format_args!($($args)*));
+        let __cow = $crate::util::from_arguments_to_str_cow(format_args!($($args)*));
         $crate::prompt::PromptBuilder::new(__cow)
     }};
 }
 
 macro_rules! select {
     ($($args:tt)*) => {{
-        let __cow = $crate::util::from_arguments_to_cow(format_args!($($args)*));
+        let __cow = $crate::util::from_arguments_to_str_cow(format_args!($($args)*));
         $crate::prompt::SelectBuilder::new(__cow)
     }};
 }
 
 macro_rules! put {
     ($value:expr => $($args:tt)*) => {{
-        let __cow = $crate::util::from_arguments_to_cow(format_args!($($args)*));
+        let __cow = $crate::util::try_from_arguments_to_key_cow(format_args!($($args)*))?;
         $crate::context::CONTEXT
             .get()
             .expect($crate::prelude::EXPECT_CONTEXT_INITIALIZED)
@@ -37,12 +37,9 @@ macro_rules! put {
     }};
 }
 
-macro_rules! create_file {
+macro_rules! context_file {
     ($($args:tt)*) => {{
-        let __cow = $crate::util::from_arguments_to_cow(format_args!($($args)*));
-        $crate::context::CONTEXT
-            .get()
-            .expect($crate::prelude::EXPECT_CONTEXT_INITIALIZED)
-            .kv_create_file(__cow)
+        let __cow = $crate::util::try_from_arguments_to_key_cow(format_args!($($args)*))?;
+        $crate::context::FileBuilder::new(__cow)
     }};
 }

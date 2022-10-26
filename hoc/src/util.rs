@@ -6,13 +6,25 @@ use std::{
     str::FromStr,
 };
 
-use crate::prelude::*;
+use crate::{
+    context::key::{self, Key, KeyOwned},
+    prelude::*,
+};
 
-pub fn from_arguments_to_cow(arguments: Arguments) -> Cow<'static, str> {
+pub fn from_arguments_to_str_cow(arguments: Arguments) -> Cow<'static, str> {
     if let Some(s) = arguments.as_str() {
         Cow::Borrowed(s)
     } else {
         Cow::Owned(arguments.to_string())
+    }
+}
+
+#[throws(key::Error)]
+pub fn try_from_arguments_to_key_cow(arguments: Arguments) -> Cow<'static, Key> {
+    if let Some(s) = arguments.as_str() {
+        Cow::Borrowed(Key::new(s)?)
+    } else {
+        Cow::Owned(KeyOwned::new(arguments.to_string())?)
     }
 }
 

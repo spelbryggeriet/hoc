@@ -152,7 +152,7 @@ where
     #[throws(Error)]
     pub fn get(self) -> Secret<T> {
         let prompt = format!("{}:", self.message);
-        let prompt_verify = format!("{} (verify):", self.message);
+        let prompt_confirm = format!("{} (confirm):", self.message);
         let _pause_lock = logger::pause()?;
 
         let validator = move |s: &str| {
@@ -174,8 +174,7 @@ where
 
         let text = Password::new(&prompt)
             .with_render_config(render_config)
-            .with_verification_enabled()
-            .with_verification_message(&prompt_verify)
+            .with_custom_confirmation_message(&prompt_confirm)
             .with_display_mode(PasswordDisplayMode::Masked)
             .with_display_toggle_enabled()
             .with_help_message("Ctrl-R to reveal/hide")
@@ -213,6 +212,11 @@ impl<T, S> SelectBuilder<T, S> {
             options: self.options,
             _state: Default::default(),
         }
+    }
+
+    pub fn with_option(mut self, option: T) -> SelectBuilder<T, NonEmpty> {
+        self.options.push(option);
+        self.into_non_empty()
     }
 
     pub fn with_options(

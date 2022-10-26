@@ -313,7 +313,10 @@ impl RenderThread {
         let rendered_height = progress_log.render_to_strings(&mut buffer, 0)?;
 
         // Print rendered strings.
-        println!();
+        if render_config.has_printed_non_running_progress_atleast_once {
+            println!();
+        }
+
         for (i, line) in buffer.0.iter().enumerate().take(rendered_height) {
             stdout.queue(style::Print(line))?;
             stdout.queue(terminal::Clear(terminal::ClearType::UntilNewLine))?;

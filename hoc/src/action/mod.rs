@@ -33,7 +33,36 @@ actions_summary! {
     }
 }
 
-/// Initialize a cluster
+/// Hosting on command
+///
+/// `hoc` is a tool for easily deploying and managing your own home network cluster. It keeps track
+/// of all the necessary files and configuration for you, so you spend less time on being a system
+/// administrator and more time on developing services for your cluster.
+///
+/// To get started, you first have to run the `init` command to setup cluster parameters, secret
+/// keys, local network address allocation, etc.
+///
+/// To add a node to the cluster, you must first prepare and SD card with the node software, which
+/// can be done using the `sd-card prepare` command. Once that is done, the `node deploy` command
+/// can be used to add the node to the cluster.
+#[derive(Subcommand)]
+pub enum Action {
+    /// Debug this tool
+    #[cfg(debug_assertions)]
+    Debug,
+
+    Init(InitAction),
+
+    #[clap(subcommand)]
+    SdCard(SdCardAction),
+
+    #[clap(subcommand)]
+    Node(NodeAction),
+
+    Deploy(DeployAction),
+}
+
+/// Initialize the cluster
 #[derive(Parser)]
 #[clap(name = "init")]
 pub struct InitAction {
@@ -70,26 +99,26 @@ pub struct InitAction {
 /// Deploy an application
 #[derive(Parser)]
 pub struct DeployAction {}
+///
+/// Manage an SD card
+#[derive(Subcommand)]
+pub enum SdCardAction {
+    Prepare(SdCardPrepareAction),
+}
+
+/// Prepare an SD card for a node to be deployed
+#[derive(Parser)]
+pub struct SdCardPrepareAction {}
 
 /// Manage a node
-#[derive(Parser)]
-pub struct NodeAction {}
-
-/// Manage an SD card
-#[derive(Parser)]
-pub struct SdCardAction {}
-
 #[derive(Subcommand)]
-pub enum Action {
-    /// Debug this tool
-    #[cfg(debug_assertions)]
-    Debug,
-
-    Init(InitAction),
-    Deploy(DeployAction),
-    Node(NodeAction),
-    SdCard(SdCardAction),
+pub enum NodeAction {
+    Deploy(NodeDeployAction),
 }
+
+/// Deploy a node
+#[derive(Parser)]
+pub struct NodeDeployAction {}
 
 impl Action {
     #[throws(anyhow::Error)]
@@ -113,7 +142,21 @@ impl Action {
 
                 init::run(node_addresses, gateway, admin_username, admin_password).await?;
             }
-            _ => (),
+
+            Action::SdCard(sd_card_action) => match sd_card_action {
+                SdCardAction::Prepare(_sd_card_prepare_action) => {
+                    sd_card::prepare::run().await?;
+                }
+            },
+
+            Action::Node(node_action) => match node_action {
+                NodeAction::Deploy(_node_deploy_action) => {}
+            },
+
+            Action::Deploy(_deploy_action) => {}
+
+            #[cfg(debug_assertions)]
+            Action::Debug => (),
         }
     }
 }
