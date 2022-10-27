@@ -8,13 +8,10 @@ use std::{
 };
 
 use chrono::{DateTime, Utc};
-use log::{Level, LevelFilter, Log, Metadata, Record};
-use thiserror::Error;
+use log_facade::{Level, LevelFilter, Log, Metadata, Record};
 
+use super::{progress, Error};
 use crate::prelude::*;
-pub use render::{pause, progress, Error as RenderError};
-
-mod render;
 
 const MAX_DEFAULT_LEVEL: Level = if cfg!(debug_assertions) {
     Level::Trace
@@ -30,7 +27,7 @@ pub struct Logger {
 
 impl Logger {
     #[throws(Error)]
-    pub fn init() {
+    pub(super) fn init() {
         let level_str = env::var("RUST_LOG")
             .map(|v| Cow::Owned(v.to_uppercase()))
             .unwrap_or(Cow::Borrowed(MAX_DEFAULT_LEVEL.as_str()));
@@ -49,21 +46,12 @@ impl Logger {
             buffer: Mutex::new(LoggerBuffer::new()),
         };
 
-        log::set_boxed_logger(Box::new(logger))?;
-        log::set_max_level(LevelFilter::Trace);
-
-        render::RENDER_THREAD
-            .set(render::RenderThread::init())
-            .unwrap_or_else(|_| panic!("render thread already initialized"));
+        log_facade::set_boxed_logger(Box::new(logger))?;
+        log_facade::set_max_level(LevelFilter::Trace);
     }
 
-    #[throws(Error)]
-    pub fn cleanup() {
-        log::logger().flush();
-        render::RENDER_THREAD
-            .get()
-            .expect(EXPECT_RENDER_THREAD_INITIALIZED)
-            .terminate()?;
+    pub(super) fn cleanup() {
+        log_facade::logger().flush();
     }
 }
 
@@ -76,10 +64,7 @@ impl Log for Logger {
         let args_str = record.args().to_string();
 
         if self.enabled(record.metadata()) {
-            render::RENDER_THREAD
-                .get()
-                .expect(EXPECT_RENDER_THREAD_INITIALIZED)
-                .push_simple_log(record.level(), args_str.clone());
+            progress::get_progress().push_simple_log(record.level(), args_str.clone());
         }
 
         let mut buffer_lock = self.buffer.lock().unwrap_or_else(|err| panic!("{err}"));
@@ -180,19 +165,4 @@ struct LoggerMeta {
     timestamp: DateTime<Utc>,
     level: Level,
     module: Option<String>,
-}
-
-#[derive(Error, Debug)]
-pub enum Error {
-    #[error("Unknown log level '{0}'")]
-    UnknownLevel(String),
-
-    #[error("Failed to set logger: {0}")]
-    SetLogger(#[from] log::SetLoggerError),
-
-    #[error(transparent)]
-    Crossterm(#[from] crossterm::ErrorKind),
-
-    #[error(transparent)]
-    Render(#[from] render::Error),
 }

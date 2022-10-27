@@ -14,7 +14,7 @@ use inquire::{
 };
 use thiserror::Error;
 
-use crate::{logger, prelude::*, util::Secret};
+use crate::{log, prelude::*, util::Secret};
 
 fn clear_prompt(lines: u16) -> String {
     use std::fmt::Write;
@@ -92,7 +92,7 @@ where
     pub fn get(self) -> T {
         let prompt = format!("{}:", self.message);
 
-        let _pause_lock = logger::pause()?;
+        let _pause_lock = log::pause_rendering()?;
 
         let default_clone = self.default.clone();
         let validator =
@@ -153,7 +153,7 @@ where
     pub fn get(self) -> Secret<T> {
         let prompt = format!("{}:", self.message);
         let prompt_confirm = format!("{} (confirm):", self.message);
-        let _pause_lock = logger::pause()?;
+        let _pause_lock = log::pause_rendering()?;
 
         let validator = move |s: &str| {
             let s = s.trim();
@@ -231,7 +231,7 @@ impl<T, S> SelectBuilder<T, S> {
 impl<T: Display + Send + 'static> SelectBuilder<T, NonEmpty> {
     #[throws(Error)]
     pub fn get(self) -> T {
-        let _pause_lock = logger::pause()?;
+        let _pause_lock = log::pause_rendering()?;
 
         Select::new(&self.message, self.options)
             .with_formatter(&|_| clear_prompt(2))
@@ -246,7 +246,7 @@ pub struct InvalidDefaultError(String);
 #[derive(Debug, Error)]
 pub enum Error {
     #[error(transparent)]
-    Render(#[from] logger::RenderError),
+    Log(#[from] log::Error),
 
     #[error(transparent)]
     Inquire(#[from] inquire::InquireError),

@@ -19,7 +19,7 @@ use crate::{
         key::{self, Key, KeyOwned},
         Action,
     },
-    logger,
+    log,
     prelude::*,
     prompt,
 };
@@ -627,7 +627,7 @@ pub enum Error {
     Key(#[from] key::Error),
 
     #[error(transparent)]
-    Logger(#[from] logger::Error),
+    Log(#[from] log::Error),
 
     #[error(transparent)]
     Prompt(#[from] prompt::Error),

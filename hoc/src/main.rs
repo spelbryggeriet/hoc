@@ -4,7 +4,6 @@ use clap::Parser;
 use scopeguard::defer;
 
 use action::Action;
-use context::Context;
 
 #[macro_use]
 mod macros;
@@ -12,7 +11,7 @@ mod macros;
 mod action;
 mod cidr;
 mod context;
-mod logger;
+mod log;
 mod prelude;
 mod prompt;
 mod util;
@@ -37,23 +36,13 @@ impl App {
         debug!("Feching HOME environment variable");
         let home_dir = env::var("HOME")?;
 
-        let context = Context::load(
+        context::init(
             format!("{home_dir}/.local/share/hoc"),
             format!("{home_dir}/.cache/hoc"),
         )?;
-        context::CONTEXT
-            .set(context)
-            .unwrap_or_else(|_| panic!("context already initialized"));
 
         defer! {
-            let context = if let Some(context) = context::CONTEXT.get() {
-                context
-            } else {
-                error!("{EXPECT_CONTEXT_INITIALIZED}");
-                return;
-            };
-
-            if let Err(err) = context.persist() {
+            if let Err(err) = context::get_context().persist() {
                 error!("{err}");
                 return;
             }
@@ -68,10 +57,10 @@ impl App {
 async fn main() -> ExitCode {
     let app = App::from_args();
 
-    logger::Logger::init()?;
+    log::init()?;
 
     defer! {
-        if let Err(err) = logger::Logger::cleanup() {
+        if let Err(err) = log::cleanup() {
             eprintln!("{err}");
             return;
         }

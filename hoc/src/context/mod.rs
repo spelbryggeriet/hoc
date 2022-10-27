@@ -25,7 +25,25 @@ mod files;
 pub mod key;
 mod kv;
 
-pub static CONTEXT: OnceCell<Context> = OnceCell::new();
+static CONTEXT: OnceCell<Context> = OnceCell::new();
+
+#[throws(anyhow::Error)]
+pub fn init<D, C>(data_dir: D, cache_dir: C)
+where
+    D: Into<PathBuf>,
+    C: Into<PathBuf>,
+{
+    if CONTEXT.get().is_some() {
+        panic!("context already initialized");
+    }
+
+    let context = Context::load(data_dir, cache_dir)?;
+    let _ = CONTEXT.set(context);
+}
+
+pub fn get_context() -> &'static Context {
+    CONTEXT.get().expect("context is not initialized")
+}
 
 pub struct Context {
     kv: RwLock<Kv>,
@@ -164,20 +182,12 @@ impl FileBuilder {
 
     #[throws(anyhow::Error)]
     pub async fn get(self) -> (AsyncFile, AsyncPathBuf) {
-        CONTEXT
-            .get()
-            .expect(EXPECT_CONTEXT_INITIALIZED)
-            .files_get_file(self.key)
-            .await?
+        get_context().files_get_file(self.key).await?
     }
 
     #[throws(anyhow::Error)]
     pub async fn create(self) -> (AsyncFile, AsyncPathBuf) {
-        CONTEXT
-            .get()
-            .expect(EXPECT_CONTEXT_INITIALIZED)
-            .files_create_file(self.key)
-            .await?
+        get_context().files_create_file(self.key).await?
     }
 
     #[throws(anyhow::Error)]
@@ -186,9 +196,7 @@ impl FileBuilder {
         F: for<'a> CachedFileFnOnce<'a, E>,
         E: Into<anyhow::Error> + 'static,
     {
-        CONTEXT
-            .get()
-            .expect(EXPECT_CONTEXT_INITIALIZED)
+        get_context()
             .cache_get_or_create_file_with(self.key, f)
             .await?
     }

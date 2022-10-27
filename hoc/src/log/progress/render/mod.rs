@@ -1,6 +1,5 @@
 use std::{
-    collections::VecDeque,
-    fmt::{self, Write as FmtWrite},
+    fmt::Write as FmtWrite,
     io::{self, Stdout, Write as IoWrite},
     panic,
     sync::{
@@ -8,31 +7,37 @@ use std::{
         Arc, Condvar, Mutex,
     },
     thread::{self, JoinHandle},
-    time::{Duration, Instant},
+    time::Duration,
 };
 
 use crossterm::{cursor, execute, queue, style, terminal, ExecutableCommand, QueueableCommand};
-use log::Level;
+use log_facade::Level;
 use once_cell::sync::OnceCell;
 use spin_sleep::{SpinSleeper, SpinStrategy};
-use thiserror::Error;
 
-use crate::prelude::*;
+use super::{Log, ProgressLog, SimpleLog};
+use crate::{log::Error, prelude::*};
 
 mod animation;
 
-pub static RENDER_THREAD: OnceCell<RenderThread> = OnceCell::new();
+static RENDER_THREAD: OnceCell<RenderThread> = OnceCell::new();
 
-pub fn progress(message: String) -> ProgressHandle {
-    RENDER_THREAD
-        .get()
-        .expect(EXPECT_RENDER_THREAD_INITIALIZED)
-        .push_progress(message)
+pub fn init() {
+    get_render_thread();
+}
+
+#[throws(Error)]
+pub fn cleanup() {
+    get_render_thread().terminate()?;
+}
+
+fn get_render_thread() -> &'static RenderThread {
+    RENDER_THREAD.get_or_init(RenderThread::new)
 }
 
 #[throws(Error)]
 pub fn pause() -> RenderThreadPauseLock {
-    let render_thread = RENDER_THREAD.get().expect(EXPECT_RENDER_THREAD_INITIALIZED);
+    let render_thread = get_render_thread();
 
     {
         let (wants_pause_mutex, wants_pause_cvar) = &*render_thread.wants_pause;
@@ -62,17 +67,13 @@ pub fn pause() -> RenderThreadPauseLock {
 #[must_use]
 pub struct RenderThread {
     handle: Mutex<Option<JoinHandle<Result<(), Error>>>>,
-    logs: Arc<Mutex<VecDeque<Log>>>,
     wants_terminate: Arc<AtomicBool>,
     wants_pause: Arc<(Mutex<bool>, Condvar)>,
     is_paused: Arc<(Mutex<bool>, Condvar)>,
 }
 
 impl RenderThread {
-    pub(super) fn init() -> Self {
-        let logs_orig = Arc::new(Mutex::new(VecDeque::<Log>::new()));
-        let logs = Arc::clone(&logs_orig);
-
+    fn new() -> Self {
         let wants_terminate_orig = Arc::new(AtomicBool::new(false));
         let wants_terminate = Arc::clone(&wants_terminate_orig);
 
@@ -104,8 +105,7 @@ impl RenderThread {
                             let mut stdout = io::stdout();
                             render_config.is_paused = true;
 
-                            let mut logs_lock = logs.lock().expect(EXPECT_THREAD_NOT_POSIONED);
-                            let logs = &mut *logs_lock;
+                            let mut logs = super::get_progress().get_logs();
                             while let Some(log) = logs.pop_front() {
                                 match log {
                                     Log::Simple(ref simple_log) => {
@@ -154,10 +154,7 @@ impl RenderThread {
                             .expect(EXPECT_THREAD_NOT_POSIONED);
 
                         {
-                            let (is_paused_mutex, is_paused_cvar) = &*RENDER_THREAD
-                                .get()
-                                .expect(EXPECT_RENDER_THREAD_INITIALIZED)
-                                .is_paused;
+                            let (is_paused_mutex, is_paused_cvar) = &*is_paused;
                             let mut is_paused_lock =
                                 is_paused_mutex.lock().expect(EXPECT_THREAD_NOT_POSIONED);
                             *is_paused_lock = false;
@@ -169,8 +166,7 @@ impl RenderThread {
                         let mut stdout = io::stdout();
                         render_config.is_paused = false;
 
-                        let mut logs_lock = logs.lock().expect(EXPECT_THREAD_NOT_POSIONED);
-                        let logs = &mut *logs_lock;
+                        let mut logs = super::get_progress().get_logs();
                         while let Some(log) = logs.pop_front() {
                             match log {
                                 Log::Simple(ref simple_log) => {
@@ -208,8 +204,7 @@ impl RenderThread {
 
             let mut stdout = io::stdout();
 
-            let mut logs_lock = logs.lock().expect(EXPECT_THREAD_NOT_POSIONED);
-            let logs = &mut *logs_lock;
+            let mut logs = super::get_progress().get_logs();
             for log in logs.drain(..) {
                 match log {
                     Log::Simple(ref simple_log) => {
@@ -236,7 +231,6 @@ impl RenderThread {
 
         Self {
             handle: Mutex::new(Some(thread_handle)),
-            logs: logs_orig,
             wants_terminate: wants_terminate_orig,
             wants_pause: wants_pause_orig,
             is_paused: is_paused_orig,
@@ -347,59 +341,8 @@ impl RenderThread {
         render_config.rendered_running_progress_height = 0;
     }
 
-    pub fn push_progress(&self, message: String) -> ProgressHandle {
-        let subprogress_log = ProgressLog::new(message);
-
-        // Find the current progress log.
-        let mut logs_lock = self.logs.lock().expect(EXPECT_THREAD_NOT_POSIONED);
-        let logs = &mut *logs_lock;
-        let progress_log = logs.iter_mut().last().and_then(|log| {
-            if let Log::Progress(progress_log) = log {
-                (!progress_log.is_finished()).then_some(progress_log)
-            } else {
-                None
-            }
-        });
-
-        if let Some(progress_log) = progress_log {
-            progress_log.push_progress_log(subprogress_log)
-        } else {
-            let handle = subprogress_log.get_handle();
-            logs.push_back(Log::Progress(subprogress_log));
-            handle
-        }
-    }
-
-    pub(super) fn push_simple_log(&self, level: Level, message: String) {
-        // Find the current progress log.
-        let mut logs_lock = RENDER_THREAD
-            .get()
-            .expect(EXPECT_RENDER_THREAD_INITIALIZED)
-            .logs
-            .lock()
-            .expect(EXPECT_THREAD_NOT_POSIONED);
-        let logs = &mut *logs_lock;
-        let progress_log = logs.iter_mut().last().and_then(|log| {
-            if let Log::Progress(progress_log) = log {
-                (!progress_log.is_finished()).then_some(progress_log)
-            } else {
-                None
-            }
-        });
-
-        if let Some(progress_log) = progress_log {
-            for line in message.lines() {
-                progress_log.push_simple_log(SimpleLog::new(level, line.to_string()));
-            }
-        } else {
-            for line in message.lines() {
-                logs.push_back(Log::Simple(SimpleLog::new(level, line.to_string())));
-            }
-        }
-    }
-
     #[throws(Error)]
-    pub(super) fn terminate(&self) {
+    pub fn terminate(&self) {
         self.wants_terminate.store(true, Ordering::SeqCst);
         if let Some(thread_handle) = self.handle.lock().expect(EXPECT_THREAD_NOT_POSIONED).take() {
             thread_handle
@@ -414,7 +357,7 @@ pub struct RenderThreadPauseLock;
 
 impl Drop for RenderThreadPauseLock {
     fn drop(&mut self) {
-        let render_thread = RENDER_THREAD.get().expect(EXPECT_RENDER_THREAD_INITIALIZED);
+        let render_thread = get_render_thread();
 
         {
             let (wants_pause_mutex, wants_pause_cvar) = &*render_thread.wants_pause;
@@ -486,23 +429,7 @@ impl RenderConfig {
     }
 }
 
-#[derive(Debug)]
-enum Log {
-    Simple(SimpleLog),
-    Progress(ProgressLog),
-}
-
-#[derive(Debug)]
-struct SimpleLog {
-    level: Level,
-    message: String,
-}
-
 impl SimpleLog {
-    fn new(level: Level, message: String) -> Self {
-        Self { level, message }
-    }
-
     fn render_height(&self) -> usize {
         1
     }
@@ -551,67 +478,8 @@ impl SimpleLog {
     }
 }
 
-#[derive(Debug)]
-struct ProgressLog {
-    message: String,
-    start_time: Instant,
-    logs: Vec<Log>,
-    is_finished: Arc<Mutex<Option<Duration>>>,
-}
-
 impl ProgressLog {
     const COLOR: style::Color = style::Color::DarkCyan;
-
-    fn new(message: String) -> Self {
-        Self {
-            message,
-            start_time: Instant::now(),
-            logs: Vec::new(),
-            is_finished: Arc::new(Mutex::new(None)),
-        }
-    }
-
-    fn get_handle(&self) -> ProgressHandle {
-        ProgressHandle::new(self.start_time, Arc::clone(&self.is_finished))
-    }
-
-    fn is_finished(&self) -> bool {
-        self.is_finished
-            .lock()
-            .expect(EXPECT_THREAD_NOT_POSIONED)
-            .is_some()
-    }
-
-    fn last_running_subprogress_mut(&mut self) -> Option<&mut Self> {
-        self.logs
-            .iter_mut()
-            .filter_map(|log| {
-                if let Log::Progress(progress_log) = log {
-                    (!progress_log.is_finished()).then_some(progress_log)
-                } else {
-                    None
-                }
-            })
-            .last()
-    }
-
-    fn push_simple_log(&mut self, simple_log: SimpleLog) {
-        if let Some(last_running_subprogress) = self.last_running_subprogress_mut() {
-            last_running_subprogress.push_simple_log(simple_log);
-        } else {
-            self.logs.push(Log::Simple(simple_log));
-        }
-    }
-
-    fn push_progress_log(&mut self, progress_log: ProgressLog) -> ProgressHandle {
-        if let Some(last_running_subprogress) = self.last_running_subprogress_mut() {
-            last_running_subprogress.push_progress_log(progress_log)
-        } else {
-            let handle = progress_log.get_handle();
-            self.logs.push(Log::Progress(progress_log));
-            handle
-        }
-    }
 
     fn render_height(&self) -> usize {
         if self.logs.is_empty() {
@@ -931,42 +799,4 @@ impl ProgressLog {
 
         index - start_index
     }
-}
-
-#[must_use]
-pub struct ProgressHandle {
-    start_time: Instant,
-    is_finished: Arc<Mutex<Option<Duration>>>,
-}
-
-impl ProgressHandle {
-    fn new(start_time: Instant, is_finished: Arc<Mutex<Option<Duration>>>) -> Self {
-        Self {
-            start_time,
-            is_finished,
-        }
-    }
-
-    pub fn finish(self) {}
-}
-
-impl Drop for ProgressHandle {
-    fn drop(&mut self) {
-        self.is_finished
-            .lock()
-            .expect(EXPECT_THREAD_NOT_POSIONED)
-            .replace(self.start_time.elapsed());
-    }
-}
-
-#[derive(Error, Debug)]
-pub enum Error {
-    #[error("render thread pause lock already acquired")]
-    PauseLockAlreadyAcquired,
-
-    #[error(transparent)]
-    Crossterm(#[from] crossterm::ErrorKind),
-
-    #[error(transparent)]
-    Format(#[from] fmt::Error),
 }
