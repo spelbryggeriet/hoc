@@ -9,14 +9,12 @@ use once_cell::sync::OnceCell;
 
 use crate::{log::Error, prelude::*};
 pub use drop_handle::DropHandle;
-pub use render::pause as pause_rendering;
+use render::PauseLock;
 
 mod render;
 
-static PROGRESS: OnceCell<Progress> = OnceCell::new();
-
 pub fn init() {
-    get_progress();
+    Progress::get_or_init();
     render::init();
 }
 
@@ -25,8 +23,9 @@ pub fn cleanup() {
     render::cleanup()?;
 }
 
-pub fn get_progress() -> &'static Progress {
-    PROGRESS.get_or_init(Progress::new)
+#[throws(Error)]
+pub fn pause_rendering() -> PauseLock {
+    render::RenderThread::pause()?
 }
 
 fn last_running_subprogress_mut<'a>(
@@ -47,6 +46,12 @@ pub struct Progress {
 }
 
 impl Progress {
+    pub fn get_or_init() -> &'static Progress {
+        static PROGRESS: OnceCell<Progress> = OnceCell::new();
+
+        PROGRESS.get_or_init(Progress::new)
+    }
+
     fn new() -> Self {
         Self {
             logs: Mutex::new(VecDeque::new()),
@@ -87,7 +92,7 @@ impl Progress {
         }
     }
 
-    fn get_logs(&self) -> MutexGuard<VecDeque<Log>> {
+    fn logs(&self) -> MutexGuard<VecDeque<Log>> {
         self.logs.lock().expect(EXPECT_THREAD_NOT_POSIONED)
     }
 }

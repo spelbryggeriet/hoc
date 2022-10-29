@@ -24,7 +24,7 @@ pub fn cleanup() {
 }
 
 pub fn progress(message: String) -> DropHandle {
-    progress::get_progress().push_progress_log(message)
+    progress::Progress::get_or_init().push_progress_log(message)
 }
 
 #[derive(Error, Debug)]

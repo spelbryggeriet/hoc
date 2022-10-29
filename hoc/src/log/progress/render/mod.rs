@@ -20,48 +20,13 @@ use crate::{log::Error, prelude::*};
 
 mod animation;
 
-static RENDER_THREAD: OnceCell<RenderThread> = OnceCell::new();
-
 pub fn init() {
-    get_render_thread();
+    RenderThread::get_or_init();
 }
 
 #[throws(Error)]
 pub fn cleanup() {
-    get_render_thread().terminate()?;
-}
-
-fn get_render_thread() -> &'static RenderThread {
-    RENDER_THREAD.get_or_init(RenderThread::new)
-}
-
-#[throws(Error)]
-pub fn pause() -> RenderThreadPauseLock {
-    let render_thread = get_render_thread();
-
-    {
-        let (wants_pause_mutex, wants_pause_cvar) = &*render_thread.wants_pause;
-        let mut wants_pause_lock = wants_pause_mutex.lock().expect(EXPECT_THREAD_NOT_POSIONED);
-
-        if *wants_pause_lock {
-            throw!(Error::PauseLockAlreadyAcquired);
-        }
-
-        *wants_pause_lock = true;
-        wants_pause_cvar.notify_one();
-    }
-
-    {
-        let (is_paused_mutex, is_paused_cvar) = &*render_thread.is_paused;
-        let is_paused_lock = is_paused_mutex.lock().expect(EXPECT_THREAD_NOT_POSIONED);
-        let _ = is_paused_cvar
-            .wait_while(is_paused_lock, |is_paused| !*is_paused)
-            .expect(EXPECT_THREAD_NOT_POSIONED);
-    }
-
-    println!();
-
-    RenderThreadPauseLock
+    RenderThread::get_or_init().terminate()?;
 }
 
 #[must_use]
@@ -73,6 +38,12 @@ pub struct RenderThread {
 }
 
 impl RenderThread {
+    fn get_or_init() -> &'static RenderThread {
+        static RENDER_THREAD: OnceCell<RenderThread> = OnceCell::new();
+
+        RENDER_THREAD.get_or_init(RenderThread::new)
+    }
+
     fn new() -> Self {
         let wants_terminate_orig = Arc::new(AtomicBool::new(false));
         let wants_terminate = Arc::clone(&wants_terminate_orig);
@@ -105,7 +76,7 @@ impl RenderThread {
                             let mut stdout = io::stdout();
                             render_config.is_paused = true;
 
-                            let mut logs = super::get_progress().get_logs();
+                            let mut logs = super::Progress::get_or_init().logs();
                             while let Some(log) = logs.pop_front() {
                                 match log {
                                     Log::Simple(ref simple_log) => {
@@ -166,7 +137,7 @@ impl RenderThread {
                         let mut stdout = io::stdout();
                         render_config.is_paused = false;
 
-                        let mut logs = super::get_progress().get_logs();
+                        let mut logs = super::Progress::get_or_init().logs();
                         while let Some(log) = logs.pop_front() {
                             match log {
                                 Log::Simple(ref simple_log) => {
@@ -204,7 +175,7 @@ impl RenderThread {
 
             let mut stdout = io::stdout();
 
-            let mut logs = super::get_progress().get_logs();
+            let mut logs = super::Progress::get_or_init().logs();
             for log in logs.drain(..) {
                 match log {
                     Log::Simple(ref simple_log) => {
@@ -235,6 +206,35 @@ impl RenderThread {
             wants_pause: wants_pause_orig,
             is_paused: is_paused_orig,
         }
+    }
+
+    #[throws(Error)]
+    pub fn pause() -> PauseLock {
+        let render_thread = Self::get_or_init();
+
+        {
+            let (wants_pause_mutex, wants_pause_cvar) = &*render_thread.wants_pause;
+            let mut wants_pause_lock = wants_pause_mutex.lock().expect(EXPECT_THREAD_NOT_POSIONED);
+
+            if *wants_pause_lock {
+                throw!(Error::PauseLockAlreadyAcquired);
+            }
+
+            *wants_pause_lock = true;
+            wants_pause_cvar.notify_one();
+        }
+
+        {
+            let (is_paused_mutex, is_paused_cvar) = &*render_thread.is_paused;
+            let is_paused_lock = is_paused_mutex.lock().expect(EXPECT_THREAD_NOT_POSIONED);
+            let _ = is_paused_cvar
+                .wait_while(is_paused_lock, |is_paused| !*is_paused)
+                .expect(EXPECT_THREAD_NOT_POSIONED);
+        }
+
+        println!();
+
+        PauseLock
     }
 
     #[throws(Error)]
@@ -353,11 +353,11 @@ impl RenderThread {
 }
 
 #[must_use]
-pub struct RenderThreadPauseLock;
+pub struct PauseLock;
 
-impl Drop for RenderThreadPauseLock {
+impl Drop for PauseLock {
     fn drop(&mut self) {
-        let render_thread = get_render_thread();
+        let render_thread = RenderThread::get_or_init();
 
         {
             let (wants_pause_mutex, wants_pause_cvar) = &*render_thread.wants_pause;

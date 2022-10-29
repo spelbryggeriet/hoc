@@ -10,7 +10,7 @@ use std::{
 use chrono::{DateTime, Utc};
 use log_facade::{Level, LevelFilter, Log, Metadata, Record};
 
-use super::{progress, Error};
+use super::{progress::Progress, Error};
 use crate::prelude::*;
 
 const MAX_DEFAULT_LEVEL: Level = if cfg!(debug_assertions) {
@@ -64,7 +64,7 @@ impl Log for Logger {
         let args_str = record.args().to_string();
 
         if self.enabled(record.metadata()) {
-            progress::get_progress().push_simple_log(record.level(), args_str.clone());
+            Progress::get_or_init().push_simple_log(record.level(), args_str.clone());
         }
 
         let mut buffer_lock = self.buffer.lock().unwrap_or_else(|err| panic!("{err}"));
