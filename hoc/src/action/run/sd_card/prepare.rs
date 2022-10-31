@@ -15,6 +15,8 @@ pub async fn run() {
     let (_, os_image_file_path) = context_file!("images/os")
         .cached(download_node_image)
         .await?;
+
+    let output = run!("file {}", os_image_file_path.to_string_lossy()).await?;
 }
 
 #[throws(anyhow::Error)]

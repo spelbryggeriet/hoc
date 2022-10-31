@@ -419,7 +419,7 @@ impl_try_from_item!(Value::FloatingPointNumber for f64);
 impl_try_from_item!(Value::String for String);
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(tag = "type", content = "value")]
+#[serde(untagged)]
 pub enum Value {
     Bool(bool),
     UnsignedInteger(u64),

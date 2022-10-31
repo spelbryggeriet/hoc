@@ -41,3 +41,10 @@ macro_rules! context_file {
         $crate::context::FileBuilder::new(__cow)
     }};
 }
+
+macro_rules! run {
+    ($($args:tt)*) => {{
+        let __cow = $crate::util::from_arguments_to_str_cow(format_args!($($args)*));
+        $crate::runner::RunBuilder::new(__cow)
+    }};
+}
