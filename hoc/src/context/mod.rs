@@ -136,20 +136,36 @@ impl Context {
     }
 
     #[throws(anyhow::Error)]
-    pub async fn cache_get_or_create_file_with<K, F, E>(
+    pub async fn cache_get_or_create_file_with<K, F>(
         &self,
         key: K,
         f: F,
     ) -> (AsyncFile, AsyncPathBuf)
     where
         K: Into<Cow<'static, Key>>,
-        F: for<'a> CachedFileFnOnce<'a, E>,
-        E: Into<anyhow::Error> + 'static,
+        F: for<'a> CachedFileFnOnce<'a>,
     {
         self.cache
             .write()
             .await
             .get_or_create_file_with(key, f)
+            .await?
+    }
+
+    #[throws(anyhow::Error)]
+    pub async fn cache_create_or_overwrite_file_with<K, F>(
+        &self,
+        key: K,
+        f: F,
+    ) -> (AsyncFile, AsyncPathBuf)
+    where
+        K: Into<Cow<'static, Key>>,
+        F: for<'a> CachedFileFnOnce<'a>,
+    {
+        self.cache
+            .write()
+            .await
+            .create_or_overwrite_file_with(key, f)
             .await?
     }
 
@@ -170,13 +186,23 @@ impl Context {
     }
 }
 
-pub struct FileBuilder {
+pub struct FileBuilder<S> {
     key: Cow<'static, Key>,
+    state: S,
 }
 
-impl FileBuilder {
+pub struct Persisted(());
+pub struct Cached<F> {
+    file_cacher: F,
+    clear: bool,
+}
+
+impl FileBuilder<Persisted> {
     pub fn new(key: Cow<'static, Key>) -> Self {
-        Self { key }
+        Self {
+            key,
+            state: Persisted(()),
+        }
     }
 
     #[throws(anyhow::Error)]
@@ -189,33 +215,73 @@ impl FileBuilder {
         get_context().files_create_file(self.key).await?
     }
 
-    #[throws(anyhow::Error)]
-    pub async fn cached<F, E>(self, f: F) -> (AsyncFile, AsyncPathBuf)
+    pub fn cached<F>(self, file_cacher: F) -> FileBuilder<Cached<F>>
     where
-        F: for<'a> CachedFileFnOnce<'a, E>,
-        E: Into<anyhow::Error> + 'static,
+        F: for<'a> CachedFileFnOnce<'a>,
     {
-        get_context()
-            .cache_get_or_create_file_with(self.key, f)
-            .await?
+        FileBuilder {
+            key: self.key,
+            state: Cached {
+                file_cacher,
+                clear: false,
+            },
+        }
     }
 }
 
-pub trait CachedFileFnOnce<'file, E>: FnOnce(&'file mut AsyncFile) -> Self::Fut {
-    type Fut: Future<Output = Result<(), E>>;
+impl<F> FileBuilder<Cached<F>>
+where
+    F: for<'a> CachedFileFnOnce<'a>,
+{
+    pub fn clear_if_present(mut self) -> Self {
+        self.state.clear = true;
+        self
+    }
+
+    #[throws(anyhow::Error)]
+    pub async fn get(self) -> (AsyncFile, AsyncPathBuf) {
+        if !self.state.clear {
+            get_context()
+                .cache_get_or_create_file_with(self.key, self.state.file_cacher)
+                .await?
+        } else {
+            get_context()
+                .cache_create_or_overwrite_file_with(self.key, self.state.file_cacher)
+                .await?
+        }
+    }
 }
 
-impl<'file, F, Fut, E> CachedFileFnOnce<'file, E> for F
+pub trait CachedFileFnOnce<'file>: FnOnce(&'file mut AsyncFile) -> Self::Fut {
+    type Fut: Future<Output = Result<(), Self::Error>>;
+    type Error: Into<anyhow::Error> + 'static;
+}
+
+impl<'file, F, Fut, E> CachedFileFnOnce<'file> for F
 where
     F: FnOnce(&'file mut AsyncFile) -> Fut,
     Fut: Future<Output = Result<(), E>>,
+    E: Into<anyhow::Error> + 'static,
 {
     type Fut = Fut;
+    type Error = E;
 }
 
 type FileBuilderFuture = Pin<Box<dyn Future<Output = anyhow::Result<(AsyncFile, AsyncPathBuf)>>>>;
 
-impl IntoFuture for FileBuilder {
+impl IntoFuture for FileBuilder<Persisted> {
+    type IntoFuture = FileBuilderFuture;
+    type Output = <FileBuilderFuture as Future>::Output;
+
+    fn into_future(self) -> Self::IntoFuture {
+        Box::pin(self.get())
+    }
+}
+
+impl<F> IntoFuture for FileBuilder<Cached<F>>
+where
+    F: for<'a> CachedFileFnOnce<'a> + 'static,
+{
     type IntoFuture = FileBuilderFuture;
     type Output = <FileBuilderFuture as Future>::Output;
 

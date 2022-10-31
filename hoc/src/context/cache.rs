@@ -38,15 +38,10 @@ impl Cache {
     }
 
     #[throws(Error)]
-    pub async fn get_or_create_file_with<K, F, E>(
-        &mut self,
-        key: K,
-        f: F,
-    ) -> (AsyncFile, AsyncPathBuf)
+    pub async fn get_or_create_file_with<K, F>(&mut self, key: K, f: F) -> (AsyncFile, AsyncPathBuf)
     where
         K: Into<Cow<'static, Key>>,
-        F: for<'a> CachedFileFnOnce<'a, E>,
-        E: Into<anyhow::Error> + 'static,
+        F: for<'a> CachedFileFnOnce<'a>,
     {
         let key = key.into();
 
@@ -102,9 +97,47 @@ impl Cache {
             .map_err(|err| Error::Custom(err.into()))?;
 
         self.map
-            .insert(key.clone().into_owned().into_path_buf(), path);
+            .insert(key.into_owned().into_path_buf(), path.clone());
 
-        (file, AsyncPathBuf::from(key.into_owned().into_path_buf()))
+        (file, AsyncPathBuf::from(path))
+    }
+
+    #[throws(Error)]
+    pub async fn create_or_overwrite_file_with<K, F>(
+        &mut self,
+        key: K,
+        f: F,
+    ) -> (AsyncFile, AsyncPathBuf)
+    where
+        K: Into<Cow<'static, Key>>,
+        F: for<'a> CachedFileFnOnce<'a>,
+    {
+        let key = key.into();
+
+        debug!("Creating cached file for key: {key}");
+
+        let path = self.cache_dir.join(&**key);
+
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).await?;
+        }
+
+        let mut file = OpenOptions::new()
+            .write(true)
+            .read(true)
+            .create(true)
+            .truncate(true)
+            .open(&path)
+            .await?;
+
+        f(&mut file)
+            .await
+            .map_err(|err| Error::Custom(err.into()))?;
+
+        self.map
+            .insert(key.into_owned().into_path_buf(), path.clone());
+
+        (file, AsyncPathBuf::from(path))
     }
 }
 

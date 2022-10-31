@@ -212,9 +212,10 @@ impl<'a, T> SelectBuilder<'a, T> {
             message: message.into(),
             options: Vec::with_capacity(1),
         }
+        .with_abort_option()
     }
 
-    pub fn with_abort_option(mut self) -> Self {
+    fn with_abort_option(mut self) -> Self {
         self.options.push(SelectBuilderOption {
             title: "Abort",
             on_select: None,
@@ -234,9 +235,13 @@ impl<'a, T> SelectBuilder<'a, T> {
     pub fn get(self) -> T {
         let _pause_lock = log::pause_rendering()?;
 
-        Select::new(&self.message, self.options)
+        let option = Select::new(&self.message, self.options)
             .with_formatter(&|_| clear_prompt(2))
-            .prompt()?
+            .prompt()?;
+
+        info!("{} {}", self.message, option.title);
+
+        option
             .on_select
             .map(|f| f())
             .ok_or(Error::Inquire(inquire::InquireError::OperationCanceled))?

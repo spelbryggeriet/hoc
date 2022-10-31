@@ -120,12 +120,12 @@ pub struct ProgressLog {
     message: String,
     start_time: Instant,
     logs: Vec<Log>,
-    is_finished: Arc<Mutex<Option<Duration>>>,
+    run_time: Arc<Mutex<Option<Duration>>>,
 }
 
 impl ProgressLog {
     fn is_finished(&self) -> bool {
-        self.is_finished
+        self.run_time
             .lock()
             .expect(EXPECT_THREAD_NOT_POSIONED)
             .is_some()
@@ -157,9 +157,9 @@ mod drop_handle {
                 message,
                 start_time: Instant::now(),
                 logs: Vec::new(),
-                is_finished: Arc::new(Mutex::new(None)),
+                run_time: Arc::new(Mutex::new(None)),
             };
-            let drop_handle = DropHandle::new(log.start_time, Arc::clone(&log.is_finished));
+            let drop_handle = DropHandle::new(log.start_time, Arc::clone(&log.run_time));
 
             (log, drop_handle)
         }
@@ -168,14 +168,14 @@ mod drop_handle {
     #[must_use]
     pub struct DropHandle {
         start_time: Instant,
-        is_finished: Arc<Mutex<Option<Duration>>>,
+        run_time: Arc<Mutex<Option<Duration>>>,
     }
 
     impl DropHandle {
-        fn new(start_time: Instant, is_finished: Arc<Mutex<Option<Duration>>>) -> Self {
+        fn new(start_time: Instant, run_time: Arc<Mutex<Option<Duration>>>) -> Self {
             Self {
                 start_time,
-                is_finished,
+                run_time,
             }
         }
 
@@ -184,7 +184,7 @@ mod drop_handle {
 
     impl Drop for DropHandle {
         fn drop(&mut self) {
-            self.is_finished
+            self.run_time
                 .lock()
                 .expect(EXPECT_THREAD_NOT_POSIONED)
                 .replace(self.start_time.elapsed());

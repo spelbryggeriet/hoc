@@ -234,7 +234,6 @@ impl Kv {
             error!("Value for key {key} is already set");
 
             let should_continue = select!("How do you want to resolve the key conflict?")
-                .with_abort_option()
                 .with_option("Skip", || {
                     warn!("Skipping to set value for key {key}");
                     false

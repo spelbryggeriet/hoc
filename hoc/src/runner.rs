@@ -53,7 +53,6 @@ impl RunBuilder {
                     run_progress.take();
 
                     let modify_command = select!("How do you want to resolve the command error?")
-                        .with_abort_option()
                         .with_option("Rerun", || false)
                         .with_option("Modify Command", || true)
                         .get()?;

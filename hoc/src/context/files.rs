@@ -53,7 +53,6 @@ impl Files {
 
             let file_options_clone = file_options.clone();
             let file_pair = select!("How do you want to resolve the key conflict?")
-                .with_abort_option()
                 .with_option("Skip", || -> Result<_, Error> {
                     warn!("Skipping to create file for key {key}");
                     Ok(Some((
@@ -88,7 +87,6 @@ impl Files {
 
                 let mut file_options_clone = file_options.clone();
                 select!("How do you want to resolve the file path conflict?")
-                    .with_abort_option()
                     .with_option("Skip", || -> Result<_, Error> {
                         warn!("Skipping to create file for key {key}");
                         Ok(file_options_clone.create_new(false).open(&path)?)
@@ -129,9 +127,7 @@ impl Files {
                 Err(err) if err.kind() == io::ErrorKind::NotFound => {
                     error!("File at path {path:?} not found");
 
-                    return select!("How do you want to resolve the file path conflict?")
-                        .with_abort_option()
-                        .get()?;
+                    return select!("How do you want to resolve the file path conflict?").get()?;
                 }
                 Err(err) => throw!(err),
             };
@@ -141,9 +137,7 @@ impl Files {
 
         error!("File for key {key} does not exists");
 
-        return select!("How do you want to resolve the key conflict?")
-            .with_abort_option()
-            .get()?;
+        return select!("How do you want to resolve the key conflict?").get()?;
     }
 }
 
