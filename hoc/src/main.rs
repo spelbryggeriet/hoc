@@ -3,34 +3,33 @@ use std::{env, process::ExitCode};
 use clap::Parser;
 use scopeguard::defer;
 
-use action::Action;
-
 #[macro_use]
 mod macros;
 
-mod action;
 mod cidr;
 mod context;
 mod log;
 mod prelude;
 mod prompt;
 mod runner;
+mod subcommand;
 mod util;
 
 use prelude::*;
+use subcommand::Subcommand;
 
 #[derive(Parser)]
 struct App {
     #[clap(subcommand)]
-    action: Action,
+    subcommand: Subcommand,
 }
 
 impl App {
     #[throws(anyhow::Error)]
     async fn run(self) {
         #[cfg(debug_assertions)]
-        if matches!(self.action, Action::Debug) {
-            action::debug::run();
+        if matches!(self.subcommand, Subcommand::Debug) {
+            subcommand::debug::run();
             return;
         }
 
@@ -49,7 +48,7 @@ impl App {
             }
         }
 
-        self.action.run().await?;
+        self.subcommand.run().await?;
     }
 }
 

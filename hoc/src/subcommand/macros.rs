@@ -1,6 +1,6 @@
 macro_rules! diagnostics {
     ($type:ty) => {{
-        debug!("Running {} action", <$type>::command().get_name());
+        debug!("Running {} subcommand", <$type>::command().get_name());
     }};
 }
 

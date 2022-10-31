@@ -9,10 +9,28 @@ use async_std::{
     io::{self, prelude::BufReadExt, BufReader},
     stream::StreamExt,
 };
-use futures::join;
+use futures::{join, AsyncRead};
 use thiserror::Error;
 
 use crate::prelude::*;
+
+#[throws(Error)]
+async fn read_lines(reader: impl AsyncRead + Unpin, print_line: impl Fn(&str)) -> String {
+    let mut lines = BufReader::new(reader).lines();
+    let mut out = String::new();
+
+    while let Some(line) = lines.next().await {
+        let line = line?;
+
+        print_line(&line);
+        if !out.is_empty() {
+            out.push_str("\n");
+        }
+        out.push_str(&line);
+    }
+
+    out
+}
 
 pub struct RunBuilder {
     cmd: Cow<'static, str>,
@@ -40,41 +58,16 @@ impl RunBuilder {
 
         let mut child = cmd.spawn()?;
 
-        let mut stdout_lines = BufReader::new(child.stdout.take().unwrap()).lines();
-        let mut stderr_lines = BufReader::new(child.stderr.take().unwrap()).lines();
-
         let mut output = Output::new();
         let (stdout, stderr) = join!(
-            async {
-                let mut stdout = String::new();
-
-                while let Some(line) = stdout_lines.next().await {
-                    let line = line?;
-
-                    info!("{line}");
-                    if !stdout.is_empty() {
-                        stdout.push_str("\n");
-                    }
-                    stdout.push_str(&line);
-                }
-
-                Result::<_, Error>::Ok(stdout)
-            },
-            async {
-                let mut stderr = String::new();
-
-                while let Some(line) = stderr_lines.next().await {
-                    let line = line?;
-
-                    warn!("{line}");
-                    if !stderr.is_empty() {
-                        stderr.push_str("\n");
-                    }
-                    stderr.push_str(&line);
-                }
-
-                Result::<_, Error>::Ok(stderr)
-            }
+            read_lines(
+                child.stdout.take().expect("stdout should exist"),
+                |line| info!("{line}")
+            ),
+            read_lines(
+                child.stderr.take().expect("stderr should exist"),
+                |line| warn!("{line}")
+            ),
         );
 
         output.stdout = stdout?;
