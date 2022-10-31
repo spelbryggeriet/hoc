@@ -12,7 +12,6 @@ use std::{
 use async_std::{fs::File as AsyncFile, path::PathBuf as AsyncPathBuf, sync::RwLock, task};
 use once_cell::sync::OnceCell;
 use serde::{de::Visitor, ser::SerializeMap, Deserialize, Deserializer, Serialize};
-use strum::{Display, EnumIter};
 
 use crate::prelude::*;
 use cache::Cache;
@@ -137,13 +136,13 @@ impl Context {
     }
 
     #[throws(anyhow::Error)]
-    pub async fn cache_get_or_create_file_with<'key, K, F, E>(
+    pub async fn cache_get_or_create_file_with<K, F, E>(
         &self,
         key: K,
         f: F,
     ) -> (AsyncFile, AsyncPathBuf)
     where
-        K: Into<Cow<'key, Key>>,
+        K: Into<Cow<'static, Key>>,
         F: for<'a> CachedFileFnOnce<'a, E>,
         E: Into<anyhow::Error> + 'static,
     {
@@ -321,11 +320,4 @@ impl<'de> Deserialize<'de> for Context {
 
         deserializer.deserialize_map(ContextVisitor)
     }
-}
-
-#[derive(Display, EnumIter)]
-enum Action {
-    Abort,
-    Skip,
-    Overwrite,
 }

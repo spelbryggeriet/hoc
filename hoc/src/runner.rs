@@ -12,7 +12,7 @@ use async_std::{
 use futures::{join, AsyncRead};
 use thiserror::Error;
 
-use crate::prelude::*;
+use crate::{prelude::*, prompt};
 
 #[throws(Error)]
 async fn read_lines(reader: impl AsyncRead + Unpin, print_line: impl Fn(&str)) -> String {
@@ -42,14 +42,38 @@ impl RunBuilder {
     }
 
     #[throws(Error)]
-    pub async fn run(self) -> Output {
-        progress_scoped!("Running command: {}", self.cmd);
+    pub async fn run(mut self) -> Output {
+        let mut run_progress = Some(progress!("Running command: {}", self.cmd));
 
-        self.run_impl().await?
+        return loop {
+            match self.run_impl().await {
+                Ok(output) => break output,
+                Err(err) => {
+                    error!("{err}");
+                    run_progress.take();
+
+                    let modify_command = select!("How do you want to resolve the command error?")
+                        .with_abort_option()
+                        .with_option("Rerun", || false)
+                        .with_option("Modify Command", || true)
+                        .get()?;
+
+                    let new_progress = if modify_command {
+                        self.cmd =
+                            Cow::Owned(prompt!("New command").with_initial_input(&self.cmd).get()?);
+                        progress!("Running modified command: {}", self.cmd)
+                    } else {
+                        progress!("Re-running command: {}", self.cmd)
+                    };
+
+                    run_progress.replace(new_progress);
+                }
+            }
+        };
     }
 
     #[throws(Error)]
-    pub async fn run_impl(self) -> Output {
+    pub async fn run_impl(&self) -> Output {
         let mut cmd = Command::new("sh");
         cmd.args(["-c", &self.cmd])
             .stdin(Stdio::piped())
@@ -62,11 +86,11 @@ impl RunBuilder {
         let (stdout, stderr) = join!(
             read_lines(
                 child.stdout.take().expect("stdout should exist"),
-                |line| info!("{line}")
+                |line| info!("[stdout] {line}")
             ),
             read_lines(
                 child.stderr.take().expect("stderr should exist"),
-                |line| warn!("{line}")
+                |line| warn!("[stderr] {line}")
             ),
         );
 
@@ -81,7 +105,11 @@ impl RunBuilder {
             throw!(Error::Terminated)
         };
 
-        output
+        if status.success() {
+            output
+        } else {
+            throw!(Error::Failed(output))
+        }
     }
 }
 
@@ -95,6 +123,7 @@ impl IntoFuture for RunBuilder {
     }
 }
 
+#[derive(Debug)]
 pub struct Output {
     pub code: i32,
     pub stdout: String,
@@ -113,8 +142,14 @@ impl Output {
 
 #[derive(Debug, Error)]
 pub enum Error {
+    #[error("The process failed with exit code {}", _0.code)]
+    Failed(Output),
+
     #[error("The process was terminated by a signal")]
     Terminated,
+
+    #[error(transparent)]
+    Prompt(#[from] prompt::Error),
 
     #[error(transparent)]
     Io(#[from] io::Error),

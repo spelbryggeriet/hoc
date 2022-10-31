@@ -8,14 +8,10 @@ use std::{
 use async_std::{fs::File as AsyncFile, path::PathBuf as AsyncPathBuf};
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
-use strum::IntoEnumIterator;
 use thiserror::Error;
 
 use crate::{
-    context::{
-        key::{self, Key},
-        Action,
-    },
+    context::key::{self, Key},
     prelude::*,
     prompt,
 };
@@ -55,25 +51,25 @@ impl Files {
         if let Some(path) = self.map.get(&**key) {
             error!("File for key {key} is already created");
 
-            let option = select!("How do you want to resolve the key conflict?")
-                .with_options(Action::iter())
-                .get()?;
-
-            match option {
-                Action::Abort => {
-                    throw!(Error::Key(key::Error::KeyAlreadyExists(key.into_owned())));
-                }
-                Action::Skip => {
+            let file_options_clone = file_options.clone();
+            let file_pair = select!("How do you want to resolve the key conflict?")
+                .with_abort_option()
+                .with_option("Skip", || -> Result<_, Error> {
                     warn!("Skipping to create file for key {key}");
-                    return (
-                        AsyncFile::from(file_options.open(path)?),
+                    Ok(Some((
+                        AsyncFile::from(file_options_clone.open(path)?),
                         AsyncPathBuf::from(path),
-                    );
-                }
-                Action::Overwrite => {
+                    )))
+                })
+                .with_option("Overwrite", || {
                     warn!("Overwriting existing file for key {key}");
                     file_options.truncate(true);
-                }
+                    Ok(None)
+                })
+                .get()??;
+
+            if let Some(file_pair) = file_pair {
+                return file_pair;
             }
         } else {
             file_options.create_new(true);
@@ -90,23 +86,18 @@ impl Files {
             Err(err) if err.kind() == io::ErrorKind::AlreadyExists => {
                 error!("File at path {path:?} already exists");
 
-                let option = select!("How do you want to resolve the file path conflict?")
-                    .with_options(Action::iter())
-                    .get()?;
-
-                match option {
-                    Action::Abort => {
-                        throw!(Error::Io(io::ErrorKind::AlreadyExists.into()));
-                    }
-                    Action::Skip => {
+                let mut file_options_clone = file_options.clone();
+                select!("How do you want to resolve the file path conflict?")
+                    .with_abort_option()
+                    .with_option("Skip", || -> Result<_, Error> {
                         warn!("Skipping to create file for key {key}");
-                        file_options.create_new(false).open(&path)?
-                    }
-                    Action::Overwrite => {
+                        Ok(file_options_clone.create_new(false).open(&path)?)
+                    })
+                    .with_option("Overwrite", || {
                         warn!("Overwriting existing file at path {path:?}");
-                        file_options.create_new(false).truncate(true).open(&path)?
-                    }
-                }
+                        Ok(file_options.create_new(false).truncate(true).open(&path)?)
+                    })
+                    .get()??
             }
             Err(err) => throw!(err),
         };
@@ -138,14 +129,9 @@ impl Files {
                 Err(err) if err.kind() == io::ErrorKind::NotFound => {
                     error!("File at path {path:?} not found");
 
-                    let option = select!("How do you want to resolve the file path conflict?")
-                        .with_option(Action::Abort)
+                    return select!("How do you want to resolve the file path conflict?")
+                        .with_abort_option()
                         .get()?;
-
-                    match option {
-                        Action::Abort => throw!(Error::Io(io::ErrorKind::NotFound.into())),
-                        _ => unreachable!(),
-                    }
                 }
                 Err(err) => throw!(err),
             };
@@ -155,11 +141,9 @@ impl Files {
 
         error!("File for key {key} does not exists");
 
-        let _option = select!("How do you want to resolve the key conflict?")
-            .with_option(Action::Abort)
+        return select!("How do you want to resolve the key conflict?")
+            .with_abort_option()
             .get()?;
-
-        throw!(Error::Key(key::Error::KeyDoesNotExist(key.into_owned())));
     }
 }
 

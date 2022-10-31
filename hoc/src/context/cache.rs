@@ -7,14 +7,10 @@ use async_std::{
 };
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
-use strum::IntoEnumIterator;
 use thiserror::Error;
 
 use crate::{
-    context::{
-        key::{self, Key},
-        Action,
-    },
+    context::key::{self, Key},
     prelude::*,
     prompt,
 };
@@ -42,13 +38,13 @@ impl Cache {
     }
 
     #[throws(Error)]
-    pub async fn get_or_create_file_with<'key, K, F, E>(
+    pub async fn get_or_create_file_with<K, F, E>(
         &mut self,
         key: K,
         f: F,
     ) -> (AsyncFile, AsyncPathBuf)
     where
-        K: Into<Cow<'key, Key>>,
+        K: Into<Cow<'static, Key>>,
         F: for<'a> CachedFileFnOnce<'a, E>,
         E: Into<anyhow::Error> + 'static,
     {
@@ -80,25 +76,23 @@ impl Cache {
             Err(err) if err.kind() == io::ErrorKind::AlreadyExists => {
                 error!("File at path {path:?} already exists");
 
-                let option = select!("How do you want to resolve the file path conflict?")
-                    .with_options(Action::iter())
-                    .get()?;
-
-                match option {
-                    Action::Abort => throw!(err),
-                    Action::Skip => {
+                let should_truncate = select!("How do you want to resolve the file path conflict?")
+                    .with_option("Abort", || Err(err))
+                    .with_option("Skip", || {
                         warn!("Skipping to create file for key {key}");
-                        file_options.create_new(false).open(&path).await?
-                    }
-                    Action::Overwrite => {
+                        Ok(false)
+                    })
+                    .with_option("Overwrite", || {
                         warn!("Overwriting existing file at path {path:?}");
-                        file_options
-                            .create_new(false)
-                            .truncate(true)
-                            .open(&path)
-                            .await?
-                    }
-                }
+                        Ok(true)
+                    })
+                    .get()??;
+
+                file_options
+                    .create_new(false)
+                    .truncate(should_truncate)
+                    .open(&path)
+                    .await?
             }
             Err(err) => throw!(err),
         };

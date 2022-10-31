@@ -1,6 +1,6 @@
 use std::{
     borrow::Cow,
-    fmt::{Debug, Display},
+    fmt::{self, Debug, Display, Formatter},
     marker::PhantomData,
     str::FromStr,
 };
@@ -32,9 +32,10 @@ fn clear_prompt(lines: u16) -> String {
     clear_section
 }
 
-pub struct PromptBuilder<T, S> {
+pub struct PromptBuilder<'a, T, S> {
     message: Cow<'static, str>,
     default: Option<Cow<'static, str>>,
+    initial_input: Option<&'a str>,
     _output_type: PhantomData<T>,
     _state: PhantomData<S>,
 }
@@ -49,21 +50,23 @@ impl NonSecret for WithDefault {}
 
 pub enum AsSecret {}
 
-impl<T, S> PromptBuilder<T, S> {
-    fn convert<U>(self) -> PromptBuilder<T, U> {
+impl<'a, T, S> PromptBuilder<'a, T, S> {
+    fn convert<U>(self) -> PromptBuilder<'a, T, U> {
         PromptBuilder {
             message: self.message,
             default: self.default,
+            initial_input: self.initial_input,
             _output_type: self._output_type,
             _state: Default::default(),
         }
     }
 }
-impl<T> PromptBuilder<T, Normal> {
+impl<'a, T> PromptBuilder<'a, T, Normal> {
     pub fn new(message: impl Into<Cow<'static, str>>) -> Self {
         Self {
             message: message.into(),
             default: None,
+            initial_input: None,
             _output_type: Default::default(),
             _state: Default::default(),
         }
@@ -72,17 +75,25 @@ impl<T> PromptBuilder<T, Normal> {
     pub fn with_default(
         mut self,
         default: impl Into<Cow<'static, str>>,
-    ) -> PromptBuilder<T, WithDefault> {
+    ) -> PromptBuilder<'a, T, WithDefault> {
         self.default.replace(default.into());
         self.convert()
     }
 
-    pub fn as_secret(self) -> PromptBuilder<T, AsSecret> {
+    pub fn with_initial_input(
+        mut self,
+        initial_input: &'a str,
+    ) -> PromptBuilder<'a, T, WithDefault> {
+        self.initial_input.replace(initial_input);
+        self.convert()
+    }
+
+    pub fn as_secret(self) -> PromptBuilder<'a, T, AsSecret> {
         self.convert()
     }
 }
 
-impl<T, S> PromptBuilder<T, S>
+impl<'a, T, S> PromptBuilder<'a, T, S>
 where
     T: FromStr,
     T::Err: Display,
@@ -122,8 +133,12 @@ where
             .with_validator(validator)
             .with_formatter(&|_| clear_prompt(2));
 
-        if let Some(ref default) = self.default {
+        if let Some(default) = &self.default {
             text = text.with_default(default);
+        }
+
+        if let Some(initial_input) = self.initial_input {
+            text = text.with_initial_value(initial_input);
         }
 
         match text.prompt() {
@@ -144,7 +159,7 @@ where
     }
 }
 
-impl<T> PromptBuilder<T, AsSecret>
+impl<'a, T> PromptBuilder<'a, T, AsSecret>
 where
     T: FromStr,
     T::Err: Display,
@@ -186,49 +201,35 @@ where
     }
 }
 
-pub struct SelectBuilder<T, S> {
+pub struct SelectBuilder<'a, T> {
     message: Cow<'static, str>,
-    options: Vec<T>,
-    _state: PhantomData<S>,
+    options: Vec<SelectBuilderOption<'a, T>>,
 }
 
-pub enum Empty {}
-pub enum NonEmpty {}
-
-impl<T> SelectBuilder<T, Empty> {
+impl<'a, T> SelectBuilder<'a, T> {
     pub fn new(message: impl Into<Cow<'static, str>>) -> Self {
         Self {
             message: message.into(),
             options: Vec::with_capacity(1),
-            _state: Default::default(),
-        }
-    }
-}
-
-impl<T, S> SelectBuilder<T, S> {
-    fn into_non_empty(self) -> SelectBuilder<T, NonEmpty> {
-        SelectBuilder {
-            message: self.message,
-            options: self.options,
-            _state: Default::default(),
         }
     }
 
-    pub fn with_option(mut self, option: T) -> SelectBuilder<T, NonEmpty> {
-        self.options.push(option);
-        self.into_non_empty()
+    pub fn with_abort_option(mut self) -> Self {
+        self.options.push(SelectBuilderOption {
+            title: "Abort",
+            on_select: None,
+        });
+        self
     }
 
-    pub fn with_options(
-        mut self,
-        options: impl IntoIterator<Item = T>,
-    ) -> SelectBuilder<T, NonEmpty> {
-        self.options.extend(options);
-        self.into_non_empty()
+    pub fn with_option(mut self, title: &'static str, on_select: impl FnOnce() -> T + 'a) -> Self {
+        self.options.push(SelectBuilderOption {
+            title,
+            on_select: Some(Box::new(on_select)),
+        });
+        self
     }
-}
 
-impl<T: Display + Send + 'static> SelectBuilder<T, NonEmpty> {
     #[throws(Error)]
     pub fn get(self) -> T {
         let _pause_lock = log::pause_rendering()?;
@@ -236,6 +237,21 @@ impl<T: Display + Send + 'static> SelectBuilder<T, NonEmpty> {
         Select::new(&self.message, self.options)
             .with_formatter(&|_| clear_prompt(2))
             .prompt()?
+            .on_select
+            .map(|f| f())
+            .ok_or(Error::Inquire(inquire::InquireError::OperationCanceled))?
+    }
+}
+
+struct SelectBuilderOption<'a, T> {
+    title: &'static str,
+    on_select: Option<Box<dyn FnOnce() -> T + 'a>>,
+}
+
+impl<T> Display for SelectBuilderOption<'_, T> {
+    #[throws(fmt::Error)]
+    fn fmt(&self, f: &mut Formatter) {
+        write!(f, "{}", self.title)?;
     }
 }
 

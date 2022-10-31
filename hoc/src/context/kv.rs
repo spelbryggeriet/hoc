@@ -11,14 +11,10 @@ use std::{
 use indexmap::{IndexMap, IndexSet};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
-use strum::IntoEnumIterator;
 use thiserror::Error;
 
 use crate::{
-    context::{
-        key::{self, Key, KeyOwned},
-        Action,
-    },
+    context::key::{self, Key, KeyOwned},
     log,
     prelude::*,
     prompt,
@@ -237,30 +233,27 @@ impl Kv {
         if self.map.contains_key(&**key) {
             error!("Value for key {key} is already set");
 
-            let option = select!("How do you want to resolve the key conflict?")
-                .with_options(Action::iter())
+            let should_continue = select!("How do you want to resolve the key conflict?")
+                .with_abort_option()
+                .with_option("Skip", || {
+                    warn!("Skipping to set value for key {key}");
+                    false
+                })
+                .with_option("Overwrite", || {
+                    warn!("Overwriting existing item for key {key}");
+                    true
+                })
                 .get()?;
 
-            match option {
-                Action::Abort => {
-                    throw!(Error::Prompt(prompt::Error::Inquire(
-                        inquire::InquireError::OperationCanceled
-                    )));
-                }
-                Action::Skip => {
-                    warn!("Skipping to set value for key {key}");
-                    return;
-                }
-                Action::Overwrite => {
-                    warn!("Overwriting existing item for key {key}");
+            if !should_continue {
+                return;
+            }
 
-                    if log_enabled!(Level::Debug) {
-                        trace!(
-                            "Old item for key {key}: {}",
-                            serde_json::to_string(&self.get_value(&*key)?)?
-                        );
-                    }
-                }
+            if log_enabled!(Level::Debug) {
+                trace!(
+                    "Old item for key {key}: {}",
+                    serde_json::to_string(&self.get_value(&*key)?)?
+                );
             }
         }
 
