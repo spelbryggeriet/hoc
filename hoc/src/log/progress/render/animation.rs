@@ -116,7 +116,7 @@ impl Iterator for Frames {
 
     fn next(&mut self) -> Option<Self::Item> {
         self.frame_index = (self.frame_index + (self.slowdown_index + 1) / SLOWDOWN) % LENGTH;
-        self.slowdown_index = (self.slowdown_index + 1) % LENGTH;
+        self.slowdown_index = (self.slowdown_index + 1) % SLOWDOWN;
         Some(self.frame_index)
     }
 }

@@ -479,7 +479,8 @@ impl SimpleLog {
 }
 
 impl ProgressLog {
-    const COLOR: style::Color = style::Color::DarkCyan;
+    const RUNNING_COLOR: style::Color = style::Color::Yellow;
+    const FINISHED_COLOR: style::Color = style::Color::DarkCyan;
 
     fn render_height(&self, is_paused: bool) -> usize {
         if self.logs.is_empty() && !is_paused {
@@ -520,12 +521,17 @@ impl ProgressLog {
         } else {
             animation::State::Animating(animation_frame as isize)
         };
+        let color = if is_finished {
+            Self::FINISHED_COLOR
+        } else {
+            Self::RUNNING_COLOR
+        };
 
         // Print indicator and progress message.
         queue!(
             stdout,
             cursor::MoveToColumn(2 * indentation as u16),
-            style::SetForegroundColor(Self::COLOR),
+            style::SetForegroundColor(color),
             style::Print(animation::braille_spin(animation_state)),
             style::Print(" "),
             style::Print(&self.message),
@@ -564,7 +570,7 @@ impl ProgressLog {
                     stdout,
                     style::Print("\n"),
                     cursor::MoveToColumn(2 * indentation as u16),
-                    style::SetForegroundColor(Self::COLOR),
+                    style::SetForegroundColor(color),
                     style::Print(animation::box_turn_swell(animation_state)),
                     style::Print("╶".repeat(width - 1)),
                 )?;
@@ -607,7 +613,7 @@ impl ProgressLog {
                 s,
                 style::Print("\n"),
                 cursor::MoveToColumn(2 * indentation as u16),
-                style::SetForegroundColor(Self::COLOR),
+                style::SetForegroundColor(color),
                 style::Print(animation::box_side_swell(
                     animation_state.frame_offset(-2 * frame_offset as isize)
                 )),
@@ -680,7 +686,7 @@ impl ProgressLog {
             stdout,
             style::Print("\n"),
             cursor::MoveToColumn(2 * indentation as u16),
-            style::SetForegroundColor(Self::COLOR),
+            style::SetForegroundColor(color),
             style::Print(animation::box_turn_swell(
                 animation_state.frame_offset(-2 * rendered_logs_height as isize)
             ))
@@ -723,7 +729,7 @@ impl ProgressLog {
         write!(
             header_line,
             "{color}{icon} {message}",
-            color = style::SetForegroundColor(Self::COLOR),
+            color = style::SetForegroundColor(Self::FINISHED_COLOR),
             icon = animation::braille_spin(animation::State::Finished),
             message = self.message,
         )?;
@@ -759,7 +765,7 @@ impl ProgressLog {
                 write!(
                     line,
                     "{color}{side} {reset}",
-                    color = style::SetForegroundColor(ProgressLog::COLOR),
+                    color = style::SetForegroundColor(ProgressLog::FINISHED_COLOR),
                     reset = style::SetForegroundColor(style::Color::Reset),
                     side = animation::box_side_swell(animation::State::Finished),
                 )?;
@@ -791,7 +797,7 @@ impl ProgressLog {
             write!(
                 line,
                 "{color}{turn}{end}{secs}.{millis:03}s{reset}",
-                color = style::SetForegroundColor(Self::COLOR),
+                color = style::SetForegroundColor(Self::FINISHED_COLOR),
                 end = animation::box_end_swell(animation::State::Finished),
                 millis = elapsed.as_millis() % 1000,
                 reset = style::SetForegroundColor(style::Color::Reset),

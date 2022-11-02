@@ -29,3 +29,4 @@ spin_sleep = "1.1.1"
 strum = { version = "0.24.1", features = ["derive"] }
 surf = "2.3.2"
 thiserror = "1.0.35"
+xz2 = "0.1.7"

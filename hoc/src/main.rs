@@ -69,7 +69,7 @@ async fn main() -> ExitCode {
     let exit_code = match app.run().await {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
-            error!("{error}");
+            error!("{error:?}");
             ExitCode::FAILURE
         }
     };
