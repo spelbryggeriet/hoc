@@ -39,7 +39,8 @@ impl App {
         context::init(
             format!("{home_dir}/.local/share/hoc"),
             format!("{home_dir}/.cache/hoc"),
-        )?;
+        )
+        .await?;
 
         defer! {
             if let Err(err) = context::get_context().persist() {
@@ -53,7 +54,7 @@ impl App {
 }
 
 #[throws(anyhow::Error)]
-#[async_std::main]
+#[tokio::main]
 async fn main() -> ExitCode {
     let app = App::from_args();
 

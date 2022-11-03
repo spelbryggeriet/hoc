@@ -1,13 +1,13 @@
 use std::{
     fmt::{self, Display, Formatter},
     fs::File as BlockingFile,
-    io::Read as BlockingRead,
+    io::{Cursor, Read},
+    path::Path,
 };
 
-use async_std::{
+use tokio::{
     fs::File,
-    io::{self, prelude::*, SeekFrom},
-    path::{Path, PathBuf},
+    io::{self, AsyncWriteExt},
 };
 use xz2::read::XzDecoder;
 
@@ -16,27 +16,39 @@ use crate::prelude::*;
 const UBUNTU_VERSION: UbuntuVersion = UbuntuVersion {
     major: 20,
     minor: 4,
-    patch: 5,
+    patch: 4,
 };
 
 #[throws(anyhow::Error)]
 pub async fn run() {
-    let (mut os_image_file, mut os_image_file_path) = context_file!("images/os")
-        .cached(download_node_image)
-        .await?;
-
-    validate_file(&mut os_image_file, &mut os_image_file_path).await?;
-    decompress_xz_file(&mut os_image_file, &os_image_file_path).await?;
+    let (_os_image_file, _os_image_file_path) =
+        context_file!("images/os").cached(get_os_image).await?;
 }
 
 #[throws(anyhow::Error)]
-async fn download_node_image(file: &mut File) {
-    progress_scoped!("Downloading node image");
+async fn get_os_image(file: &mut File, path: &Path, retrying: bool) {
+    progress_scoped!("Retrieving OS image");
 
-    let image_url = ubuntu_image_url(UBUNTU_VERSION);
-    info!("URL: {image_url}");
+    download_os_image(file, retrying).await?;
+    validate_os_image(path).await?;
+    decompress_xz_file(file, path).await?;
+}
 
-    fetch_into_file(image_url, file).await?
+#[throws(anyhow::Error)]
+async fn download_os_image(file: &mut File, prompt_url: bool) {
+    progress_scoped!("Downloading OS image");
+
+    let os_image_url = if prompt_url {
+        prompt!("URL")
+            .with_initial_input(&ubuntu_image_url(UBUNTU_VERSION))
+            .get()?
+    } else {
+        ubuntu_image_url(UBUNTU_VERSION)
+    };
+    info!("URL: {os_image_url}");
+
+    let mut os_image_reader = Cursor::new(reqwest::get(os_image_url).await?.bytes().await?);
+    io::copy(&mut os_image_reader, file).await?;
 }
 
 fn ubuntu_image_url<T: Display>(version: T) -> String {
@@ -44,82 +56,45 @@ fn ubuntu_image_url<T: Display>(version: T) -> String {
 }
 
 #[throws(anyhow::Error)]
-async fn download_node_image_custom_url(file: &mut File) {
-    progress_scoped!("Downloading node image");
-
-    let image_url: String = prompt!("URL")
-        .with_initial_input(&ubuntu_image_url(UBUNTU_VERSION))
-        .get()?;
-    info!("URL: {image_url}");
-
-    fetch_into_file(image_url, file).await?
-}
-
-#[throws(anyhow::Error)]
-async fn fetch_into_file(url: String, file: &mut File) {
-    let mut image_reader = surf::get(url)
-        .send()
-        .await
-        .unwrap()
-        .take_body()
-        .into_reader();
-    io::copy(&mut image_reader, file).await?;
-}
-
-#[throws(anyhow::Error)]
-async fn validate_file(os_image_file: &mut File, os_image_file_path: &mut PathBuf) {
+async fn validate_os_image(os_image_file_path: &Path) {
     progress_scoped!("Validating file type");
 
-    loop {
-        let mut output = run!("file -E {}", os_image_file_path.to_string_lossy()).await?;
-        output.stdout = output.stdout.to_lowercase();
-        if output.stdout.contains("xz compressed data") {
-            break;
-        }
+    let mut output = run!("file -E {}", os_image_file_path.to_string_lossy()).await?;
+    output.stdout = output.stdout.to_lowercase();
 
+    if !output.stdout.contains("xz compressed data") {
         error!("Unsupported file type");
 
-        loop {
-            let modify_url = select!("How do you want to resolve the issue?")
-                .with_option("Inspect File", || false)
-                .with_option("Modify URL", || true)
-                .get()?;
+        let inspect_file = select!("Do you want to inspect the file?")
+            .with_option("Yes", || true)
+            .with_option("No", || false)
+            .get()?;
 
-            if modify_url {
-                (*os_image_file, *os_image_file_path) = context_file!("images/os")
-                    .cached(download_node_image_custom_url)
-                    .clear_if_present()
-                    .await?;
-                break;
-            }
-
+        if inspect_file {
             run!("cat {}", os_image_file_path.to_string_lossy()).await?;
         }
+
+        throw!(anyhow::anyhow!("Validation failed"));
     }
 }
 
 #[throws(anyhow::Error)]
-async fn decompress_xz_file(image_file: &mut File, image_path: &Path) {
-    let read_progress = progress!("Reading XZ file");
-
-    let blocking_image_file = BlockingFile::open(image_path)?;
-    let mut decompressor = XzDecoder::new(blocking_image_file);
-
+async fn decompress_xz_file(os_image_file: &mut File, os_image_path: &Path) {
     let decompress_progress = progress!("Decompressing image");
 
+    let os_image_file_ro = BlockingFile::options().read(true).open(os_image_path)?;
+    let mut decompressor = XzDecoder::new(os_image_file_ro);
     let mut image_data = Vec::new();
     decompressor
         .read_to_end(&mut image_data)
         .context("Reading image in XZ file")?;
 
     decompress_progress.finish();
-    read_progress.finish();
 
     progress_scoped!("Saving decompressed image to file");
 
-    image_file.seek(SeekFrom::Start(0)).await?;
-    image_file.set_len(0).await?;
-    image_file.write_all(&image_data).await?;
+    os_image_file.set_len(0).await?;
+    os_image_file.write_all(&image_data).await?;
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

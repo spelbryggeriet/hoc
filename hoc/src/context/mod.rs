@@ -1,17 +1,22 @@
 use std::{
     borrow::Cow,
     fmt::{self, Formatter},
-    fs::{self, File},
+    fs::{self, File as BlockingFile},
     future::{Future, IntoFuture},
     io,
     os::unix::fs::PermissionsExt,
-    path::PathBuf,
+    path::{Path, PathBuf},
     pin::Pin,
 };
 
-use async_std::{fs::File as AsyncFile, path::PathBuf as AsyncPathBuf, sync::RwLock, task};
 use once_cell::sync::OnceCell;
 use serde::{de::Visitor, ser::SerializeMap, Deserialize, Deserializer, Serialize};
+use tokio::{
+    fs::{File, OpenOptions},
+    runtime::Handle,
+    sync::RwLock,
+    task,
+};
 
 use crate::prelude::*;
 use cache::Cache;
@@ -27,7 +32,7 @@ mod kv;
 static CONTEXT: OnceCell<Context> = OnceCell::new();
 
 #[throws(anyhow::Error)]
-pub fn init<D, C>(data_dir: D, cache_dir: C)
+pub async fn init<D, C>(data_dir: D, cache_dir: C)
 where
     D: Into<PathBuf>,
     C: Into<PathBuf>,
@@ -36,7 +41,7 @@ where
         panic!("context already initialized");
     }
 
-    let context = Context::load(data_dir, cache_dir)?;
+    let context = Context::load(data_dir, cache_dir).await?;
     let _ = CONTEXT.set(context);
 }
 
@@ -53,7 +58,7 @@ pub struct Context {
 
 impl Context {
     #[throws(anyhow::Error)]
-    pub fn load<D, C>(data_dir: D, cache_dir: C) -> Self
+    pub async fn load<D, C>(data_dir: D, cache_dir: C) -> Self
     where
         D: Into<PathBuf>,
         C: Into<PathBuf>,
@@ -74,14 +79,19 @@ impl Context {
         let context_path = data_dir.join("context.yaml");
 
         debug!("Opening context file");
-        match File::options().read(true).write(true).open(&context_path) {
+        match OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&context_path)
+            .await
+        {
             Ok(file) => {
                 trace!("Using pre-existing context file: {context_path:?}");
 
                 debug!("Deserializing context from file");
-                let mut context: Self = serde_yaml::from_reader(&file)?;
-                task::block_on(context.files.write()).files_dir = data_dir.join("files");
-                task::block_on(context.cache.write()).cache_dir = cache_dir;
+                let mut context: Self = serde_yaml::from_reader(File::into_std(file).await)?;
+                context.files.write().await.files_dir = data_dir.join("files");
+                context.cache.write().await.cache_dir = cache_dir;
                 context.data_dir = data_dir;
                 context
             }
@@ -89,10 +99,11 @@ impl Context {
                 debug!("Creating new context file: {context_path:?}");
 
                 debug!("Opening context file for creation");
-                let file = File::options()
+                let file = OpenOptions::new()
                     .write(true)
                     .create_new(true)
-                    .open(&context_path)?;
+                    .open(&context_path)
+                    .await?;
 
                 debug!("Creating context object");
                 let context = Self {
@@ -103,7 +114,7 @@ impl Context {
                 };
 
                 debug!("Serializing context to file");
-                serde_yaml::to_writer(file, &context)?;
+                serde_yaml::to_writer(File::into_std(file).await, &context)?;
                 context
             }
             Err(error) => throw!(error),
@@ -120,7 +131,7 @@ impl Context {
     }
 
     #[throws(anyhow::Error)]
-    pub async fn files_create_file<'key, K>(&self, key: K) -> (AsyncFile, AsyncPathBuf)
+    pub async fn files_create_file<'key, K>(&self, key: K) -> (File, PathBuf)
     where
         K: Into<Cow<'key, Key>>,
     {
@@ -128,7 +139,7 @@ impl Context {
     }
 
     #[throws(anyhow::Error)]
-    pub async fn files_get_file<'key, K>(&self, key: K) -> (AsyncFile, AsyncPathBuf)
+    pub async fn files_get_file<'key, K>(&self, key: K) -> (File, PathBuf)
     where
         K: Into<Cow<'key, Key>>,
     {
@@ -136,11 +147,7 @@ impl Context {
     }
 
     #[throws(anyhow::Error)]
-    pub async fn cache_get_or_create_file_with<K, F>(
-        &self,
-        key: K,
-        f: F,
-    ) -> (AsyncFile, AsyncPathBuf)
+    pub async fn cache_get_or_create_file_with<K, F>(&self, key: K, f: F) -> (File, PathBuf)
     where
         K: Into<Cow<'static, Key>>,
         F: for<'a> CachedFileFnOnce<'a>,
@@ -153,11 +160,7 @@ impl Context {
     }
 
     #[throws(anyhow::Error)]
-    pub async fn cache_create_or_overwrite_file_with<K, F>(
-        &self,
-        key: K,
-        f: F,
-    ) -> (AsyncFile, AsyncPathBuf)
+    pub async fn cache_create_or_overwrite_file_with<K, F>(&self, key: K, f: F) -> (File, PathBuf)
     where
         K: Into<Cow<'static, Key>>,
         F: for<'a> CachedFileFnOnce<'a>,
@@ -174,7 +177,7 @@ impl Context {
         info!("Persisting context");
 
         debug!("Opening context file for writing");
-        let file = File::options()
+        let file = BlockingFile::options()
             .write(true)
             .truncate(true)
             .open(&self.data_dir.join("context.yaml"))?;
@@ -206,12 +209,12 @@ impl FileBuilder<Persisted> {
     }
 
     #[throws(anyhow::Error)]
-    pub async fn get(self) -> (AsyncFile, AsyncPathBuf) {
+    pub async fn get(self) -> (File, PathBuf) {
         get_context().files_get_file(self.key).await?
     }
 
     #[throws(anyhow::Error)]
-    pub async fn create(self) -> (AsyncFile, AsyncPathBuf) {
+    pub async fn create(self) -> (File, PathBuf) {
         get_context().files_create_file(self.key).await?
     }
 
@@ -233,13 +236,13 @@ impl<F> FileBuilder<Cached<F>>
 where
     F: for<'a> CachedFileFnOnce<'a>,
 {
-    pub fn clear_if_present(mut self) -> Self {
+    pub fn _clear_if_present(mut self) -> Self {
         self.state.clear = true;
         self
     }
 
     #[throws(anyhow::Error)]
-    pub async fn get(self) -> (AsyncFile, AsyncPathBuf) {
+    pub async fn get(self) -> (File, PathBuf) {
         if !self.state.clear {
             get_context()
                 .cache_get_or_create_file_with(self.key, self.state.file_cacher)
@@ -252,14 +255,14 @@ where
     }
 }
 
-pub trait CachedFileFnOnce<'file>: FnOnce(&'file mut AsyncFile) -> Self::Fut {
+pub trait CachedFileFnOnce<'a>: FnOnce(&'a mut File, &'a Path, bool) -> Self::Fut {
     type Fut: Future<Output = Result<(), Self::Error>>;
     type Error: Into<anyhow::Error> + 'static;
 }
 
-impl<'file, F, Fut, E> CachedFileFnOnce<'file> for F
+impl<'a, F, Fut, E> CachedFileFnOnce<'a> for F
 where
-    F: FnOnce(&'file mut AsyncFile) -> Fut,
+    F: FnOnce(&'a mut File, &'a Path, bool) -> Fut,
     Fut: Future<Output = Result<(), E>>,
     E: Into<anyhow::Error> + 'static,
 {
@@ -267,7 +270,7 @@ where
     type Error = E;
 }
 
-type FileBuilderFuture = Pin<Box<dyn Future<Output = anyhow::Result<(AsyncFile, AsyncPathBuf)>>>>;
+type FileBuilderFuture = Pin<Box<dyn Future<Output = anyhow::Result<(File, PathBuf)>>>>;
 
 impl IntoFuture for FileBuilder<Persisted> {
     type IntoFuture = FileBuilderFuture;
@@ -295,12 +298,14 @@ impl Serialize for Context {
     where
         S: serde::Serializer,
     {
-        task::block_on(async {
-            let mut context = serializer.serialize_map(Some(3))?;
-            context.serialize_entry("kv", &*self.kv.read().await)?;
-            context.serialize_entry("files", &*self.files.read().await)?;
-            context.serialize_entry("cache", &*self.cache.read().await)?;
-            context.end()
+        task::block_in_place(|| {
+            Handle::current().block_on(async {
+                let mut context = serializer.serialize_map(Some(3))?;
+                context.serialize_entry("kv", &*self.kv.read().await)?;
+                context.serialize_entry("files", &*self.files.read().await)?;
+                context.serialize_entry("cache", &*self.cache.read().await)?;
+                context.end()
+            })
         })
     }
 }

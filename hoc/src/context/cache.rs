@@ -1,13 +1,12 @@
 use std::{borrow::Cow, path::PathBuf};
 
-use async_std::{
-    fs::{self, File as AsyncFile, OpenOptions},
-    io,
-    path::PathBuf as AsyncPathBuf,
-};
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+use tokio::{
+    fs::{self, File, OpenOptions},
+    io,
+};
 
 use crate::{
     context::key::{self, Key},
@@ -38,7 +37,7 @@ impl Cache {
     }
 
     #[throws(Error)]
-    pub async fn get_or_create_file_with<K, F>(&mut self, key: K, f: F) -> (AsyncFile, AsyncPathBuf)
+    pub async fn get_or_create_file_with<K, F>(&mut self, key: K, f: F) -> (File, PathBuf)
     where
         K: Into<Cow<'static, Key>>,
         F: for<'a> CachedFileFnOnce<'a>,
@@ -52,7 +51,7 @@ impl Cache {
 
         if let Some(path) = self.map.get(&**key) {
             match file_options.open(path).await {
-                Ok(file) => return (file, AsyncPathBuf::from(path)),
+                Ok(file) => return (file, path.clone()),
                 Err(err) if err.kind() == io::ErrorKind::NotFound => (),
                 Err(err) => throw!(err),
             }
@@ -92,22 +91,18 @@ impl Cache {
             Err(err) => throw!(err),
         };
 
-        f(&mut file)
+        f(&mut file, &path, false)
             .await
             .map_err(|err| Error::Custom(err.into()))?;
 
         self.map
             .insert(key.into_owned().into_path_buf(), path.clone());
 
-        (file, AsyncPathBuf::from(path))
+        (file, path)
     }
 
     #[throws(Error)]
-    pub async fn create_or_overwrite_file_with<K, F>(
-        &mut self,
-        key: K,
-        f: F,
-    ) -> (AsyncFile, AsyncPathBuf)
+    pub async fn create_or_overwrite_file_with<K, F>(&mut self, key: K, f: F) -> (File, PathBuf)
     where
         K: Into<Cow<'static, Key>>,
         F: for<'a> CachedFileFnOnce<'a>,
@@ -130,14 +125,14 @@ impl Cache {
             .open(&path)
             .await?;
 
-        f(&mut file)
+        f(&mut file, &path, false)
             .await
             .map_err(|err| Error::Custom(err.into()))?;
 
         self.map
             .insert(key.into_owned().into_path_buf(), path.clone());
 
-        (file, AsyncPathBuf::from(path))
+        (file, path)
     }
 }
 

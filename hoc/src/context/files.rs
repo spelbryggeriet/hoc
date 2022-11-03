@@ -1,14 +1,14 @@
 use std::{
     borrow::Cow,
-    fs::{self, File},
+    fs::{self, File as BlockingFile},
     io,
     path::PathBuf,
 };
 
-use async_std::{fs::File as AsyncFile, path::PathBuf as AsyncPathBuf};
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+use tokio::fs::File;
 
 use crate::{
     context::key::{self, Key},
@@ -37,7 +37,7 @@ impl Files {
     }
 
     #[throws(Error)]
-    pub fn create_file<'key, K>(&mut self, key: K) -> (AsyncFile, AsyncPathBuf)
+    pub fn create_file<'key, K>(&mut self, key: K) -> (File, PathBuf)
     where
         K: Into<Cow<'key, Key>>,
     {
@@ -45,7 +45,7 @@ impl Files {
 
         debug!("Create file for key: {key}");
 
-        let mut file_options = File::options();
+        let mut file_options = BlockingFile::options();
         file_options.write(true).read(true);
 
         if let Some(path) = self.map.get(&**key) {
@@ -55,10 +55,7 @@ impl Files {
             let file_pair = select!("How do you want to resolve the key conflict?")
                 .with_option("Skip", || -> Result<_, Error> {
                     warn!("Skipping to create file for key {key}");
-                    Ok(Some((
-                        AsyncFile::from(file_options_clone.open(path)?),
-                        AsyncPathBuf::from(path),
-                    )))
+                    Ok(Some((File::from_std(file_options_clone.open(path)?), path)))
                 })
                 .with_option("Overwrite", || {
                     warn!("Overwriting existing file for key {key}");
@@ -67,8 +64,8 @@ impl Files {
                 })
                 .get()??;
 
-            if let Some(file_pair) = file_pair {
-                return file_pair;
+            if let Some((file, path)) = file_pair {
+                return (file, path.clone());
             }
         } else {
             file_options.create_new(true);
@@ -103,14 +100,11 @@ impl Files {
         self.map
             .insert(key.clone().into_owned().into_path_buf(), path);
 
-        (
-            AsyncFile::from(file),
-            AsyncPathBuf::from(key.into_owned().into_path_buf()),
-        )
+        (File::from_std(file), key.into_owned().into_path_buf())
     }
 
     #[throws(Error)]
-    pub fn get_file<'key, K>(&self, key: K) -> (AsyncFile, AsyncPathBuf)
+    pub fn get_file<'key, K>(&self, key: K) -> (File, PathBuf)
     where
         K: Into<Cow<'key, Key>>,
     {
@@ -118,7 +112,7 @@ impl Files {
 
         debug!("Get file for key: {key}");
 
-        let mut file_options = File::options();
+        let mut file_options = BlockingFile::options();
         file_options.write(true).read(true);
 
         if let Some(path) = self.map.get(&**key) {
@@ -132,7 +126,7 @@ impl Files {
                 Err(err) => throw!(err),
             };
 
-            return (AsyncFile::from(file), AsyncPathBuf::from(path));
+            return (File::from_std(file), PathBuf::from(path));
         }
 
         error!("File for key {key} does not exists");

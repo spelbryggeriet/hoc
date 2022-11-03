@@ -2,15 +2,15 @@ use std::{
     borrow::Cow,
     future::{Future, IntoFuture},
     pin::Pin,
+    process::Stdio,
 };
 
-use async_process::{Command, Stdio};
-use async_std::{
-    io::{self, prelude::BufReadExt, BufReader},
-    stream::StreamExt,
-};
-use futures::{join, AsyncRead};
 use thiserror::Error;
+use tokio::{
+    io::{self, AsyncBufReadExt, AsyncRead, BufReader},
+    join,
+    process::Command,
+};
 
 use crate::{prelude::*, prompt};
 
@@ -19,9 +19,7 @@ async fn read_lines(reader: impl AsyncRead + Unpin, print_line: impl Fn(&str)) -
     let mut lines = BufReader::new(reader).lines();
     let mut out = String::new();
 
-    while let Some(line) = lines.next().await {
-        let line = line?;
-
+    while let Some(line) = lines.next_line().await? {
         print_line(&line);
         if !out.is_empty() {
             out.push_str("\n");
@@ -96,7 +94,7 @@ impl RunBuilder {
         output.stdout = stdout?;
         output.stderr = stderr?;
 
-        let status = child.status().await?;
+        let status = child.wait().await?;
 
         output.code = if let Some(code) = status.code() {
             code
