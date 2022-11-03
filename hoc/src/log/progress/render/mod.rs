@@ -120,9 +120,11 @@ impl RenderThread {
                             is_paused_cvar.notify_one();
                         }
 
-                        let _ = wants_pause_cvar
-                            .wait_while(wants_pause_lock, |wants_pause| *wants_pause)
-                            .expect(EXPECT_THREAD_NOT_POSIONED);
+                        {
+                            let _lock = wants_pause_cvar
+                                .wait_while(wants_pause_lock, |wants_pause| *wants_pause)
+                                .expect(EXPECT_THREAD_NOT_POSIONED);
+                        }
 
                         {
                             let (is_paused_mutex, is_paused_cvar) = &*is_paused;
@@ -227,7 +229,7 @@ impl RenderThread {
         {
             let (is_paused_mutex, is_paused_cvar) = &*render_thread.is_paused;
             let is_paused_lock = is_paused_mutex.lock().expect(EXPECT_THREAD_NOT_POSIONED);
-            let _ = is_paused_cvar
+            let _lock = is_paused_cvar
                 .wait_while(is_paused_lock, |is_paused| !*is_paused)
                 .expect(EXPECT_THREAD_NOT_POSIONED);
         }
@@ -369,7 +371,7 @@ impl Drop for PauseLock {
         {
             let (is_paused_mutex, is_paused_cvar) = &*render_thread.is_paused;
             let is_paused_lock = is_paused_mutex.lock().expect(EXPECT_THREAD_NOT_POSIONED);
-            let _ = is_paused_cvar
+            let _lock = is_paused_cvar
                 .wait_while(is_paused_lock, |is_paused| *is_paused)
                 .expect(EXPECT_THREAD_NOT_POSIONED);
         }

@@ -43,11 +43,11 @@ impl Kv {
         // If key does not contain any wildcards, then it is a "leaf", i.e. we can fetch the value
         // directly.
         if !key.as_os_str().as_bytes().contains(&b'*') {
-            if let Some(item) = self.map.get(&**key) {
-                return item.clone();
-            } else {
-                throw!(key::Error::KeyDoesNotExist(key.into_owned()));
-            };
+            return self
+                .map
+                .get(&**key)
+                .cloned()
+                .ok_or_else(|| key::Error::KeyDoesNotExist(key.into_owned()))?;
         }
 
         let mut comps = key.components();
@@ -261,7 +261,7 @@ impl Kv {
     }
 
     #[throws(Error)]
-    pub fn put_array<K, V, I>(&mut self, key_prefix: K, array: I)
+    pub fn _put_array<K, V, I>(&mut self, key_prefix: K, array: I)
     where
         K: Into<PathBuf>,
         V: Into<Value>,
@@ -275,7 +275,7 @@ impl Kv {
     }
 
     #[throws(Error)]
-    pub fn put_map<K, V, Q, I>(&mut self, key_prefix: K, map: I)
+    pub fn _put_map<K, V, Q, I>(&mut self, key_prefix: K, map: I)
     where
         K: Into<PathBuf>,
         V: Into<Value>,
@@ -744,13 +744,13 @@ mod tests {
         kv.put_value(key!("nested/two/betsy/beta/token"), ttokens[1])?;
         kv.put_value(key!("nested/two/betsy/delta/token"), ttokens[2])?;
         kv.put_value(key!("nested/two/betsy/gamma/token"), ttokens[3])?;
-        kv.put_array("array/one", ttokens)?;
-        kv.put_array("array/two", rtokens.clone())?;
-        kv.put_map("map/one/adam/alpha", alpha)?;
-        kv.put_array("map/one/adam/beta", rtokens)?;
-        kv.put_map("map/one/betsy/alpha", alpha2)?;
-        kv.put_map("map/one/betsy/alpha/extra", extra)?;
-        kv.put_array("map/two", two)?;
+        kv._put_array("array/one", ttokens)?;
+        kv._put_array("array/two", rtokens.clone())?;
+        kv._put_map("map/one/adam/alpha", alpha)?;
+        kv._put_array("map/one/adam/beta", rtokens)?;
+        kv._put_map("map/one/betsy/alpha", alpha2)?;
+        kv._put_map("map/one/betsy/alpha/extra", extra)?;
+        kv._put_array("map/two", two)?;
         kv
     }
 

@@ -96,11 +96,10 @@ impl RunBuilder {
 
         let status = child.wait().await?;
 
-        output.code = if let Some(code) = status.code() {
-            code
-        } else {
+        let Some(code) = status.code() else {
             throw!(Error::Terminated)
         };
+        output.code = code;
 
         if status.success() {
             output

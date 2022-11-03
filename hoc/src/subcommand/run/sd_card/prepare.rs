@@ -27,8 +27,6 @@ pub async fn run() {
 
 #[throws(anyhow::Error)]
 async fn get_os_image(file: &mut File, path: &Path, retrying: bool) {
-    progress_scoped!("Retrieving OS image");
-
     download_os_image(file, retrying).await?;
     validate_os_image(path).await?;
     decompress_xz_file(file, path).await?;

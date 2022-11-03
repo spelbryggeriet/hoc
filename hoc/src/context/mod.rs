@@ -150,7 +150,7 @@ impl Context {
     pub async fn cache_get_or_create_file_with<K, F>(&self, key: K, f: F) -> (File, PathBuf)
     where
         K: Into<Cow<'static, Key>>,
-        F: for<'a> CachedFileFnOnce<'a>,
+        F: for<'a> CachedFileFn<'a>,
     {
         self.cache
             .write()
@@ -163,7 +163,7 @@ impl Context {
     pub async fn cache_create_or_overwrite_file_with<K, F>(&self, key: K, f: F) -> (File, PathBuf)
     where
         K: Into<Cow<'static, Key>>,
-        F: for<'a> CachedFileFnOnce<'a>,
+        F: for<'a> CachedFileFn<'a>,
     {
         self.cache
             .write()
@@ -220,7 +220,7 @@ impl FileBuilder<Persisted> {
 
     pub fn cached<F>(self, file_cacher: F) -> FileBuilder<Cached<F>>
     where
-        F: for<'a> CachedFileFnOnce<'a>,
+        F: for<'a> CachedFileFn<'a>,
     {
         FileBuilder {
             key: self.key,
@@ -234,7 +234,7 @@ impl FileBuilder<Persisted> {
 
 impl<F> FileBuilder<Cached<F>>
 where
-    F: for<'a> CachedFileFnOnce<'a>,
+    F: for<'a> CachedFileFn<'a>,
 {
     pub fn _clear_if_present(mut self) -> Self {
         self.state.clear = true;
@@ -255,14 +255,14 @@ where
     }
 }
 
-pub trait CachedFileFnOnce<'a>: FnOnce(&'a mut File, &'a Path, bool) -> Self::Fut {
+pub trait CachedFileFn<'a>: Fn(&'a mut File, &'a Path, bool) -> Self::Fut {
     type Fut: Future<Output = Result<(), Self::Error>>;
     type Error: Into<anyhow::Error> + 'static;
 }
 
-impl<'a, F, Fut, E> CachedFileFnOnce<'a> for F
+impl<'a, F, Fut, E> CachedFileFn<'a> for F
 where
-    F: FnOnce(&'a mut File, &'a Path, bool) -> Fut,
+    F: Fn(&'a mut File, &'a Path, bool) -> Fut,
     Fut: Future<Output = Result<(), E>>,
     E: Into<anyhow::Error> + 'static,
 {
@@ -283,7 +283,7 @@ impl IntoFuture for FileBuilder<Persisted> {
 
 impl<F> IntoFuture for FileBuilder<Cached<F>>
 where
-    F: for<'a> CachedFileFnOnce<'a> + 'static,
+    F: for<'a> CachedFileFn<'a> + 'static,
 {
     type IntoFuture = FileBuilderFuture;
     type Output = <FileBuilderFuture as Future>::Output;

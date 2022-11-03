@@ -149,11 +149,10 @@ where
                 | inquire::InquireError::OperationInterrupted),
             ) => throw!(err),
             Err(err) => {
-                if let Some(default) = &self.default {
-                    T::from_str(default).unwrap_or_else(|_| unreachable!())
-                } else {
+                let Some(default) = &self.default else {
                     throw!(err);
-                }
+                };
+                T::from_str(default).unwrap_or_else(|_| unreachable!())
             }
         }
     }
@@ -212,21 +211,12 @@ impl<'a, T> SelectBuilder<'a, T> {
             message: message.into(),
             options: Vec::with_capacity(1),
         }
-        .with_abort_option()
-    }
-
-    fn with_abort_option(mut self) -> Self {
-        self.options.push(SelectBuilderOption {
-            title: "Abort",
-            on_select: None,
-        });
-        self
     }
 
     pub fn with_option(mut self, title: &'static str, on_select: impl FnOnce() -> T + 'a) -> Self {
         self.options.push(SelectBuilderOption {
             title,
-            on_select: Some(Box::new(on_select)),
+            on_select: Box::new(on_select),
         });
         self
     }
@@ -241,16 +231,13 @@ impl<'a, T> SelectBuilder<'a, T> {
 
         info!("{} {}", self.message, option.title);
 
-        option
-            .on_select
-            .map(|f| f())
-            .ok_or(Error::Inquire(inquire::InquireError::OperationCanceled))?
+        (option.on_select)()
     }
 }
 
 struct SelectBuilderOption<'a, T> {
     title: &'static str,
-    on_select: Option<Box<dyn FnOnce() -> T + 'a>>,
+    on_select: Box<dyn FnOnce() -> T + 'a>,
 }
 
 impl<T> Display for SelectBuilderOption<'_, T> {
