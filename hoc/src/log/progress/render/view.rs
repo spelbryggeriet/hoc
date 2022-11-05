@@ -1,6 +1,8 @@
 use std::{
+    fmt::{self, Display, Formatter},
     io::{self, Write},
     iter,
+    ops::{Add, Sub},
 };
 
 use crossterm::{
@@ -16,13 +18,10 @@ fn render(
     content: &str,
     position: &mut Position,
     lines: &mut Vec<(Line, Vec<ColorSpan>)>,
-    height: &mut usize,
 ) {
     if content.is_empty() {
         return;
     }
-
-    extend_line_buffer(position, lines, height);
 
     let (line, color_spans) = &mut lines[position.row];
     let current_char_count = line.content.chars().count();
@@ -109,20 +108,43 @@ fn render(
     position.move_to_column(end_column);
 }
 
-fn extend_line_buffer(
-    position: &mut Position,
-    lines: &mut Vec<(Line, Vec<ColorSpan>)>,
-    height: &mut usize,
+fn assert_subview(
+    origin: Position,
+    parent_max_width: usize,
+    parent_max_height: Option<usize>,
+    subview_max_width: usize,
+    subview_max_height: Option<usize>,
 ) {
-    if position.row >= lines.len() {
-        lines.extend(iter::repeat(Default::default()).take(position.row - lines.len() + 1))
+    assert!(
+        origin.column < parent_max_width,
+        "origin {origin} must be within the width {parent_max_width} of the parent view",
+    );
+    assert!(
+        subview_max_width <= parent_max_width,
+        "max width {subview_max_width} of subview must be less or equal to the max width {parent_max_width} of the parent view",
+    );
+
+    if let Some(parent_max_height) = parent_max_height {
+        assert!(
+            origin.row < parent_max_height,
+            "origin {origin} must be within the height {parent_max_height} of the parent view",
+        );
+
+        let Some(subview_max_height) = subview_max_height else {
+            panic!("subview height must not be infinite if parent height is finite");
+        };
+
+        assert!(
+            subview_max_height < parent_max_height,
+            "max height {subview_max_height} of subview must be less or equal to the max height {parent_max_height} of the parent view"
+        );
     }
-    *height = (position.row + 1).max(*height);
 }
 
 pub trait View {
     fn render(&mut self, color: Option<Color>, content: &str);
-    fn set_max_height(&mut self, height: usize);
+    fn subview(&mut self, offset: Position, max_width: usize, max_height: Option<usize>)
+        -> Subview;
     fn max_height(&self) -> Option<usize>;
     fn max_width(&self) -> usize;
     fn position(&self) -> Position;
@@ -131,11 +153,11 @@ pub trait View {
 
 #[derive(Debug)]
 pub struct RootView {
+    pub position: Position,
     lines: Vec<(Line, Vec<ColorSpan>)>,
     height: usize,
     max_height: Option<usize>,
     max_width: usize,
-    pub position: Position,
 }
 
 impl RootView {
@@ -145,8 +167,12 @@ impl RootView {
             height: 0,
             max_height: None,
             max_width,
-            position: Position::new(),
+            position: Position::new(0, 0),
         }
+    }
+
+    pub fn set_max_height(&mut self, width: usize) {
+        self.max_height.replace(width);
     }
 
     pub fn set_infinite_height(&mut self) {
@@ -157,9 +183,18 @@ impl RootView {
         self.max_width = width;
     }
 
+    fn extend_line_buffer(&mut self) {
+        if self.position.row >= self.lines.len() {
+            self.lines.extend(
+                iter::repeat(Default::default()).take(self.position.row - self.lines.len() + 1),
+            )
+        }
+        self.height = (self.position.row + 1).max(self.height);
+    }
+
     #[throws(Error)]
     pub fn print(&mut self) -> usize {
-        extend_line_buffer(&mut self.position, &mut self.lines, &mut self.height);
+        self.extend_line_buffer();
 
         if self.height == 0 {
             return 0;
@@ -210,7 +245,7 @@ impl RootView {
             c.clear()
         });
         self.height = 0;
-        self.position = Position::new();
+        self.position = Position::new(0, 0);
 
         return print_height;
     }
@@ -218,17 +253,89 @@ impl RootView {
 
 impl View for RootView {
     fn render(&mut self, color: Option<Color>, content: &str) {
-        render(
-            color,
-            content,
-            &mut self.position,
-            &mut self.lines,
-            &mut self.height,
-        );
+        self.extend_line_buffer();
+        render(color, content, &mut self.position, &mut self.lines);
     }
 
-    fn set_max_height(&mut self, height: usize) {
-        self.max_height.replace(height);
+    fn subview(
+        &mut self,
+        offset: Position,
+        max_width: usize,
+        max_height: Option<usize>,
+    ) -> Subview {
+        assert_subview(
+            offset,
+            self.max_width,
+            self.max_height,
+            max_width,
+            max_height,
+        );
+        Subview::new(offset, max_width, max_height, &mut self.lines)
+    }
+
+    fn max_height(&self) -> Option<usize> {
+        self.max_height
+    }
+
+    fn max_width(&self) -> usize {
+        self.max_width
+    }
+
+    fn position(&self) -> Position {
+        self.position
+    }
+
+    fn position_mut(&mut self) -> &mut Position {
+        &mut self.position
+    }
+}
+
+pub struct Subview<'a> {
+    pub position: Position,
+    origin: Position,
+    lines: &'a mut Vec<(Line, Vec<ColorSpan>)>,
+    max_height: Option<usize>,
+    max_width: usize,
+}
+
+impl<'a> Subview<'a> {
+    fn new(
+        origin: Position,
+        max_width: usize,
+        max_height: Option<usize>,
+        lines: &'a mut Vec<(Line, Vec<ColorSpan>)>,
+    ) -> Self {
+        Self {
+            position: Position::new(0, 0),
+            origin,
+            lines,
+            max_height,
+            max_width,
+        }
+    }
+}
+
+impl View for Subview<'_> {
+    fn render(&mut self, color: Option<Color>, content: &str) {
+        let mut real_position = self.origin + self.position;
+        render(color, content, &mut real_position, self.lines);
+        self.position = real_position - self.origin;
+    }
+
+    fn subview(
+        &mut self,
+        offset: Position,
+        max_width: usize,
+        max_height: Option<usize>,
+    ) -> Subview {
+        assert_subview(
+            offset,
+            self.max_width,
+            self.max_height,
+            max_width,
+            max_height,
+        );
+        Subview::new(self.origin + offset, max_width, max_height, self.lines)
     }
 
     fn max_height(&self) -> Option<usize> {
@@ -277,8 +384,8 @@ pub struct Position {
 }
 
 impl Position {
-    fn new() -> Self {
-        Self { row: 0, column: 0 }
+    pub fn new(row: usize, column: usize) -> Self {
+        Self { row, column }
     }
 
     pub fn row(&self) -> usize {
@@ -289,12 +396,36 @@ impl Position {
         self.row += lines;
     }
 
-    pub fn move_up(&mut self, lines: usize) {
-        debug_assert!(self.row >= lines, "moving up beyond the zeroth line");
-        self.row = self.row.saturating_sub(lines);
-    }
-
     pub fn move_to_column(&mut self, column: usize) {
         self.column = column;
+    }
+}
+
+impl Display for Position {
+    #[throws(fmt::Error)]
+    fn fmt(&self, f: &mut Formatter) {
+        write!(f, "({},{})", self.row, self.column)?;
+    }
+}
+
+impl Add for Position {
+    type Output = Self;
+
+    fn add(self, rhs: Self) -> Self::Output {
+        Self {
+            row: self.row + rhs.row,
+            column: self.column + rhs.column,
+        }
+    }
+}
+
+impl Sub for Position {
+    type Output = Self;
+
+    fn sub(self, rhs: Self) -> Self::Output {
+        Self {
+            row: self.row - rhs.row,
+            column: self.column - rhs.column,
+        }
     }
 }

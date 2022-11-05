@@ -13,7 +13,7 @@ use log_facade::Level;
 use once_cell::sync::OnceCell;
 use spin_sleep::{SpinSleeper, SpinStrategy};
 
-use self::view::{RootView, View};
+use self::view::{Position, RootView, View};
 use super::{Log, ProgressLog, SimpleLog};
 use crate::{log::Error, prelude::*};
 
@@ -298,7 +298,7 @@ impl RenderThread {
             .unwrap_or(0);
 
         view.position.move_down(prepadding);
-        progress_log.render(view, 0, render_info.next_frame(), render_info.is_paused);
+        progress_log.render(view, render_info.next_frame(), render_info.is_paused);
 
         let print_height = view.print()?;
         if is_finished {
@@ -432,13 +432,7 @@ impl ProgressLog {
         }
     }
 
-    fn render(
-        &self,
-        view: &mut dyn View,
-        indentation: usize,
-        animation_frame: usize,
-        is_paused: bool,
-    ) {
+    fn render(&self, view: &mut dyn View, animation_frame: usize, is_paused: bool) {
         if view.max_height() == Some(0) {
             return;
         }
@@ -460,7 +454,6 @@ impl ProgressLog {
         };
 
         // Print indicator and progress message.
-        view.position_mut().move_to_column(2 * indentation);
         view.render(
             Some(color),
             &format!(
@@ -496,7 +489,7 @@ impl ProgressLog {
 
         if render_no_nested && is_paused && !is_finished {
             view.position_mut().move_down(1);
-            view.position_mut().move_to_column(2 * indentation);
+            view.position_mut().move_to_column(0);
             view.render(
                 Some(color),
                 &format!(
@@ -527,7 +520,7 @@ impl ProgressLog {
         let start_row = view.position().row() + 1;
         let render_prefix = |view: &mut dyn View| {
             view.position_mut().move_down(1);
-            view.position_mut().move_to_column(2 * indentation);
+            view.position_mut().move_to_column(0);
 
             let frame_offset = -2 * (view.position().row() - start_row) as isize;
 
@@ -555,40 +548,38 @@ impl ProgressLog {
                     let nested_height = progress_log.render_height(is_paused);
 
                     if inner_max_height.is_none() {
+                        let start_row = view.position().row() + 1;
+
                         // Print prefix.
                         for _ in 0..nested_height {
                             render_prefix(view);
                         }
 
-                        // Reset cursor position.
-                        if nested_height >= 1 {
-                            view.position_mut().move_up(nested_height - 1);
-                        }
-
-                        progress_log.render(view, indentation + 1, animation_frame, is_paused);
-                    } else if let (Some(previous_max_height), Some(inner_max_height)) = (
-                        view.max_height(),
-                        inner_max_height.filter(|h| remaining_height - nested_height < *h),
-                    ) {
+                        let mut subview =
+                            view.subview(Position::new(start_row, 2), view.max_width() - 2, None);
+                        progress_log.render(&mut subview, animation_frame, is_paused);
+                    } else if let Some(inner_max_height) =
+                        inner_max_height.filter(|h| remaining_height - nested_height < *h)
+                    {
                         let truncated_nested_height = if remaining_height > inner_max_height {
                             nested_height - (remaining_height - inner_max_height)
                         } else {
                             nested_height
                         };
 
+                        let start_row = view.position().row() + 1;
+
                         // Print prefix.
                         for _ in 0..truncated_nested_height {
                             render_prefix(view);
                         }
 
-                        // Reset cursor position.
-                        if truncated_nested_height >= 1 {
-                            view.position_mut().move_up(truncated_nested_height - 1);
-                        }
-
-                        view.set_max_height(truncated_nested_height);
-                        progress_log.render(view, indentation + 1, animation_frame, is_paused);
-                        view.set_max_height(previous_max_height);
+                        let mut subview = view.subview(
+                            Position::new(start_row, 2),
+                            view.max_width() - 2,
+                            Some(truncated_nested_height),
+                        );
+                        progress_log.render(&mut subview, animation_frame, is_paused);
                     }
 
                     remaining_height -= nested_height;
@@ -598,7 +589,7 @@ impl ProgressLog {
 
         // Print prefix of elapsed line.
         view.position_mut().move_down(1);
-        view.position_mut().move_to_column(2 * indentation);
+        view.position_mut().move_to_column(0);
         view.render(
             Some(color),
             &animation::box_turn_swell(
