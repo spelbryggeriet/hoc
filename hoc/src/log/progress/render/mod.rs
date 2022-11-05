@@ -13,7 +13,7 @@ use log_facade::Level;
 use once_cell::sync::OnceCell;
 use spin_sleep::{SpinSleeper, SpinStrategy};
 
-use self::view::View;
+use self::view::{RootView, View};
 use super::{Log, ProgressLog, SimpleLog};
 use crate::{log::Error, prelude::*};
 
@@ -63,7 +63,7 @@ impl RenderThread {
             let mut previous_height = None;
 
             let (terminal_cols, _) = terminal::size()?;
-            let mut view = View::new(terminal_cols as usize);
+            let mut view = RootView::new(terminal_cols as usize);
 
             while !wants_terminate.load(Ordering::SeqCst) {
                 let (terminal_cols, terminal_rows) = terminal::size()?;
@@ -259,7 +259,7 @@ impl RenderThread {
 
     #[throws(Error)]
     fn print_simple_log(
-        view: &mut View,
+        view: &mut RootView,
         render_info: &mut RenderInfo,
         simple_log: &SimpleLog,
         previous_height: &mut Option<usize>,
@@ -280,7 +280,7 @@ impl RenderThread {
 
     #[throws(Error)]
     fn print_progress_log(
-        view: &mut View,
+        view: &mut RootView,
         render_info: &mut RenderInfo,
         progress_log: &ProgressLog,
         previous_height: &mut Option<usize>,
@@ -393,12 +393,12 @@ impl SimpleLog {
         1
     }
 
-    fn render(&self, view: &mut View) {
+    fn render(&self, view: &mut dyn View) {
         let (level_icon, color) = self.get_icon_and_color();
 
         view.render(
             Some(color),
-            format!("{level} {msg}", level = level_icon, msg = self.message),
+            &format!("{level} {msg}", level = level_icon, msg = self.message),
         );
     }
 
@@ -432,7 +432,13 @@ impl ProgressLog {
         }
     }
 
-    fn render(&self, view: &mut View, indentation: usize, animation_frame: usize, is_paused: bool) {
+    fn render(
+        &self,
+        view: &mut dyn View,
+        indentation: usize,
+        animation_frame: usize,
+        is_paused: bool,
+    ) {
         if view.max_height() == Some(0) {
             return;
         }
@@ -454,22 +460,22 @@ impl ProgressLog {
         };
 
         // Print indicator and progress message.
-        view.position.move_to_column(2 * indentation);
+        view.position_mut().move_to_column(2 * indentation);
         view.render(
             Some(color),
-            format!(
+            &format!(
                 "{spin} {msg}",
                 spin = animation::braille_spin(animation_state),
                 msg = self.message,
             ),
         );
 
-        let render_elapsed = |view: &mut View| match run_time {
+        let render_elapsed = |view: &mut dyn View| match run_time {
             None => {
                 let elapsed = self.start_time.elapsed();
                 view.render(
                     Some(color),
-                    format!(
+                    &format!(
                         "{secs}.{millis}s",
                         secs = elapsed.as_secs(),
                         millis = elapsed.as_millis() % 1000 / 100,
@@ -478,7 +484,7 @@ impl ProgressLog {
             }
             Some(elapsed) => view.render(
                 Some(color),
-                format!(
+                &format!(
                     "{secs}.{millis:03}s",
                     secs = elapsed.as_secs(),
                     millis = elapsed.as_millis() % 1000,
@@ -489,11 +495,11 @@ impl ProgressLog {
         let render_no_nested = self.logs.is_empty() || view.max_height() == Some(1);
 
         if render_no_nested && is_paused && !is_finished {
-            view.position.move_down(1);
-            view.position.move_to_column(2 * indentation);
+            view.position_mut().move_down(1);
+            view.position_mut().move_to_column(2 * indentation);
             view.render(
                 Some(color),
-                format!(
+                &format!(
                     "{turn}{line}",
                     turn = animation::box_turn_swell(animation_state),
                     line = "╶".repeat(view.max_width() - 1)
@@ -506,7 +512,7 @@ impl ProgressLog {
         if render_no_nested {
             view.render(
                 Some(color),
-                format!(" {sep} ", sep = animation::separator_swell(animation_state)),
+                &format!(" {sep} ", sep = animation::separator_swell(animation_state)),
             );
             render_elapsed(view);
 
@@ -518,16 +524,16 @@ impl ProgressLog {
         // Keep track of the number of render lines required for the submessages.
         let mut remaining_height = self.render_height(is_paused) - 2;
 
-        let start_row = view.position.row() + 1;
-        let render_prefix = |view: &mut View| {
-            view.position.move_down(1);
-            view.position.move_to_column(2 * indentation);
+        let start_row = view.position().row() + 1;
+        let render_prefix = |view: &mut dyn View| {
+            view.position_mut().move_down(1);
+            view.position_mut().move_to_column(2 * indentation);
 
-            let frame_offset = -2 * (view.position.row() - start_row) as isize;
+            let frame_offset = -2 * (view.position().row() - start_row) as isize;
 
             view.render(
                 Some(color),
-                format!(
+                &format!(
                     "{side} ",
                     side = animation::box_side_swell(animation_state.frame_offset(frame_offset)),
                 ),
@@ -556,7 +562,7 @@ impl ProgressLog {
 
                         // Reset cursor position.
                         if nested_height >= 1 {
-                            view.position.move_up(nested_height - 1);
+                            view.position_mut().move_up(nested_height - 1);
                         }
 
                         progress_log.render(view, indentation + 1, animation_frame, is_paused);
@@ -577,7 +583,7 @@ impl ProgressLog {
 
                         // Reset cursor position.
                         if truncated_nested_height >= 1 {
-                            view.position.move_up(truncated_nested_height - 1);
+                            view.position_mut().move_up(truncated_nested_height - 1);
                         }
 
                         view.set_max_height(truncated_nested_height);
@@ -591,26 +597,26 @@ impl ProgressLog {
         }
 
         // Print prefix of elapsed line.
-        view.position.move_down(1);
-        view.position.move_to_column(2 * indentation);
+        view.position_mut().move_down(1);
+        view.position_mut().move_to_column(2 * indentation);
         view.render(
             Some(color),
-            animation::box_turn_swell(
-                animation_state.frame_offset(-2 * (view.position.row() - start_row) as isize),
+            &animation::box_turn_swell(
+                animation_state.frame_offset(-2 * (view.position().row() - start_row) as isize),
             )
             .to_string(),
         );
 
         if is_paused && !is_finished {
             // Print dashed line to indicate paused, incomplete progress.
-            view.render(Some(color), "╶".repeat(view.max_width() - 1));
+            view.render(Some(color), &"╶".repeat(view.max_width() - 1));
         } else {
             // Print elapsed time.
             view.render(
                 Some(color),
-                animation::box_end_swell(
+                &animation::box_end_swell(
                     animation_state
-                        .frame_offset(-2 * (view.position.row() - start_row + 1) as isize),
+                        .frame_offset(-2 * (view.position().row() - start_row + 1) as isize),
                 )
                 .to_string(),
             );
