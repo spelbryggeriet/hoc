@@ -547,37 +547,29 @@ impl ProgressLog {
                 Log::Progress(progress_log) => {
                     let nested_height = progress_log.render_height(is_paused);
 
-                    if inner_max_height.is_none() {
-                        let start_row = view.position().row() + 1;
-
-                        // Print prefix.
-                        for _ in 0..nested_height {
-                            render_prefix(view);
+                    let max_height = match inner_max_height {
+                        None => None,
+                        Some(inner_max_height)
+                            if remaining_height - nested_height < inner_max_height =>
+                        {
+                            Some(nested_height - remaining_height.saturating_sub(inner_max_height))
                         }
+                        _ => Some(0),
+                    };
 
-                        let mut subview =
-                            view.subview(Position::new(start_row, 2), view.max_width() - 2, None);
-                        progress_log.render(&mut subview, animation_frame, is_paused);
-                    } else if let Some(inner_max_height) =
-                        inner_max_height.filter(|h| remaining_height - nested_height < *h)
-                    {
-                        let truncated_nested_height =
-                            nested_height - remaining_height.saturating_sub(inner_max_height);
+                    let start_row = view.position().row() + 1;
 
-                        let start_row = view.position().row() + 1;
-
-                        // Print prefix.
-                        for _ in 0..truncated_nested_height {
-                            render_prefix(view);
-                        }
-
-                        let mut subview = view.subview(
-                            Position::new(start_row, 2),
-                            view.max_width() - 2,
-                            Some(truncated_nested_height),
-                        );
-                        progress_log.render(&mut subview, animation_frame, is_paused);
+                    // Print prefix.
+                    for _ in 0..max_height.unwrap_or(nested_height) {
+                        render_prefix(view);
                     }
+
+                    let mut subview = view.subview(
+                        Position::new(start_row, 2),
+                        view.max_width() - 2,
+                        max_height,
+                    );
+                    progress_log.render(&mut subview, animation_frame, is_paused);
 
                     remaining_height -= nested_height;
                 }
