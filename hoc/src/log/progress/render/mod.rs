@@ -561,11 +561,8 @@ impl ProgressLog {
                     } else if let Some(inner_max_height) =
                         inner_max_height.filter(|h| remaining_height - nested_height < *h)
                     {
-                        let truncated_nested_height = if remaining_height > inner_max_height {
-                            nested_height - (remaining_height - inner_max_height)
-                        } else {
-                            nested_height
-                        };
+                        let truncated_nested_height =
+                            nested_height - remaining_height.saturating_sub(inner_max_height);
 
                         let start_row = view.position().row() + 1;
 
