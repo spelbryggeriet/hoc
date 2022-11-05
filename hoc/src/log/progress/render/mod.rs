@@ -1,7 +1,5 @@
 use std::{
-    fmt::Write as FmtWrite,
-    io::{self, Stdout, Write as IoWrite},
-    panic,
+    io, panic,
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc, Condvar, Mutex,
@@ -10,15 +8,17 @@ use std::{
     time::Duration,
 };
 
-use crossterm::{cursor, execute, queue, style, terminal, ExecutableCommand, QueueableCommand};
+use crossterm::{cursor, execute, style, terminal, ExecutableCommand};
 use log_facade::Level;
 use once_cell::sync::OnceCell;
 use spin_sleep::{SpinSleeper, SpinStrategy};
 
+use self::view::View;
 use super::{Log, ProgressLog, SimpleLog};
 use crate::{log::Error, prelude::*};
 
 mod animation;
+mod view;
 
 pub fn init() {
     RenderThread::get_or_init();
@@ -59,12 +59,17 @@ impl RenderThread {
 
             let spin_sleeper =
                 SpinSleeper::new(100_000).with_spin_strategy(SpinStrategy::YieldThread);
-            let mut render_config = RenderConfig::new();
+            let mut render_info = RenderInfo::new();
+            let mut previous_height = None;
+
+            let (terminal_cols, _) = terminal::size()?;
+            let mut view = View::new(terminal_cols as usize);
 
             while !wants_terminate.load(Ordering::SeqCst) {
                 let (terminal_cols, terminal_rows) = terminal::size()?;
-                render_config.width = terminal_cols as usize;
-                render_config.max_running_progress_height = terminal_rows as usize;
+
+                view.set_max_width(terminal_cols as usize);
+                view.set_infinite_height();
 
                 {
                     let (wants_pause_mutex, wants_pause_cvar) = &*wants_pause;
@@ -73,42 +78,41 @@ impl RenderThread {
 
                     if *wants_pause_lock {
                         {
-                            let mut stdout = io::stdout();
-                            render_config.is_paused = true;
+                            render_info.is_paused = true;
 
                             let mut logs = super::Progress::get_or_init().logs();
                             while let Some(log) = logs.pop_front() {
                                 match log {
                                     Log::Simple(ref simple_log) => {
                                         Self::print_simple_log(
-                                            &mut stdout,
-                                            &mut render_config,
+                                            &mut view,
+                                            &mut render_info,
                                             simple_log,
-                                        )?;
-                                    }
-
-                                    Log::Progress(ref progress_log)
-                                        if progress_log.is_finished() =>
-                                    {
-                                        Self::print_finished_progress_log(
-                                            &mut stdout,
-                                            &mut render_config,
-                                            progress_log,
+                                            &mut previous_height,
                                         )?;
                                     }
 
                                     Log::Progress(ref progress_log) => {
-                                        Self::print_running_progress_log(
-                                            &mut stdout,
-                                            &mut render_config,
+                                        let is_running = !progress_log.is_finished();
+                                        if is_running {
+                                            view.set_max_height(terminal_rows as usize);
+                                        }
+
+                                        Self::print_progress_log(
+                                            &mut view,
+                                            &mut render_info,
                                             progress_log,
+                                            &mut previous_height,
                                         )?;
-                                        logs.push_front(log);
-                                        break;
+
+                                        if is_running {
+                                            logs.push_front(log);
+                                            break;
+                                        }
                                     }
                                 }
 
-                                stdout.flush()?;
+                                view.set_infinite_height();
                             }
                         }
 
@@ -136,38 +140,44 @@ impl RenderThread {
                     }
 
                     {
-                        let mut stdout = io::stdout();
-                        render_config.is_paused = false;
+                        view.set_max_width(terminal_cols as usize);
+                        view.set_infinite_height();
+
+                        render_info.is_paused = false;
 
                         let mut logs = super::Progress::get_or_init().logs();
                         while let Some(log) = logs.pop_front() {
                             match log {
                                 Log::Simple(ref simple_log) => {
                                     Self::print_simple_log(
-                                        &mut stdout,
-                                        &mut render_config,
+                                        &mut view,
+                                        &mut render_info,
                                         simple_log,
+                                        &mut previous_height,
                                     )?;
                                 }
-                                Log::Progress(ref progress_log) if !progress_log.is_finished() => {
-                                    Self::print_running_progress_log(
-                                        &mut stdout,
-                                        &mut render_config,
-                                        progress_log,
-                                    )?;
-                                    logs.push_front(log);
-                                    break;
-                                }
+
                                 Log::Progress(ref progress_log) => {
-                                    Self::print_finished_progress_log(
-                                        &mut stdout,
-                                        &mut render_config,
+                                    let is_running = !progress_log.is_finished();
+                                    if is_running {
+                                        view.set_max_height(terminal_rows as usize);
+                                    }
+
+                                    Self::print_progress_log(
+                                        &mut view,
+                                        &mut render_info,
                                         progress_log,
+                                        &mut previous_height,
                                     )?;
+
+                                    if is_running {
+                                        logs.push_front(log);
+                                        break;
+                                    }
                                 }
                             }
 
-                            stdout.flush()?;
+                            view.set_infinite_height();
                         }
                     }
                 }
@@ -175,29 +185,37 @@ impl RenderThread {
                 spin_sleeper.sleep(Duration::new(0, 16_666_667));
             }
 
-            let mut stdout = io::stdout();
+            let (terminal_cols, _) = terminal::size()?;
+
+            view.set_max_width(terminal_cols as usize);
+            view.set_infinite_height();
 
             let mut logs = super::Progress::get_or_init().logs();
             for log in logs.drain(..) {
                 match log {
                     Log::Simple(ref simple_log) => {
-                        Self::print_simple_log(&mut stdout, &mut render_config, simple_log)?;
+                        Self::print_simple_log(
+                            &mut view,
+                            &mut render_info,
+                            simple_log,
+                            &mut previous_height,
+                        )?;
                     }
 
                     Log::Progress(ref progress_log) if progress_log.is_finished() => {
-                        Self::print_finished_progress_log(
-                            &mut stdout,
-                            &mut render_config,
+                        Self::print_progress_log(
+                            &mut view,
+                            &mut render_info,
                             progress_log,
+                            &mut previous_height,
                         )?;
                     }
 
                     _ => panic!("no progress should be running after cancellation"),
                 }
-                stdout.flush()?;
             }
 
-            execute!(stdout, style::Print("\n"), cursor::Show)?;
+            execute!(io::stdout(), style::Print("\n"), cursor::Show)?;
 
             Ok(())
         });
@@ -241,106 +259,69 @@ impl RenderThread {
 
     #[throws(Error)]
     fn print_simple_log(
-        stdout: &mut Stdout,
-        render_config: &mut RenderConfig,
+        view: &mut View,
+        render_info: &mut RenderInfo,
         simple_log: &SimpleLog,
+        previous_height: &mut Option<usize>,
     ) {
-        // Print leading new line from previous progress log.
-        if render_config.has_printed_finished_progress {
-            println!()
-        }
+        let prepadding = render_info
+            .previous_log_type
+            .map(|t| if t != LogType::Simple { 2 } else { 1 })
+            .unwrap_or(0);
 
-        // Print new line from previous log.
-        if render_config.has_printed_non_running_progress_atleast_once {
-            stdout.queue(style::Print("\n"))?;
-        }
+        view.position.move_down(prepadding);
+        simple_log.render(view);
+        view.print()?;
 
-        // Render the simple log.
-        simple_log.render(stdout)?;
-        render_config.rendered_running_progress_height = 0;
-
-        render_config.has_printed_non_running_progress_atleast_once = true;
-        render_config.has_printed_finished_progress = false;
+        // Clear previous height, so this rendering does not get cleared.
+        previous_height.take();
+        render_info.previous_log_type.replace(LogType::Simple);
     }
 
     #[throws(Error)]
-    fn print_running_progress_log(
-        stdout: &mut Stdout,
-        render_config: &mut RenderConfig,
+    fn print_progress_log(
+        view: &mut View,
+        render_info: &mut RenderInfo,
         progress_log: &ProgressLog,
+        previous_height: &mut Option<usize>,
     ) {
-        let starting_height = if render_config.has_printed_non_running_progress_atleast_once {
-            println!();
-            1
+        let is_finished = progress_log.is_finished();
+
+        // Reset terminal cursor to the appropriate line determined by the previous height. The
+        // previous height should only have been set if a running progress rendered last in the
+        // last rendering pass.
+        Self::reset_cursor(*previous_height)?;
+
+        let prepadding = render_info
+            .previous_log_type
+            .map(|t| if t != LogType::RunningProgress { 2 } else { 0 })
+            .unwrap_or(0);
+
+        view.position.move_down(prepadding);
+        progress_log.render(view, 0, render_info.next_frame(), render_info.is_paused);
+
+        let print_height = view.print()?;
+        if is_finished {
+            // Clear previous height, so this printing does not get cleared.
+            previous_height.take();
+            render_info
+                .previous_log_type
+                .replace(LogType::FinishedProgress);
         } else {
-            0
-        };
-
-        Self::clear_previous_running_progress_log(stdout, render_config)?;
-        render_config.rendered_running_progress_height = starting_height;
-
-        render_config.rendered_running_progress_height += progress_log.render(
-            stdout,
-            render_config.max_running_progress_height,
-            render_config.width,
-            0,
-            render_config.next_frame(),
-            render_config.is_paused,
-        )?;
-
-        if render_config.is_paused {
-            println!();
-            render_config.rendered_running_progress_height += 1;
+            previous_height.replace(print_height - prepadding);
+            render_info
+                .previous_log_type
+                .replace(LogType::RunningProgress);
         }
-
-        render_config.has_printed_finished_progress = false;
     }
 
     #[throws(Error)]
-    fn print_finished_progress_log(
-        stdout: &mut Stdout,
-        render_config: &mut RenderConfig,
-        progress_log: &ProgressLog,
-    ) {
-        Self::clear_previous_running_progress_log(stdout, render_config)?;
-
-        // Render finished progress to a vector of strings.
-        let mut buffer = StringBuffer::new();
-        let rendered_height = progress_log.render_to_strings(&mut buffer, 0)?;
-
-        // Print rendered strings.
-        if render_config.has_printed_non_running_progress_atleast_once {
-            println!();
+    fn reset_cursor(previous_height: Option<usize>) {
+        if let Some(height) = previous_height.filter(|h| *h > 1) {
+            io::stdout().execute(cursor::MoveToPreviousLine(height as u16 - 1))?;
+        } else {
+            io::stdout().execute(cursor::MoveToColumn(0))?;
         }
-
-        for (i, line) in buffer.0.iter().enumerate().take(rendered_height) {
-            stdout.queue(style::Print(line))?;
-            stdout.queue(terminal::Clear(terminal::ClearType::UntilNewLine))?;
-
-            if i + 1 < rendered_height {
-                stdout.queue(style::Print("\n"))?;
-            }
-        }
-
-        render_config.has_printed_non_running_progress_atleast_once = true;
-        render_config.has_printed_finished_progress = true;
-    }
-
-    #[throws(Error)]
-    fn clear_previous_running_progress_log(stdout: &mut Stdout, render_config: &mut RenderConfig) {
-        if render_config.rendered_running_progress_height >= 1 {
-            if render_config.rendered_running_progress_height >= 2 {
-                stdout.queue(cursor::MoveToPreviousLine(
-                    render_config.rendered_running_progress_height as u16 - 1,
-                ))?;
-            }
-
-            stdout.queue(cursor::MoveToColumn(0))?;
-        } else if render_config.has_printed_non_running_progress_atleast_once {
-            stdout.queue(style::Print("\n"))?;
-        }
-
-        render_config.rendered_running_progress_height = 0;
     }
 
     #[throws(Error)]
@@ -378,49 +359,18 @@ impl Drop for PauseLock {
     }
 }
 
-struct StringBuffer(Vec<String>);
-
-impl StringBuffer {
-    fn new() -> Self {
-        Self(Vec::new())
-    }
-
-    fn get_line_mut(&mut self, index: usize) -> &mut String {
-        debug_assert!(
-            self.0.len() >= index,
-            "buffer length was `{}`, but it was expected to have a length of at least `{}`",
-            self.0.len(),
-            index + 1
-        );
-
-        if self.0.len() < index + 1 {
-            self.0.push(String::new());
-        }
-
-        &mut self.0[index]
-    }
-}
-
-struct RenderConfig {
-    has_printed_non_running_progress_atleast_once: bool,
-    has_printed_finished_progress: bool,
+struct RenderInfo {
     is_paused: bool,
-    rendered_running_progress_height: usize,
-    max_running_progress_height: usize,
-    width: usize,
     frames: animation::Frames,
+    previous_log_type: Option<LogType>,
 }
 
-impl RenderConfig {
+impl RenderInfo {
     fn new() -> Self {
         Self {
-            has_printed_non_running_progress_atleast_once: false,
-            has_printed_finished_progress: false,
             is_paused: false,
-            rendered_running_progress_height: 0,
-            max_running_progress_height: 0,
-            width: 0,
             frames: animation::Frames::new(),
+            previous_log_type: None,
         }
     }
 
@@ -431,42 +381,25 @@ impl RenderConfig {
     }
 }
 
+#[derive(Copy, Clone, PartialEq, Eq)]
+enum LogType {
+    Simple,
+    RunningProgress,
+    FinishedProgress,
+}
+
 impl SimpleLog {
     fn render_height(&self) -> usize {
         1
     }
 
-    #[throws(Error)]
-    fn render(&self, stdout: &mut Stdout) -> usize {
+    fn render(&self, view: &mut View) {
         let (level_icon, color) = self.get_icon_and_color();
 
-        execute!(
-            stdout,
-            style::SetForegroundColor(color),
-            style::Print(level_icon),
-            style::Print(" "),
-            style::Print(&self.message),
-            style::SetForegroundColor(style::Color::Reset),
-            terminal::Clear(terminal::ClearType::UntilNewLine),
-        )?;
-
-        1
-    }
-
-    #[throws(Error)]
-    fn render_to_strings(&self, buffer: &mut StringBuffer, index: usize) -> usize {
-        let (level_icon, color) = self.get_icon_and_color();
-
-        let line = buffer.get_line_mut(index);
-        write!(
-            line,
-            "{color}{level_icon} {message}{reset}",
-            color = style::SetForegroundColor(color),
-            message = self.message,
-            reset = style::SetForegroundColor(style::Color::Reset),
-        )?;
-
-        1
+        view.render(
+            Some(color),
+            format!("{level} {msg}", level = level_icon, msg = self.message),
+        );
     }
 
     fn get_icon_and_color(&self) -> (char, style::Color) {
@@ -499,18 +432,9 @@ impl ProgressLog {
         }
     }
 
-    #[throws(Error)]
-    fn render(
-        &self,
-        stdout: &mut Stdout,
-        max_height: usize,
-        width: usize,
-        indentation: usize,
-        animation_frame: usize,
-        is_paused: bool,
-    ) -> usize {
-        if max_height == 0 {
-            return 0;
+    fn render(&self, view: &mut View, indentation: usize, animation_frame: usize, is_paused: bool) {
+        if view.max_height() == Some(0) {
+            return;
         }
 
         let run_time = *self.run_time.lock().expect(EXPECT_THREAD_NOT_POSIONED);
@@ -530,121 +454,116 @@ impl ProgressLog {
         };
 
         // Print indicator and progress message.
-        queue!(
-            stdout,
-            cursor::MoveToColumn(2 * indentation as u16),
-            style::SetForegroundColor(color),
-            style::Print(animation::braille_spin(animation_state)),
-            style::Print(" "),
-            style::Print(&self.message),
-        )?;
+        view.position.move_to_column(2 * indentation);
+        view.render(
+            Some(color),
+            format!(
+                "{spin} {msg}",
+                spin = animation::braille_spin(animation_state),
+                msg = self.message,
+            ),
+        );
 
-        let queue_elapsed = |s: &mut Stdout| -> Result<(), Error> {
-            match run_time {
-                None => {
-                    let elapsed = self.start_time.elapsed();
-                    queue!(
-                        s,
-                        style::Print(elapsed.as_secs()),
-                        style::Print("."),
-                        style::Print(elapsed.as_millis() % 1000 / 100),
-                        style::Print("s"),
-                    )?;
-                }
-                Some(elapsed) => queue!(
-                    s,
-                    style::Print(elapsed.as_secs()),
-                    style::Print("."),
-                    style::Print(format!("{:03}", elapsed.as_millis() % 1000)),
-                    style::Print("s"),
-                )?,
+        let render_elapsed = |view: &mut View| match run_time {
+            None => {
+                let elapsed = self.start_time.elapsed();
+                view.render(
+                    Some(color),
+                    format!(
+                        "{secs}.{millis}s",
+                        secs = elapsed.as_secs(),
+                        millis = elapsed.as_millis() % 1000 / 100,
+                    ),
+                );
             }
-            Ok(())
+            Some(elapsed) => view.render(
+                Some(color),
+                format!(
+                    "{secs}.{millis:03}s",
+                    secs = elapsed.as_secs(),
+                    millis = elapsed.as_millis() % 1000,
+                ),
+            ),
         };
 
-        let render_single_line = self.logs.is_empty() || max_height == 1;
+        let render_no_nested = self.logs.is_empty() || view.max_height() == Some(1);
 
-        // If there are no submessages, or if the max height is 1, print the elapsed time on the same
-        // row as the progress message.
-        let render_height = if render_single_line {
-            if is_paused && !is_finished {
-                queue!(
-                    stdout,
-                    style::Print("\n"),
-                    cursor::MoveToColumn(2 * indentation as u16),
-                    style::SetForegroundColor(color),
-                    style::Print(animation::box_turn_swell(animation_state)),
-                    style::Print("╶".repeat(width - 1)),
-                )?;
-                Some(2)
-            } else {
-                queue!(
-                    stdout,
-                    style::Print(" "),
-                    style::Print(animation::separator_swell(animation_state)),
-                    style::Print(" "),
-                )?;
-                queue_elapsed(stdout)?;
-                Some(1)
-            }
-        } else {
-            None
-        };
+        if render_no_nested && is_paused && !is_finished {
+            view.position.move_down(1);
+            view.position.move_to_column(2 * indentation);
+            view.render(
+                Some(color),
+                format!(
+                    "{turn}{line}",
+                    turn = animation::box_turn_swell(animation_state),
+                    line = "╶".repeat(view.max_width() - 1)
+                ),
+            );
 
-        // Clear the rest of the line in case there is residues left from previous frame.
-        queue!(
-            stdout,
-            style::SetForegroundColor(style::Color::Reset),
-            terminal::Clear(terminal::ClearType::UntilNewLine),
-        )?;
-
-        if let Some(render_height) = render_height {
-            return render_height;
+            return;
         }
 
+        if render_no_nested {
+            view.render(
+                Some(color),
+                format!(" {sep} ", sep = animation::separator_swell(animation_state)),
+            );
+            render_elapsed(view);
+
+            return;
+        };
+
         // Reserve two rows for the header and the footer.
-        let inner_max_height = max_height - 2;
+        let inner_max_height = view.max_height().map(|h| h - 2);
         // Keep track of the number of render lines required for the submessages.
         let mut remaining_height = self.render_height(is_paused) - 2;
 
-        // Keep track of an offset for animation frames.
-        let mut rendered_logs_height = 0;
+        let start_row = view.position.row() + 1;
+        let render_prefix = |view: &mut View| {
+            view.position.move_down(1);
+            view.position.move_to_column(2 * indentation);
 
-        let queue_prefix = |s: &mut Stdout, frame_offset: usize| -> Result<(), Error> {
-            queue!(
-                s,
-                style::Print("\n"),
-                cursor::MoveToColumn(2 * indentation as u16),
-                style::SetForegroundColor(color),
-                style::Print(animation::box_side_swell(
-                    animation_state.frame_offset(-2 * frame_offset as isize)
-                )),
-                style::Print(" "),
-                style::SetForegroundColor(style::Color::Reset),
-            )?;
-            Ok(())
+            let frame_offset = -2 * (view.position.row() - start_row) as isize;
+
+            view.render(
+                Some(color),
+                format!(
+                    "{side} ",
+                    side = animation::box_side_swell(animation_state.frame_offset(frame_offset)),
+                ),
+            );
         };
 
         for log in self.logs.iter() {
-            rendered_logs_height += match log {
+            match log {
                 Log::Simple(simple_log) => {
-                    let rendered_lines = if remaining_height - 1 < inner_max_height {
-                        queue_prefix(stdout, rendered_logs_height)?;
-
-                        simple_log.render(stdout)?
-                    } else {
-                        0
-                    };
+                    if inner_max_height.is_none() || Some(remaining_height - 1) < inner_max_height {
+                        render_prefix(view);
+                        simple_log.render(view);
+                    }
 
                     remaining_height -= 1;
-
-                    rendered_lines
                 }
 
                 Log::Progress(progress_log) => {
                     let nested_height = progress_log.render_height(is_paused);
 
-                    let rendered_height = if remaining_height - nested_height < inner_max_height {
+                    if inner_max_height.is_none() {
+                        // Print prefix.
+                        for _ in 0..nested_height {
+                            render_prefix(view);
+                        }
+
+                        // Reset cursor position.
+                        if nested_height >= 1 {
+                            view.position.move_up(nested_height - 1);
+                        }
+
+                        progress_log.render(view, indentation + 1, animation_frame, is_paused);
+                    } else if let (Some(previous_max_height), Some(inner_max_height)) = (
+                        view.max_height(),
+                        inner_max_height.filter(|h| remaining_height - nested_height < *h),
+                    ) {
                         let truncated_nested_height = if remaining_height > inner_max_height {
                             nested_height - (remaining_height - inner_max_height)
                         } else {
@@ -652,163 +571,50 @@ impl ProgressLog {
                         };
 
                         // Print prefix.
-                        for i in 0..truncated_nested_height {
-                            queue_prefix(stdout, rendered_logs_height + i)?;
+                        for _ in 0..truncated_nested_height {
+                            render_prefix(view);
                         }
 
                         // Reset cursor position.
-                        if truncated_nested_height >= 2 {
-                            stdout.queue(cursor::MoveToPreviousLine(
-                                truncated_nested_height as u16 - 1,
-                            ))?;
+                        if truncated_nested_height >= 1 {
+                            view.position.move_up(truncated_nested_height - 1);
                         }
-                        stdout.queue(cursor::MoveToColumn(0))?;
 
-                        progress_log.render(
-                            stdout,
-                            truncated_nested_height,
-                            width.saturating_sub(2),
-                            indentation + 1,
-                            animation_frame,
-                            is_paused,
-                        )?
-                    } else {
-                        0
-                    };
+                        view.set_max_height(truncated_nested_height);
+                        progress_log.render(view, indentation + 1, animation_frame, is_paused);
+                        view.set_max_height(previous_max_height);
+                    }
 
                     remaining_height -= nested_height;
-
-                    rendered_height
                 }
             };
         }
 
         // Print prefix of elapsed line.
-        queue!(
-            stdout,
-            style::Print("\n"),
-            cursor::MoveToColumn(2 * indentation as u16),
-            style::SetForegroundColor(color),
-            style::Print(animation::box_turn_swell(
-                animation_state.frame_offset(-2 * rendered_logs_height as isize)
-            ))
-        )?;
+        view.position.move_down(1);
+        view.position.move_to_column(2 * indentation);
+        view.render(
+            Some(color),
+            animation::box_turn_swell(
+                animation_state.frame_offset(-2 * (view.position.row() - start_row) as isize),
+            )
+            .to_string(),
+        );
 
         if is_paused && !is_finished {
             // Print dashed line to indicate paused, incomplete progress.
-            stdout.queue(style::Print("╶".repeat(width - 1)))?;
+            view.render(Some(color), "╶".repeat(view.max_width() - 1));
         } else {
             // Print elapsed time.
-            stdout.queue(style::Print(animation::box_end_swell(
-                animation_state.frame_offset(-2 * (rendered_logs_height as isize + 1)),
-            )))?;
-            queue_elapsed(stdout)?;
+            view.render(
+                Some(color),
+                animation::box_end_swell(
+                    animation_state
+                        .frame_offset(-2 * (view.position.row() - start_row + 1) as isize),
+                )
+                .to_string(),
+            );
+            render_elapsed(view);
         }
-
-        // Reset color and clear rest of line.
-        queue!(
-            stdout,
-            style::SetForegroundColor(style::Color::Reset),
-            terminal::Clear(terminal::ClearType::UntilNewLine),
-        )?;
-
-        2 + rendered_logs_height
-    }
-
-    #[throws(Error)]
-    fn render_to_strings(&self, buffer: &mut StringBuffer, start_index: usize) -> usize {
-        let elapsed = self
-            .run_time
-            .lock()
-            .expect(EXPECT_THREAD_NOT_POSIONED)
-            .expect("expected progress to be finished");
-
-        let mut index = start_index;
-
-        // Render indicator and progress message.
-        let header_line = buffer.get_line_mut(index);
-
-        write!(
-            header_line,
-            "{color}{icon} {message}",
-            color = style::SetForegroundColor(Self::FINISHED_COLOR),
-            icon = animation::braille_spin(animation::State::Finished),
-            message = self.message,
-        )?;
-
-        let render_single_line = self.logs.is_empty();
-
-        // If there are no submessages, render the elapsed time on the same row as the progress
-        // message.
-        if render_single_line {
-            write!(
-                header_line,
-                " {separator} {secs}.{millis:03}s",
-                separator = animation::separator_swell(animation::State::Finished),
-                secs = elapsed.as_secs(),
-                millis = elapsed.as_millis() % 1000
-            )?;
-        }
-
-        write!(
-            header_line,
-            "{reset}",
-            reset = style::SetForegroundColor(style::Color::Reset),
-        )?;
-        index += 1;
-
-        // Render submessages, if any.
-        if !render_single_line {
-            // Helper function to render prefixes for submessages.
-            #[throws(Error)]
-            fn render_prefix(buffer: &mut StringBuffer, index: usize) {
-                let line = buffer.get_line_mut(index);
-
-                write!(
-                    line,
-                    "{color}{side} {reset}",
-                    color = style::SetForegroundColor(ProgressLog::FINISHED_COLOR),
-                    reset = style::SetForegroundColor(style::Color::Reset),
-                    side = animation::box_side_swell(animation::State::Finished),
-                )?;
-            }
-
-            for log in self.logs.iter() {
-                index += match log {
-                    Log::Simple(simple_log) => {
-                        // Render prefix.
-                        render_prefix(buffer, index)?;
-
-                        simple_log.render_to_strings(buffer, index)?
-                    }
-
-                    Log::Progress(progress) => {
-                        // Render prefix.
-                        let height = progress.render_height(false);
-                        for k in 0..height {
-                            render_prefix(buffer, index + k)?;
-                        }
-
-                        progress.render_to_strings(buffer, index)?
-                    }
-                };
-            }
-
-            // Render elapsed time.
-            let line = buffer.get_line_mut(index);
-            write!(
-                line,
-                "{color}{turn}{end}{secs}.{millis:03}s{reset}",
-                color = style::SetForegroundColor(Self::FINISHED_COLOR),
-                end = animation::box_end_swell(animation::State::Finished),
-                millis = elapsed.as_millis() % 1000,
-                reset = style::SetForegroundColor(style::Color::Reset),
-                secs = elapsed.as_secs(),
-                turn = animation::box_turn_swell(animation::State::Finished),
-            )?;
-            index += 1;
-        }
-
-        index - start_index
     }
 }

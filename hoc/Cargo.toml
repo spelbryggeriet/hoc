@@ -24,7 +24,6 @@ serde = { version = "1.0.144", features = ["derive"] }
 serde_json = "1.0.86"
 serde_yaml = "0.9.13"
 spin_sleep = "1.1.1"
-strum = { version = "0.24.1", features = ["derive"] }
 thiserror = "1.0.35"
 tokio = { version = "1.21.2", features = ["fs", "io-util", "process", "macros", "rt-multi-thread"] }
 xz2 = { version = "0.1.7", features = ["tokio"] }

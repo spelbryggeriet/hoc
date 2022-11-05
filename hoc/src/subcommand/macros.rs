@@ -13,7 +13,6 @@ macro_rules! get_arg {
             let __value = prompt!("{__message}")
                 $(.with_default(default::$action::$field()))?
                 .get()?;
-            info!("{__message}: {__value}");
             __value
         };
 
@@ -29,7 +28,6 @@ macro_rules! get_secret_arg {
             __inner
         } else {
             let __value = prompt!("{__message}").as_secret().get()?;
-            info!("{__message}: {__value}");
             __value
         };
 
