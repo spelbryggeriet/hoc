@@ -74,11 +74,11 @@ fn render(
                 if color_span.start != start_column {
                     // The current color span is truncated to end where the new one begins.
                     color_span.end = start_column;
-                    false
+                    true
                 } else {
                     // The current color span is truncated to zero width, so we remove it
                     // instead.
-                    true
+                    false
                 }
             } else if end_within_bounds {
                 // The new color span ends before or at the current color span, so we can stop
@@ -87,15 +87,18 @@ fn render(
                 if color_span.end != end_column {
                     // The current color span is truncated to start where the new one ends.
                     color_span.start = end_column;
-                    false
+                    true
                 } else {
                     // The current color span is truncated to zero width, so we remove it
                     // instead.
-                    true
+                    false
                 }
-            } else {
+            } else if color_span.start > start_column && color_span.end < end_column {
                 // The current color span is strictly within the bounds of the new one, so it
                 // is effectively overwritten.
+                false
+            } else {
+                // The two spans do not overlap so we do nothing.
                 true
             }
         });
@@ -103,6 +106,16 @@ fn render(
         color_spans.push(new_color_span);
         color_spans.extend(color_span_to_add);
         color_spans.sort_by_key(|color_span| color_span.start);
+
+        for i in (1..color_spans.len()).rev() {
+            let left = color_spans[i - 1];
+            let right = color_spans[i];
+
+            if left.end == right.start && left.color == right.color {
+                color_spans[i - 1].end = right.end;
+                color_spans.remove(i);
+            }
+        }
     }
 
     position.move_to_column(end_column);
