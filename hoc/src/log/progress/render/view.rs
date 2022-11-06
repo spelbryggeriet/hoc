@@ -13,8 +13,17 @@ use crossterm::{
 
 use crate::{log::Error, prelude::*};
 
-fn render(
-    content: &str,
+macro_rules! render {
+    ($view:ident => $($content:expr),+, $(,)?) => {{
+        $(
+        #[allow(unused_parens)]
+        $crate::log::progress::render::view::View::render($view, &($content));
+        )+
+    }};
+}
+
+fn render_view(
+    content: &dyn Content,
     color: Option<Color>,
     position: &mut Position,
     lines: &mut Vec<(Line, Vec<ColorSpan>)>,
@@ -23,35 +32,48 @@ fn render(
         return;
     }
 
-    let (line, color_spans) = &mut lines[position.row];
+    let (line, current_color_spans) = &mut lines[position.row];
     let current_char_count = line.content.chars().count();
     let start_column = position.column;
-    let end_column = start_column + content.chars().count();
-    if end_column > current_char_count {
+    if start_column > current_char_count {
         line.content
-            .extend(iter::repeat(' ').take(end_column - current_char_count))
+            .extend(iter::repeat(' ').take(start_column - current_char_count))
     }
 
-    let chars = line.content.chars().map(char::len_utf8);
-    let start_index: usize = chars.clone().take(start_column).sum();
-    let end_index: usize = chars.take(end_column).sum();
+    let start_index: usize = line
+        .content
+        .chars()
+        .map(char::len_utf8)
+        .take(start_column)
+        .sum();
 
-    line.content.replace_range(start_index..end_index, content);
+    let char_count = content
+        .replace_with(&mut |s| {
+            line.content.replace_range(
+                start_index..(start_index + s.len()).min(line.content.len()),
+                s,
+            );
+            ContentSize(s.chars().count())
+        })
+        .0;
+    let end_column = start_column + char_count;
+
     line.empty = false;
 
-    if let Some(new_color) = color {
-        let new_color_span = ColorSpan {
+    if let Some(color) = color {
+        let color_span = ColorSpan {
             start: start_column,
             end: end_column,
-            color: new_color,
+            color,
         };
 
         let mut color_span_to_add = None;
-        color_spans.retain_mut(|color_span| {
+        current_color_spans.retain_mut(|current_color_span| {
             // Perform a bounds check on the new line against this current color span.
             let start_within_bounds =
-                start_column >= color_span.start && start_column < color_span.end;
-            let end_within_bounds = end_column > color_span.start && end_column <= color_span.end;
+                start_column >= current_color_span.start && start_column < current_color_span.end;
+            let end_within_bounds =
+                end_column > current_color_span.start && end_column <= current_color_span.end;
 
             if start_within_bounds {
                 // The new color span starts at or after the current color span.
@@ -60,20 +82,20 @@ fn render(
                     // Here it also ends before or at the current color span, so we don't have
                     // to continue further.
 
-                    if color_span.end != end_column {
+                    if current_color_span.end != end_column {
                         // An additional color span needs to be created, since the new one is
                         // strictly within the bounds of the current one. This one starts at the
                         // end of the new one.
                         color_span_to_add.replace(ColorSpan {
                             start: end_column,
-                            ..*color_span
+                            ..*current_color_span
                         });
                     }
                 }
 
-                if color_span.start != start_column {
+                if current_color_span.start != start_column {
                     // The current color span is truncated to end where the new one begins.
-                    color_span.end = start_column;
+                    current_color_span.end = start_column;
                     true
                 } else {
                     // The current color span is truncated to zero width, so we remove it
@@ -84,16 +106,17 @@ fn render(
                 // The new color span ends before or at the current color span, so we can stop
                 // here.
 
-                if color_span.end != end_column {
+                if current_color_span.end != end_column {
                     // The current color span is truncated to start where the new one ends.
-                    color_span.start = end_column;
+                    current_color_span.start = end_column;
                     true
                 } else {
                     // The current color span is truncated to zero width, so we remove it
                     // instead.
                     false
                 }
-            } else if color_span.start > start_column && color_span.end < end_column {
+            } else if current_color_span.start > start_column && current_color_span.end < end_column
+            {
                 // The current color span is strictly within the bounds of the new one, so it
                 // is effectively overwritten.
                 false
@@ -103,17 +126,17 @@ fn render(
             }
         });
 
-        color_spans.push(new_color_span);
-        color_spans.extend(color_span_to_add);
-        color_spans.sort_by_key(|color_span| color_span.start);
+        current_color_spans.push(color_span);
+        current_color_spans.extend(color_span_to_add);
+        current_color_spans.sort_by_key(|color_span| color_span.start);
 
-        for i in (1..color_spans.len()).rev() {
-            let left = color_spans[i - 1];
-            let right = color_spans[i];
+        for i in (1..current_color_spans.len()).rev() {
+            let left = current_color_spans[i - 1];
+            let right = current_color_spans[i];
 
             if left.end == right.start && left.color == right.color {
-                color_spans[i - 1].end = right.end;
-                color_spans.remove(i);
+                current_color_spans[i - 1].end = right.end;
+                current_color_spans.remove(i);
             }
         }
     }
@@ -157,7 +180,7 @@ fn assert_subview(
 pub trait View {
     fn set_color(&mut self, color: Color);
     fn clear_color(&mut self);
-    fn render(&mut self, content: &str);
+    fn render(&mut self, content: &dyn Content);
     fn subview(&mut self, offset: Position, max_width: usize, max_height: Option<usize>)
         -> Subview;
     fn max_height(&self) -> Option<usize>;
@@ -165,6 +188,71 @@ pub trait View {
     fn position(&self) -> Position;
     fn position_mut(&mut self) -> &mut Position;
 }
+
+pub trait Content {
+    fn is_empty(&self) -> bool;
+    fn replace_with(&self, replacer: &mut dyn FnMut(&str) -> ContentSize) -> ContentSize;
+}
+
+impl Content for char {
+    fn is_empty(&self) -> bool {
+        false
+    }
+
+    fn replace_with(&self, replacer: &mut dyn FnMut(&str) -> ContentSize) -> ContentSize {
+        let mut char_bytes = [0; 4];
+        let encoded = self.encode_utf8(&mut char_bytes);
+        replacer(encoded)
+    }
+}
+
+impl Content for &str {
+    fn is_empty(&self) -> bool {
+        str::is_empty(self)
+    }
+
+    fn replace_with(&self, replacer: &mut dyn FnMut(&str) -> ContentSize) -> ContentSize {
+        replacer(self)
+    }
+}
+
+impl Content for String {
+    fn is_empty(&self) -> bool {
+        str::is_empty(self)
+    }
+
+    fn replace_with(&self, replacer: &mut dyn FnMut(&str) -> ContentSize) -> ContentSize {
+        replacer(self)
+    }
+}
+
+macro_rules! impl_int_content {
+    ($ty:ty) => {
+        impl Content for $ty {
+            fn is_empty(&self) -> bool {
+                false
+            }
+
+            fn replace_with(&self, replacer: &mut dyn FnMut(&str) -> ContentSize) -> ContentSize {
+                let s = self.to_string();
+                replacer(&s)
+            }
+        }
+    };
+}
+
+impl_int_content!(u8);
+impl_int_content!(u16);
+impl_int_content!(u32);
+impl_int_content!(u64);
+impl_int_content!(u128);
+impl_int_content!(i8);
+impl_int_content!(i16);
+impl_int_content!(i32);
+impl_int_content!(i64);
+impl_int_content!(i128);
+
+pub struct ContentSize(usize);
 
 #[derive(Debug)]
 pub struct RootView {
@@ -277,9 +365,9 @@ impl View for RootView {
         self.color.take();
     }
 
-    fn render(&mut self, content: &str) {
+    fn render(&mut self, content: &dyn Content) {
         self.extend_line_buffer();
-        render(content, self.color, &mut self.position, &mut self.lines);
+        render_view(content, self.color, &mut self.position, &mut self.lines);
     }
 
     fn subview(
@@ -351,9 +439,9 @@ impl View for Subview<'_> {
         self.color.take();
     }
 
-    fn render(&mut self, content: &str) {
+    fn render(&mut self, content: &dyn Content) {
         let mut real_position = self.origin + self.position;
-        render(content, self.color, &mut real_position, self.lines);
+        render_view(content, self.color, &mut real_position, self.lines);
         self.position = real_position - self.origin;
     }
 

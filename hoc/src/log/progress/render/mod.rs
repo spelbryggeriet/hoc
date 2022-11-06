@@ -18,6 +18,7 @@ use super::{Log, ProgressLog, SimpleLog};
 use crate::{log::Error, prelude::*};
 
 mod animation;
+#[macro_use]
 mod view;
 
 pub fn init() {
@@ -434,7 +435,7 @@ impl ProgressLog {
         }
     }
 
-    fn render(&self, view: &mut dyn View, animation_frame: usize, is_paused: bool) {
+    fn render(&self, view: &mut impl View, animation_frame: usize, is_paused: bool) {
         if view.max_height() == Some(0) {
             return;
         }
@@ -457,26 +458,28 @@ impl ProgressLog {
 
         // Print indicator and progress message.
         view.set_color(color);
-        view.render(&format!(
-            "{spin} {msg}",
-            spin = animation::braille_spin(animation_state),
-            msg = self.message,
-        ));
+        view.render(&animation::braille_spin(animation_state));
+        view.render(&" ");
+        view.render(&self.message);
 
-        let render_elapsed = |view: &mut dyn View| match run_time {
+        let render_elapsed = |view: &mut _| match run_time {
             None => {
                 let elapsed = self.start_time.elapsed();
-                view.render(&format!(
-                    "{secs}.{millis}s",
-                    secs = elapsed.as_secs(),
-                    millis = elapsed.as_millis() % 1000 / 100,
-                ));
+                render!(view =>
+                    elapsed.as_secs(),
+                    ".",
+                    elapsed.as_millis() % 1000 / 100,
+                    "s",
+                );
             }
-            Some(elapsed) => view.render(&format!(
-                "{secs}.{millis:03}s",
-                secs = elapsed.as_secs(),
-                millis = elapsed.as_millis() % 1000,
-            )),
+            Some(elapsed) => {
+                render!(view =>
+                    elapsed.as_secs(),
+                    ".",
+                    format!("{:03}", elapsed.as_millis() % 1000),
+                    "s",
+                );
+            }
         };
 
         let render_no_nested = self.logs.is_empty() || view.max_height() == Some(1);
@@ -484,21 +487,21 @@ impl ProgressLog {
         if render_no_nested && is_paused && !is_finished {
             view.position_mut().move_down(1);
             view.position_mut().move_to_column(0);
-            view.render(&format!(
-                "{turn}{line}",
-                turn = animation::box_turn_swell(animation_state),
-                line = "╶".repeat(view.max_width() - 1)
-            ));
+            render!(view =>
+                animation::box_turn_swell(animation_state),
+                "╶".repeat(view.max_width() - 1),
+            );
             view.clear_color();
 
             return;
         }
 
         if render_no_nested {
-            view.render(&format!(
-                " {sep} ",
-                sep = animation::separator_swell(animation_state)
-            ));
+            render!(view =>
+                " ",
+                animation::separator_swell(animation_state),
+                " ",
+            );
             render_elapsed(view);
             view.clear_color();
 
@@ -511,16 +514,16 @@ impl ProgressLog {
         let mut remaining_height = self.render_height(is_paused) - 2;
 
         let start_row = view.position().row() + 1;
-        let render_prefix = |view: &mut dyn View| {
-            view.position_mut().move_down(1);
-            view.position_mut().move_to_column(0);
+        let render_prefix = |view: &mut _| {
+            View::position_mut(view).move_down(1);
+            View::position_mut(view).move_to_column(0);
 
-            let frame_offset = -2 * (view.position().row() - start_row) as isize;
+            let frame_offset = -2 * (View::position(view).row() - start_row) as isize;
 
-            view.render(&format!(
-                "{side} ",
-                side = animation::box_side_swell(animation_state.frame_offset(frame_offset)),
-            ));
+            render!(view =>
+                animation::box_side_swell(animation_state.frame_offset(frame_offset)),
+                " ",
+            );
         };
 
         for log in self.logs.iter() {
@@ -572,24 +575,24 @@ impl ProgressLog {
         view.set_color(color);
         view.position_mut().move_down(1);
         view.position_mut().move_to_column(0);
-        view.render(
-            &animation::box_turn_swell(
+        render!(view =>
+            animation::box_turn_swell(
                 animation_state.frame_offset(-2 * (view.position().row() - start_row) as isize),
-            )
-            .to_string(),
+            ),
         );
 
         if is_paused && !is_finished {
             // Print dashed line to indicate paused, incomplete progress.
-            view.render(&"╶".repeat(view.max_width() - 1));
+            render!(view =>
+                "╶".repeat(view.max_width() - 1),
+            );
         } else {
             // Print elapsed time.
-            view.render(
-                &animation::box_end_swell(
+            render!(view =>
+                animation::box_end_swell(
                     animation_state
                         .frame_offset(-2 * (view.position().row() - start_row + 1) as isize),
-                )
-                .to_string(),
+                ),
             );
             render_elapsed(view);
         }
