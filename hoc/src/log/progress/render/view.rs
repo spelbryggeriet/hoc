@@ -25,16 +25,16 @@ macro_rules! render {
 fn render_view(
     content: &dyn Content,
     color: Option<Color>,
-    position: &mut Position,
+    cursor: &mut Position,
     lines: &mut Vec<(Line, Vec<ColorSpan>)>,
 ) {
     if content.is_empty() {
         return;
     }
 
-    let (line, current_color_spans) = &mut lines[position.row];
+    let (line, current_color_spans) = &mut lines[cursor.row];
     let current_char_count = line.content.chars().count();
-    let start_column = position.column;
+    let start_column = cursor.column;
     if start_column > current_char_count {
         line.content
             .extend(iter::repeat(' ').take(start_column - current_char_count))
@@ -141,7 +141,7 @@ fn render_view(
         }
     }
 
-    position.move_to_column(end_column);
+    cursor.move_to_column(end_column);
 }
 
 fn assert_subview(
@@ -185,8 +185,8 @@ pub trait View {
         -> Subview;
     fn max_height(&self) -> Option<usize>;
     fn max_width(&self) -> usize;
-    fn position(&self) -> Position;
-    fn position_mut(&mut self) -> &mut Position;
+    fn cursor(&self) -> Position;
+    fn cursor_mut(&mut self) -> &mut Position;
 }
 
 pub trait Content {
@@ -256,7 +256,7 @@ pub struct ContentSize(usize);
 
 #[derive(Debug)]
 pub struct RootView {
-    pub position: Position,
+    pub cursor: Position,
     color: Option<Color>,
     lines: Vec<(Line, Vec<ColorSpan>)>,
     height: usize,
@@ -267,7 +267,7 @@ pub struct RootView {
 impl RootView {
     pub fn new(max_width: usize) -> Self {
         Self {
-            position: Position::new(0, 0),
+            cursor: Position::new(0, 0),
             color: None,
             lines: Vec::new(),
             height: 0,
@@ -289,12 +289,12 @@ impl RootView {
     }
 
     fn extend_line_buffer(&mut self) {
-        if self.position.row >= self.lines.len() {
+        if self.cursor.row >= self.lines.len() {
             self.lines.extend(
-                iter::repeat(Default::default()).take(self.position.row - self.lines.len() + 1),
+                iter::repeat(Default::default()).take(self.cursor.row - self.lines.len() + 1),
             )
         }
-        self.height = (self.position.row + 1).max(self.height);
+        self.height = (self.cursor.row + 1).max(self.height);
     }
 
     #[throws(Error)]
@@ -350,7 +350,7 @@ impl RootView {
             c.clear()
         });
         self.height = 0;
-        self.position = Position::new(0, 0);
+        self.cursor = Position::new(0, 0);
 
         return print_height;
     }
@@ -367,7 +367,7 @@ impl View for RootView {
 
     fn render(&mut self, content: &dyn Content) {
         self.extend_line_buffer();
-        render_view(content, self.color, &mut self.position, &mut self.lines);
+        render_view(content, self.color, &mut self.cursor, &mut self.lines);
     }
 
     fn subview(
@@ -394,17 +394,17 @@ impl View for RootView {
         self.max_width
     }
 
-    fn position(&self) -> Position {
-        self.position
+    fn cursor(&self) -> Position {
+        self.cursor
     }
 
-    fn position_mut(&mut self) -> &mut Position {
-        &mut self.position
+    fn cursor_mut(&mut self) -> &mut Position {
+        &mut self.cursor
     }
 }
 
 pub struct Subview<'a> {
-    pub position: Position,
+    pub cursor: Position,
     origin: Position,
     color: Option<Color>,
     lines: &'a mut Vec<(Line, Vec<ColorSpan>)>,
@@ -420,7 +420,7 @@ impl<'a> Subview<'a> {
         lines: &'a mut Vec<(Line, Vec<ColorSpan>)>,
     ) -> Self {
         Self {
-            position: Position::new(0, 0),
+            cursor: Position::new(0, 0),
             origin,
             color: None,
             lines,
@@ -440,9 +440,9 @@ impl View for Subview<'_> {
     }
 
     fn render(&mut self, content: &dyn Content) {
-        let mut real_position = self.origin + self.position;
-        render_view(content, self.color, &mut real_position, self.lines);
-        self.position = real_position - self.origin;
+        let mut real_cursor = self.origin + self.cursor;
+        render_view(content, self.color, &mut real_cursor, self.lines);
+        self.cursor = real_cursor - self.origin;
     }
 
     fn subview(
@@ -469,12 +469,12 @@ impl View for Subview<'_> {
         self.max_width
     }
 
-    fn position(&self) -> Position {
-        self.position
+    fn cursor(&self) -> Position {
+        self.cursor
     }
 
-    fn position_mut(&mut self) -> &mut Position {
-        &mut self.position
+    fn cursor_mut(&mut self) -> &mut Position {
+        &mut self.cursor
     }
 }
 

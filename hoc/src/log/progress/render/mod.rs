@@ -270,7 +270,7 @@ impl RenderThread {
             .map(|t| if t != LogType::Simple { 2 } else { 1 })
             .unwrap_or(0);
 
-        view.position.move_down(prepadding);
+        view.cursor.move_down(prepadding);
         simple_log.render(view);
         view.print()?;
 
@@ -298,7 +298,7 @@ impl RenderThread {
             .map(|t| if t != LogType::RunningProgress { 2 } else { 0 })
             .unwrap_or(0);
 
-        view.position.move_down(prepadding);
+        view.cursor.move_down(prepadding);
         progress_log.render(view, render_info.next_frame(), render_info.is_paused);
 
         let print_height = view.print()?;
@@ -485,8 +485,8 @@ impl ProgressLog {
         let render_no_nested = self.logs.is_empty() || view.max_height() == Some(1);
 
         if render_no_nested && is_paused && !is_finished {
-            view.position_mut().move_down(1);
-            view.position_mut().move_to_column(0);
+            view.cursor_mut().move_down(1);
+            view.cursor_mut().move_to_column(0);
             render!(view =>
                 animation::box_turn_swell(animation_state),
                 "╶".repeat(view.max_width() - 1),
@@ -513,12 +513,12 @@ impl ProgressLog {
         // Keep track of the number of render lines required for the submessages.
         let mut remaining_height = self.render_height(is_paused) - 2;
 
-        let start_row = view.position().row() + 1;
+        let start_row = view.cursor().row() + 1;
         let render_prefix = |view: &mut _| {
-            View::position_mut(view).move_down(1);
-            View::position_mut(view).move_to_column(0);
+            View::cursor_mut(view).move_down(1);
+            View::cursor_mut(view).move_to_column(0);
 
-            let frame_offset = -2 * (View::position(view).row() - start_row) as isize;
+            let frame_offset = -2 * (View::cursor(view).row() - start_row) as isize;
 
             render!(view =>
                 animation::box_side_swell(animation_state.frame_offset(frame_offset)),
@@ -552,7 +552,7 @@ impl ProgressLog {
                         _ => Some(0),
                     };
 
-                    let start_row = view.position().row() + 1;
+                    let start_row = view.cursor().row() + 1;
 
                     // Print prefix.
                     for _ in 0..max_height.unwrap_or(nested_height) {
@@ -573,11 +573,11 @@ impl ProgressLog {
 
         // Print prefix of elapsed line.
         view.set_color(color);
-        view.position_mut().move_down(1);
-        view.position_mut().move_to_column(0);
+        view.cursor_mut().move_down(1);
+        view.cursor_mut().move_to_column(0);
         render!(view =>
             animation::box_turn_swell(
-                animation_state.frame_offset(-2 * (view.position().row() - start_row) as isize),
+                animation_state.frame_offset(-2 * (view.cursor().row() - start_row) as isize),
             ),
         );
 
@@ -591,7 +591,7 @@ impl ProgressLog {
             render!(view =>
                 animation::box_end_swell(
                     animation_state
-                        .frame_offset(-2 * (view.position().row() - start_row + 1) as isize),
+                        .frame_offset(-2 * (view.cursor().row() - start_row + 1) as isize),
                 ),
             );
             render_elapsed(view);
