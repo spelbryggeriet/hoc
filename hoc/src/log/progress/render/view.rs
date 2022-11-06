@@ -14,8 +14,8 @@ use crossterm::{
 use crate::{log::Error, prelude::*};
 
 fn render(
-    color: Option<Color>,
     content: &str,
+    color: Option<Color>,
     position: &mut Position,
     lines: &mut Vec<(Line, Vec<ColorSpan>)>,
 ) {
@@ -155,7 +155,9 @@ fn assert_subview(
 }
 
 pub trait View {
-    fn render(&mut self, color: Option<Color>, content: &str);
+    fn set_color(&mut self, color: Color);
+    fn clear_color(&mut self);
+    fn render(&mut self, content: &str);
     fn subview(&mut self, offset: Position, max_width: usize, max_height: Option<usize>)
         -> Subview;
     fn max_height(&self) -> Option<usize>;
@@ -167,6 +169,7 @@ pub trait View {
 #[derive(Debug)]
 pub struct RootView {
     pub position: Position,
+    color: Option<Color>,
     lines: Vec<(Line, Vec<ColorSpan>)>,
     height: usize,
     max_height: Option<usize>,
@@ -176,11 +179,12 @@ pub struct RootView {
 impl RootView {
     pub fn new(max_width: usize) -> Self {
         Self {
+            position: Position::new(0, 0),
+            color: None,
             lines: Vec::new(),
             height: 0,
             max_height: None,
             max_width,
-            position: Position::new(0, 0),
         }
     }
 
@@ -265,9 +269,17 @@ impl RootView {
 }
 
 impl View for RootView {
-    fn render(&mut self, color: Option<Color>, content: &str) {
+    fn set_color(&mut self, color: Color) {
+        self.color.replace(color);
+    }
+
+    fn clear_color(&mut self) {
+        self.color.take();
+    }
+
+    fn render(&mut self, content: &str) {
         self.extend_line_buffer();
-        render(color, content, &mut self.position, &mut self.lines);
+        render(content, self.color, &mut self.position, &mut self.lines);
     }
 
     fn subview(
@@ -306,6 +318,7 @@ impl View for RootView {
 pub struct Subview<'a> {
     pub position: Position,
     origin: Position,
+    color: Option<Color>,
     lines: &'a mut Vec<(Line, Vec<ColorSpan>)>,
     max_height: Option<usize>,
     max_width: usize,
@@ -321,6 +334,7 @@ impl<'a> Subview<'a> {
         Self {
             position: Position::new(0, 0),
             origin,
+            color: None,
             lines,
             max_height,
             max_width,
@@ -329,9 +343,17 @@ impl<'a> Subview<'a> {
 }
 
 impl View for Subview<'_> {
-    fn render(&mut self, color: Option<Color>, content: &str) {
+    fn set_color(&mut self, color: Color) {
+        self.color.replace(color);
+    }
+
+    fn clear_color(&mut self) {
+        self.color.take();
+    }
+
+    fn render(&mut self, content: &str) {
         let mut real_position = self.origin + self.position;
-        render(color, content, &mut real_position, self.lines);
+        render(content, self.color, &mut real_position, self.lines);
         self.position = real_position - self.origin;
     }
 

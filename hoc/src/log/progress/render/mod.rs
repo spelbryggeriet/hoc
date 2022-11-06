@@ -396,10 +396,12 @@ impl SimpleLog {
     fn render(&self, view: &mut dyn View) {
         let (level_icon, color) = self.get_icon_and_color();
 
-        view.render(
-            Some(color),
-            &format!("{level} {msg}", level = level_icon, msg = self.message),
-        );
+        view.set_color(color);
+        view.render(&format!(
+            "{level} {msg}",
+            level = level_icon,
+            msg = self.message
+        ));
     }
 
     fn get_icon_and_color(&self) -> (char, style::Color) {
@@ -454,35 +456,27 @@ impl ProgressLog {
         };
 
         // Print indicator and progress message.
-        view.render(
-            Some(color),
-            &format!(
-                "{spin} {msg}",
-                spin = animation::braille_spin(animation_state),
-                msg = self.message,
-            ),
-        );
+        view.set_color(color);
+        view.render(&format!(
+            "{spin} {msg}",
+            spin = animation::braille_spin(animation_state),
+            msg = self.message,
+        ));
 
         let render_elapsed = |view: &mut dyn View| match run_time {
             None => {
                 let elapsed = self.start_time.elapsed();
-                view.render(
-                    Some(color),
-                    &format!(
-                        "{secs}.{millis}s",
-                        secs = elapsed.as_secs(),
-                        millis = elapsed.as_millis() % 1000 / 100,
-                    ),
-                );
-            }
-            Some(elapsed) => view.render(
-                Some(color),
-                &format!(
-                    "{secs}.{millis:03}s",
+                view.render(&format!(
+                    "{secs}.{millis}s",
                     secs = elapsed.as_secs(),
-                    millis = elapsed.as_millis() % 1000,
-                ),
-            ),
+                    millis = elapsed.as_millis() % 1000 / 100,
+                ));
+            }
+            Some(elapsed) => view.render(&format!(
+                "{secs}.{millis:03}s",
+                secs = elapsed.as_secs(),
+                millis = elapsed.as_millis() % 1000,
+            )),
         };
 
         let render_no_nested = self.logs.is_empty() || view.max_height() == Some(1);
@@ -490,24 +484,23 @@ impl ProgressLog {
         if render_no_nested && is_paused && !is_finished {
             view.position_mut().move_down(1);
             view.position_mut().move_to_column(0);
-            view.render(
-                Some(color),
-                &format!(
-                    "{turn}{line}",
-                    turn = animation::box_turn_swell(animation_state),
-                    line = "╶".repeat(view.max_width() - 1)
-                ),
-            );
+            view.render(&format!(
+                "{turn}{line}",
+                turn = animation::box_turn_swell(animation_state),
+                line = "╶".repeat(view.max_width() - 1)
+            ));
+            view.clear_color();
 
             return;
         }
 
         if render_no_nested {
-            view.render(
-                Some(color),
-                &format!(" {sep} ", sep = animation::separator_swell(animation_state)),
-            );
+            view.render(&format!(
+                " {sep} ",
+                sep = animation::separator_swell(animation_state)
+            ));
             render_elapsed(view);
+            view.clear_color();
 
             return;
         };
@@ -524,16 +517,15 @@ impl ProgressLog {
 
             let frame_offset = -2 * (view.position().row() - start_row) as isize;
 
-            view.render(
-                Some(color),
-                &format!(
-                    "{side} ",
-                    side = animation::box_side_swell(animation_state.frame_offset(frame_offset)),
-                ),
-            );
+            view.render(&format!(
+                "{side} ",
+                side = animation::box_side_swell(animation_state.frame_offset(frame_offset)),
+            ));
         };
 
         for log in self.logs.iter() {
+            view.set_color(color);
+
             match log {
                 Log::Simple(simple_log) => {
                     if inner_max_height.is_none() || Some(remaining_height - 1) < inner_max_height {
@@ -577,10 +569,10 @@ impl ProgressLog {
         }
 
         // Print prefix of elapsed line.
+        view.set_color(color);
         view.position_mut().move_down(1);
         view.position_mut().move_to_column(0);
         view.render(
-            Some(color),
             &animation::box_turn_swell(
                 animation_state.frame_offset(-2 * (view.position().row() - start_row) as isize),
             )
@@ -589,11 +581,10 @@ impl ProgressLog {
 
         if is_paused && !is_finished {
             // Print dashed line to indicate paused, incomplete progress.
-            view.render(Some(color), &"╶".repeat(view.max_width() - 1));
+            view.render(&"╶".repeat(view.max_width() - 1));
         } else {
             // Print elapsed time.
             view.render(
-                Some(color),
                 &animation::box_end_swell(
                     animation_state
                         .frame_offset(-2 * (view.position().row() - start_row + 1) as isize),
@@ -602,5 +593,7 @@ impl ProgressLog {
             );
             render_elapsed(view);
         }
+
+        view.clear_color();
     }
 }
