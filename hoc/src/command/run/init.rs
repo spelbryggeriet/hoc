@@ -3,7 +3,7 @@ use std::net::IpAddr;
 use osshkeys::{cipher::Cipher, keys::FingerprintHash, KeyPair, KeyType, PublicParts};
 use tokio::{io::AsyncWriteExt, join};
 
-use crate::{cidr::Cidr, prelude::*, util::Secret};
+use crate::{cidr::Cidr, prelude::*};
 
 #[throws(anyhow::Error)]
 pub async fn run(

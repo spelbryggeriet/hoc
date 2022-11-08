@@ -1,22 +1,22 @@
 macro_rules! diagnostics {
     ($type:ty) => {{
-        debug!("Running {} subcommand", <$type>::command().get_name());
+        debug!("Running {} command", <$type>::command().get_name());
     }};
 }
 
 macro_rules! get_arg {
-    ($self:ident.$field:ident $(, default = $action:ident)? $(,)?) => {{
+    ($self:ident.$field:ident $(, default = $command:ident)? $(,)?) => {{
         let __message = ::heck::ToTitleCase::to_title_case(stringify!($field));
         let __value = if let Some(__inner) = $self.$field {
+            info!("{__message}: {__inner}");
             __inner
         } else {
             let __value = prompt!("{__message}")
-                $(.with_default(default::$action::$field()))?
+                $(.with_default(default::$command::$field()))?
                 .get()?;
             __value
         };
 
-        info!("{__message}: {__value}");
         ::anyhow::Ok(__value)
     }};
 }
@@ -25,23 +25,23 @@ macro_rules! get_secret_arg {
     ($self:ident.$field:ident $(,)?) => {{
         let __message = ::heck::ToTitleCase::to_title_case(stringify!($field));
         let __value = if let Some(__inner) = $self.$field {
+            info!("{__message}: {__inner}");
             __inner
         } else {
             let __value = prompt!("{__message}").as_secret().get()?;
             __value
         };
 
-        info!("{__message}: {__value}");
         ::anyhow::Ok(__value)
     }};
 }
 
-macro_rules! actions_summary {
+macro_rules! commands_summary {
     {
-        $( $action:ident { $($inner_tokens:tt)* } )*
+        $( $command:ident { $($inner_tokens:tt)* } )*
     } => {
-        actions_summary! {
-            @impl ($( $action { $($inner_tokens)* } )*) => {
+        commands_summary! {
+            @impl ($( $command { $($inner_tokens)* } )*) => {
                 default_output {}
                 help_output {}
                 long_help_output {}
@@ -54,19 +54,19 @@ macro_rules! actions_summary {
 
     {
         @impl
-            ($action:ident {
+            ($command:ident {
                 $field:ident {
                     help = $help:literal $(,)?
                 } $($fields:tt)*
-            } $($actions:tt)*) => {
+            } $($commands:tt)*) => {
                 default_output { $($default_output:tt)* }
                 help_output { $($help_output:tt)* }
                 long_help_output { $($long_help_output:tt)* }
                 $($rest_output:tt)*
             }
     } => {
-        actions_summary! {
-            @impl ($action { $($fields)* } $($actions)*) => {
+        commands_summary! {
+            @impl ($command { $($fields)* } $($commands)*) => {
                 default_output { $($default_output)* }
                 help_output {
                     $($help_output)*
@@ -82,20 +82,20 @@ macro_rules! actions_summary {
 
     {
         @impl
-            ($action:ident {
+            ($command:ident {
                 $field:ident {
                     default = $default:literal,
                     help = $help:literal $(,)?
                 } $($fields:tt)*
-            } $($actions:tt)*) => {
+            } $($commands:tt)*) => {
                 default_output { $($default_output:tt)* }
                 help_output { $($help_output:tt)* }
                 long_help_output { $($long_help_output:tt)* }
                 $($rest_output:tt)*
             }
     } => {
-        actions_summary! {
-            @impl ($action { $($fields)* } $($actions)*) => {
+        commands_summary! {
+            @impl ($command { $($fields)* } $($commands)*) => {
                 default_output {
                     $($default_output)*
                     pub fn $field() -> &'static str {
@@ -116,24 +116,24 @@ macro_rules! actions_summary {
 
     {
         @impl
-            ($action:ident {
+            ($command:ident {
                 $field:ident {
                     help = $help:literal,
                     long_help = $long_help:literal $(,)?
                 } $($fields:tt)*
-            } $($actions:tt)*) => {
+            } $($commands:tt)*) => {
                 default_output { $($default_output:tt)* }
                 help_output { $($help_output:tt)* }
                 long_help_output { $($long_help_output:tt)* }
                 $($rest_output:tt)*
             }
     } => {
-        actions_summary! {
-            @impl ($action {
+        commands_summary! {
+            @impl ($command {
                 $field {
                     help = $help,
                 } $($fields)*
-            } $($actions)*) => {
+            } $($commands)*) => {
                 default_output { $($default_output)* }
                 help_output { $($help_output)* }
                 long_help_output {
@@ -148,26 +148,26 @@ macro_rules! actions_summary {
     };
 
     {
-        @impl ($action:ident {
+        @impl ($command:ident {
             $field:ident {
                 default = $default:literal,
                 help = $help:literal,
                 long_help = $long_help:literal $(,)?
             } $($fields:tt)*
-        } $($actions:tt)*) => {
+        } $($commands:tt)*) => {
             default_output { $($default_output:tt)* }
             help_output { $($help_output:tt)* }
             long_help_output { $($long_help_output:tt)* }
             $($rest_output:tt)*
         }
     } => {
-        actions_summary! {
-            @impl ($action {
+        commands_summary! {
+            @impl ($command {
                 $field {
                     default = $default,
                     help = $help,
                 } $($fields)*
-            } $($actions)*) => {
+            } $($commands)*) => {
                 default_output { $($default_output)* }
                 help_output { $($help_output)* }
                 long_help_output {
@@ -183,7 +183,7 @@ macro_rules! actions_summary {
 
 
     {
-        @impl ($action:ident {} $($actions:tt)*) => {
+        @impl ($command:ident {} $($commands:tt)*) => {
             default_output { $($default_output:tt)* }
             help_output { $($help_output:tt)* }
             long_help_output { $($long_help_output:tt)* }
@@ -192,26 +192,26 @@ macro_rules! actions_summary {
             long_help_mod_output { $($long_help_mod_output:tt)* }
         }
     } => {
-        actions_summary! {
-            @impl ($($actions)*) => {
+        commands_summary! {
+            @impl ($($commands)*) => {
                 default_output {}
                 help_output {}
                 long_help_output {}
                 default_mod_output {
                     $($default_mod_output)*
-                    pub mod $action {
+                    pub mod $command {
                         $($default_output)*
                     }
                 }
                 help_mod_output {
                     $($help_mod_output)*
-                    pub mod $action {
+                    pub mod $command {
                         $($help_output)*
                     }
                 }
                 long_help_mod_output {
                     $($long_help_mod_output)*
-                    pub mod $action {
+                    pub mod $command {
                         $($long_help_output)*
                     }
                 }

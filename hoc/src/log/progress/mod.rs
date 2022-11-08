@@ -24,8 +24,9 @@ pub fn cleanup() {
 }
 
 #[throws(Error)]
-pub fn pause_rendering() -> PauseLock {
-    render::RenderThread::pause()?
+pub fn pause_rendering(height: usize) -> PauseLock {
+    let lock = render::RenderThread::pause(height)?;
+    lock
 }
 
 fn last_running_subprogress_mut<'a>(
@@ -58,6 +59,25 @@ impl Progress {
         }
     }
 
+    pub fn push_simple_log(&self, level: Level, message: String) {
+        // Find the current progress log.
+        let mut logs_lock = self.logs.lock().expect(EXPECT_THREAD_NOT_POSIONED);
+        let logs = &mut *logs_lock;
+        let progress_log = last_running_subprogress_mut(logs.iter_mut());
+
+        if let Some(progress_log) = progress_log {
+            for line in message.lines() {
+                progress_log.push_simple_log(SimpleLog::new(line.to_string()).with_level(level));
+            }
+        } else {
+            for line in message.lines() {
+                logs.push_back(Log::Simple(
+                    SimpleLog::new(line.to_string()).with_level(level),
+                ));
+            }
+        }
+    }
+
     pub fn push_progress_log(&self, message: String) -> DropHandle {
         let (subprogress_log, drop_handle) = ProgressLog::new(message);
 
@@ -75,21 +95,26 @@ impl Progress {
         drop_handle
     }
 
-    pub fn push_simple_log(&self, level: Level, message: String) {
+    fn push_pause_log(
+        &self,
+        height: usize,
+    ) -> (Arc<Mutex<bool>>, Arc<Mutex<Option<(Level, String)>>>) {
+        let pause_log = PauseLog::new(height);
+        let is_finished_mutex = Arc::clone(&pause_log.is_finished);
+        let message_mutex = Arc::clone(&pause_log.message);
+
         // Find the current progress log.
         let mut logs_lock = self.logs.lock().expect(EXPECT_THREAD_NOT_POSIONED);
         let logs = &mut *logs_lock;
         let progress_log = last_running_subprogress_mut(logs.iter_mut());
 
         if let Some(progress_log) = progress_log {
-            for line in message.lines() {
-                progress_log.push_simple_log(SimpleLog::new(level, line.to_string()));
-            }
+            progress_log.push_pause_log(pause_log);
         } else {
-            for line in message.lines() {
-                logs.push_back(Log::Simple(SimpleLog::new(level, line.to_string())));
-            }
+            logs.push_back(Log::Pause(pause_log));
         }
+
+        (is_finished_mutex, message_mutex)
     }
 
     fn logs(&self) -> MutexGuard<VecDeque<Log>> {
@@ -101,17 +126,26 @@ impl Progress {
 enum Log {
     Simple(SimpleLog),
     Progress(ProgressLog),
+    Pause(PauseLog),
 }
 
 #[derive(Debug)]
 struct SimpleLog {
-    level: Level,
+    level: Option<Level>,
     message: String,
 }
 
 impl SimpleLog {
-    fn new(level: Level, message: String) -> Self {
-        Self { level, message }
+    fn new(message: String) -> Self {
+        Self {
+            level: None,
+            message,
+        }
+    }
+
+    fn with_level(mut self, level: Level) -> Self {
+        self.level.replace(level);
+        self
     }
 }
 
@@ -145,6 +179,35 @@ impl ProgressLog {
         } else {
             self.logs.push(Log::Progress(progress_log));
         }
+    }
+
+    fn push_pause_log(&mut self, pause_log: PauseLog) {
+        if let Some(last_running_subprogress) = last_running_subprogress_mut(self.logs.iter_mut()) {
+            last_running_subprogress.push_pause_log(pause_log);
+        } else {
+            self.logs.push(Log::Pause(pause_log));
+        }
+    }
+}
+
+#[derive(Debug)]
+struct PauseLog {
+    height: usize,
+    is_finished: Arc<Mutex<bool>>,
+    message: Arc<Mutex<Option<(Level, String)>>>,
+}
+
+impl PauseLog {
+    fn new(height: usize) -> Self {
+        Self {
+            height,
+            is_finished: Arc::new(Mutex::new(false)),
+            message: Arc::new(Mutex::new(None)),
+        }
+    }
+
+    fn is_finished(&self) -> bool {
+        *self.is_finished.lock().expect(EXPECT_THREAD_NOT_POSIONED)
     }
 }
 

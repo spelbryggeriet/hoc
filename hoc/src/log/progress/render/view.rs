@@ -14,7 +14,7 @@ use crossterm::{
 use crate::{log::Error, prelude::*};
 
 macro_rules! render {
-    ($view:ident => $($content:expr),+, $(,)?) => {{
+    ($view:ident => $($content:expr),+ $(,)?) => {{
         $(
         #[allow(unused_parens)]
         $crate::log::progress::render::view::View::render($view, &($content));
@@ -28,10 +28,6 @@ fn render_view(
     cursor: &mut Position,
     lines: &mut Vec<(Line, Vec<ColorSpan>)>,
 ) {
-    if content.is_empty() {
-        return;
-    }
-
     let (line, current_color_spans) = &mut lines[cursor.row];
     let current_char_count = line.content.chars().count();
     let start_column = cursor.column;
@@ -49,11 +45,15 @@ fn render_view(
 
     let char_count = content
         .replace_with(&mut |s| {
-            line.content.replace_range(
-                start_index..(start_index + s.len()).min(line.content.len()),
-                s,
-            );
-            ContentSize(s.chars().count())
+            let char_count = s.chars().count();
+            let end_index = line
+                .content
+                .chars()
+                .take(start_index + char_count)
+                .map(char::len_utf8)
+                .sum();
+            line.content.replace_range(start_index..end_index, s);
+            ContentSize(char_count)
         })
         .0;
     let end_column = start_column + char_count;
@@ -187,18 +187,16 @@ pub trait View {
     fn max_width(&self) -> usize;
     fn cursor(&self) -> Position;
     fn cursor_mut(&mut self) -> &mut Position;
+    fn real_cursor(&self) -> Position {
+        self.cursor()
+    }
 }
 
 pub trait Content {
-    fn is_empty(&self) -> bool;
     fn replace_with(&self, replacer: &mut dyn FnMut(&str) -> ContentSize) -> ContentSize;
 }
 
 impl Content for char {
-    fn is_empty(&self) -> bool {
-        false
-    }
-
     fn replace_with(&self, replacer: &mut dyn FnMut(&str) -> ContentSize) -> ContentSize {
         let mut char_bytes = [0; 4];
         let encoded = self.encode_utf8(&mut char_bytes);
@@ -207,20 +205,12 @@ impl Content for char {
 }
 
 impl Content for &str {
-    fn is_empty(&self) -> bool {
-        str::is_empty(self)
-    }
-
     fn replace_with(&self, replacer: &mut dyn FnMut(&str) -> ContentSize) -> ContentSize {
         replacer(self)
     }
 }
 
 impl Content for String {
-    fn is_empty(&self) -> bool {
-        str::is_empty(self)
-    }
-
     fn replace_with(&self, replacer: &mut dyn FnMut(&str) -> ContentSize) -> ContentSize {
         replacer(self)
     }
@@ -229,10 +219,6 @@ impl Content for String {
 macro_rules! impl_int_content {
     ($ty:ty) => {
         impl Content for $ty {
-            fn is_empty(&self) -> bool {
-                false
-            }
-
             fn replace_with(&self, replacer: &mut dyn FnMut(&str) -> ContentSize) -> ContentSize {
                 let s = self.to_string();
                 replacer(&s)
@@ -256,7 +242,7 @@ pub struct ContentSize(usize);
 
 #[derive(Debug)]
 pub struct RootView {
-    pub cursor: Position,
+    cursor: Position,
     color: Option<Color>,
     lines: Vec<(Line, Vec<ColorSpan>)>,
     height: usize,
@@ -301,7 +287,7 @@ impl RootView {
     pub fn print(&mut self) -> usize {
         self.extend_line_buffer();
 
-        if self.height == 0 {
+        if self.lines.iter().all(|(l, _)| l.empty) {
             return 0;
         }
 
@@ -440,7 +426,7 @@ impl View for Subview<'_> {
     }
 
     fn render(&mut self, content: &dyn Content) {
-        let mut real_cursor = self.origin + self.cursor;
+        let mut real_cursor = self.real_cursor();
         render_view(content, self.color, &mut real_cursor, self.lines);
         self.cursor = real_cursor - self.origin;
     }
@@ -475,6 +461,10 @@ impl View for Subview<'_> {
 
     fn cursor_mut(&mut self) -> &mut Position {
         &mut self.cursor
+    }
+
+    fn real_cursor(&self) -> Position {
+        self.origin + self.cursor
     }
 }
 
@@ -513,6 +503,10 @@ impl Position {
 
     pub fn row(&self) -> usize {
         self.row
+    }
+
+    pub fn column(&self) -> usize {
+        self.column
     }
 
     pub fn move_down(&mut self, lines: usize) {

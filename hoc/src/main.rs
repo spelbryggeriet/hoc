@@ -7,32 +7,26 @@ use scopeguard::defer;
 mod macros;
 
 mod cidr;
+mod command;
 mod context;
 mod log;
 mod prelude;
 mod prompt;
 mod runner;
-mod subcommand;
 mod util;
 
+use command::Command;
 use prelude::*;
-use subcommand::Subcommand;
 
 #[derive(Parser)]
 struct App {
     #[clap(subcommand)]
-    subcommand: Subcommand,
+    command: Command,
 }
 
 impl App {
     #[throws(anyhow::Error)]
     async fn run(self) {
-        #[cfg(debug_assertions)]
-        if matches!(self.subcommand, Subcommand::Debug) {
-            subcommand::debug::run();
-            return;
-        }
-
         debug!("Feching HOME environment variable");
         let home_dir = env::var("HOME")?;
 
@@ -49,7 +43,7 @@ impl App {
             }
         }
 
-        self.subcommand.run().await?;
+        self.command.run().await?;
     }
 }
 

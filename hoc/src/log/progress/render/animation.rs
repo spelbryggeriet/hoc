@@ -21,7 +21,7 @@ const SEPARATOR_SWELL_FINISHED: char = '━';
 
 #[derive(Copy, Clone)]
 pub enum State {
-    Animating(isize),
+    Animating(usize),
     Finished,
     Paused,
 }
@@ -29,7 +29,7 @@ pub enum State {
 impl State {
     pub fn frame_offset(self, offset: isize) -> Self {
         if let Self::Animating(frame) = self {
-            Self::Animating(frame + offset)
+            Self::Animating((frame as isize + offset).rem_euclid(LENGTH as isize) as usize)
         } else {
             self
         }
@@ -89,7 +89,7 @@ fn animate(
 ) -> char {
     match state {
         State::Animating(frame) => {
-            let index = frame.rem_euclid(LENGTH as isize) as usize;
+            let index = frame.rem_euclid(LENGTH);
             animation_chars[index]
         }
         State::Paused => paused_char,

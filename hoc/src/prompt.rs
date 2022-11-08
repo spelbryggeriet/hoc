@@ -5,7 +5,6 @@ use std::{
     str::FromStr,
 };
 
-use crossterm::{cursor, terminal};
 use inquire::{
     error::CustomUserError,
     ui::{Color, RenderConfig, StyleSheet},
@@ -14,22 +13,12 @@ use inquire::{
 };
 use thiserror::Error;
 
-use crate::{log, prelude::*, util::Secret};
+use crate::{log, prelude::*};
 
-fn clear_prompt(lines: u16) -> String {
-    use std::fmt::Write;
-
-    let mut clear_section = String::new();
-    write!(
-        clear_section,
-        "{move_column}{clear_line}{move_line}",
-        clear_line = terminal::Clear(terminal::ClearType::CurrentLine),
-        move_column = cursor::MoveToColumn(0),
-        move_line = cursor::MoveToPreviousLine(lines),
-    )
-    .expect("commands should be formatable");
-
-    clear_section
+fn postpad(lines: u16) {
+    for _ in 0..lines {
+        println!();
+    }
 }
 
 pub struct PromptBuilder<'a, T, S> {
@@ -103,7 +92,7 @@ where
     pub fn get(self) -> T {
         let prompt = format!("{}:", self.message);
 
-        let _pause_lock = log::pause_rendering()?;
+        let pause_lock = log::pause_rendering(3)?;
 
         let default_clone = self.default.clone();
         let validator =
@@ -129,9 +118,7 @@ where
                 }
             };
 
-        let mut text = Text::new(&prompt)
-            .with_validator(validator)
-            .with_formatter(&|_| clear_prompt(2));
+        let mut text = Text::new(&prompt).with_validator(validator);
 
         if let Some(default) = &self.default {
             text = text.with_default(default);
@@ -141,8 +128,17 @@ where
             text = text.with_initial_value(initial_input);
         }
 
-        match text.prompt() {
-            Ok(resp) => T::from_str(resp.trim()).unwrap_or_else(|_| unreachable!()),
+        let res = text.prompt();
+        postpad(1);
+
+        match res {
+            Ok(resp) => {
+                let resp_str = resp.trim();
+                pause_lock
+                    .finish_with_message(Level::Info, format!("{}: {resp_str}", self.message));
+
+                T::from_str(resp_str).unwrap_or_else(|_| unreachable!())
+            }
             Err(
                 err @ (inquire::InquireError::Custom(_)
                 | inquire::InquireError::OperationCanceled
@@ -152,6 +148,8 @@ where
                 let Some(default) = &self.default else {
                     throw!(err);
                 };
+                pause_lock.finish_with_message(Level::Info, format!("{}: {default}", self.message));
+
                 T::from_str(default).unwrap_or_else(|_| unreachable!())
             }
         }
@@ -165,10 +163,10 @@ where
 {
     #[throws(Error)]
     pub fn get(self) -> Secret<T> {
+        let pause_lock = log::pause_rendering(5)?;
+
         let prompt = format!("{}:", self.message);
         let prompt_confirm = format!("{} (confirm):", self.message);
-        let _pause_lock = log::pause_rendering()?;
-
         let validator = move |s: &str| {
             let s = s.trim();
             if s.is_empty() {
@@ -192,11 +190,15 @@ where
             .with_display_mode(PasswordDisplayMode::Masked)
             .with_display_toggle_enabled()
             .with_help_message("Ctrl-R to reveal/hide")
-            .with_validator(validator)
-            .with_formatter(&|_| clear_prompt(2));
+            .with_validator(validator);
 
-        let resp = text.prompt()?;
-        Secret::new(T::from_str(resp.trim()).unwrap_or_else(|_| unreachable!()))
+        let res = text.prompt();
+        postpad(3);
+
+        let secret = Secret::new(T::from_str(res?.trim()).unwrap_or_else(|_| unreachable!()));
+        pause_lock.finish_with_message(Level::Info, format!("{}: {secret}", self.message));
+
+        secret
     }
 }
 
@@ -223,13 +225,14 @@ impl<'a, T> SelectBuilder<'a, T> {
 
     #[throws(Error)]
     pub fn get(self) -> T {
-        let _pause_lock = log::pause_rendering()?;
+        let num_options = self.options.len();
+        let pause_lock = log::pause_rendering(3 + num_options)?;
 
-        let option = Select::new(&self.message, self.options)
-            .with_formatter(&|_| clear_prompt(2))
-            .prompt()?;
+        let option = Select::new(&self.message, self.options).prompt();
+        postpad(1 + num_options as u16);
 
-        info!("{} {}", self.message, option.title);
+        let option = option?;
+        pause_lock.finish_with_message(Level::Info, format!("{} {}", self.message, option.title));
 
         (option.on_select)()
     }

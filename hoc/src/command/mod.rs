@@ -2,7 +2,7 @@ use std::net::IpAddr;
 
 use clap::{CommandFactory, Parser};
 
-use crate::{cidr::Cidr, prelude::*, util::Secret};
+use crate::{cidr::Cidr, prelude::*};
 pub use run::*;
 
 mod run;
@@ -10,7 +10,7 @@ mod run;
 #[macro_use]
 mod macros;
 
-actions_summary! {
+commands_summary! {
     init {
         gateway {
             default = "172.16.0.1",
@@ -46,26 +46,44 @@ actions_summary! {
 /// can be done using the `sd-card prepare` command. Once that is done, the `node deploy` command
 /// can be used to add the node to the cluster.
 #[derive(clap::Subcommand)]
-pub enum Subcommand {
-    /// Debug this tool
+pub enum Command {
     #[cfg(debug_assertions)]
-    Debug,
+    #[clap(subcommand)]
+    Debug(DebugCommand),
 
-    Init(InitSubcommand),
+    Init(InitCommand),
 
     #[clap(subcommand)]
-    SdCard(SdCardSubcommand),
+    SdCard(SdCardCommand),
 
     #[clap(subcommand)]
-    Node(NodeSubcommand),
+    Node(NodeCommand),
 
-    Deploy(DeploySubcommand),
+    Deploy(DeployCommand),
 }
+
+/// Debug functions
+#[cfg(debug_assertions)]
+#[derive(clap::Subcommand)]
+pub enum DebugCommand {
+    Progress(DebugProgressCommand),
+    Prompt(DebugProgressCommand),
+}
+
+/// Debug the progress module
+#[cfg(debug_assertions)]
+#[derive(Parser)]
+pub struct DebugProgressCommand {}
+
+/// Debug the prompt module
+#[cfg(debug_assertions)]
+#[derive(Parser)]
+pub struct DebugPromptCommand {}
 
 /// Initialize the cluster
 #[derive(Parser)]
 #[clap(name = "init")]
-pub struct InitSubcommand {
+pub struct InitCommand {
     #[clap(
         help = help::init::gateway(),
         long,
@@ -98,38 +116,38 @@ pub struct InitSubcommand {
 
 /// Deploy an application
 #[derive(Parser)]
-pub struct DeploySubcommand {}
+pub struct DeployCommand {}
 
 /// Manage an SD card
 #[derive(clap::Subcommand)]
-pub enum SdCardSubcommand {
-    Prepare(SdCardPrepareSubcommand),
+pub enum SdCardCommand {
+    Prepare(SdCardPrepareCommand),
 }
 
 /// Prepare an SD card for a node to be deployed
 #[derive(Parser)]
 #[clap(name = "sd-card-prepare")]
-pub struct SdCardPrepareSubcommand {}
+pub struct SdCardPrepareCommand {}
 
 /// Manage a node
 #[derive(clap::Subcommand)]
-pub enum NodeSubcommand {
-    Deploy(NodeDeploySubcommand),
+pub enum NodeCommand {
+    Deploy(NodeDeployCommand),
 }
 
 /// Deploy a node
 #[derive(Parser)]
-pub struct NodeDeploySubcommand {}
+pub struct NodeDeployCommand {}
 
-impl Subcommand {
+impl Command {
     #[throws(anyhow::Error)]
     pub async fn run(self) {
         match self {
-            Subcommand::Init(init_action) => {
-                diagnostics!(InitSubcommand);
+            Command::Init(init_command) => {
+                diagnostics!(InitCommand);
 
-                let node_addresses = get_arg!(init_action.node_addresses, default = init)?;
-                let gateway = get_arg!(init_action.gateway, default = init)?;
+                let node_addresses = get_arg!(init_command.node_addresses, default = init)?;
+                let gateway = get_arg!(init_command.gateway, default = init)?;
 
                 debug!("Checking gateway");
                 ensure!(
@@ -138,28 +156,37 @@ impl Subcommand {
                     node_addresses.prefix_len
                 );
 
-                let admin_username = get_arg!(init_action.admin_username)?;
-                let admin_password = get_secret_arg!(init_action.admin_password)?;
+                let admin_username = get_arg!(init_command.admin_username)?;
+                let admin_password = get_secret_arg!(init_command.admin_password)?;
 
                 init::run(node_addresses, gateway, admin_username, admin_password).await?;
             }
 
-            Subcommand::SdCard(sd_card_action) => match sd_card_action {
-                SdCardSubcommand::Prepare(_sd_card_prepare_action) => {
-                    diagnostics!(SdCardPrepareSubcommand);
-
+            Command::SdCard(sd_card_command) => match sd_card_command {
+                SdCardCommand::Prepare(_prepare_command) => {
+                    diagnostics!(SdCardPrepareCommand);
                     sd_card::prepare::run().await?;
                 }
             },
 
-            Subcommand::Node(node_action) => match node_action {
-                NodeSubcommand::Deploy(_node_deploy_action) => {}
+            Command::Node(node_command) => match node_command {
+                NodeCommand::Deploy(_deploy_command) => {}
             },
 
-            Subcommand::Deploy(_deploy_action) => {}
+            Command::Deploy(_deploy_command) => {}
 
             #[cfg(debug_assertions)]
-            Subcommand::Debug => (),
+            Command::Debug(debug_command) => match debug_command {
+                DebugCommand::Progress(_progress_command) => {
+                    diagnostics!(DebugProgressCommand);
+                    debug::progress::run();
+                }
+
+                DebugCommand::Prompt(_prompt_command) => {
+                    diagnostics!(DebugPromptCommand);
+                    debug::prompt::run()?;
+                }
+            },
         }
     }
 }
