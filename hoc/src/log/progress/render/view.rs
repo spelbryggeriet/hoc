@@ -285,11 +285,11 @@ impl RootView {
 
     #[throws(Error)]
     pub fn print(&mut self) -> usize {
-        self.extend_line_buffer();
-
         if self.lines.iter().all(|(l, _)| l.empty) {
             return 0;
         }
+
+        self.extend_line_buffer();
 
         let mut stdout = io::stdout();
 

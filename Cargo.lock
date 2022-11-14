@@ -908,8 +908,7 @@ dependencies = [
 [[package]]
 name = "inquire"
 version = "0.5.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e6055ce38cac9b10ac819ed4a509d92ccbc60808152c19ff9121c98198964272"
+source = "git+https://github.com/hampuslidin/inquire.git?branch=feature/global-prefix#5a5a61cd27d9d38d64710e85c3605832825b2882"
 dependencies = [
  "bitflags",
  "crossterm",

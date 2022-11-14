@@ -117,8 +117,35 @@ impl Progress {
         (is_finished_mutex, message_mutex)
     }
 
+    fn push_empty_log(&self) {
+        // Find the current progress log.
+        let mut logs_lock = self.logs.lock().expect(EXPECT_THREAD_NOT_POSIONED);
+        let logs = &mut *logs_lock;
+        let progress_log = last_running_subprogress_mut(logs.iter_mut());
+
+        if let Some(progress_log) = progress_log {
+            progress_log.push_simple_log(SimpleLog::new(String::new()));
+        } else {
+            logs.push_back(Log::Simple(SimpleLog::new(String::new())));
+        }
+    }
+
     fn logs(&self) -> MutexGuard<VecDeque<Log>> {
         self.logs.lock().expect(EXPECT_THREAD_NOT_POSIONED)
+    }
+
+    fn last_log_type(&self) -> Option<LogType> {
+        self.logs()
+            .iter()
+            .map(|log| match log {
+                Log::Simple(_) => LogType::Simple,
+                Log::Progress(progress_log) if !progress_log.is_finished() => {
+                    LogType::RunningProgress
+                }
+                Log::Progress(_) => LogType::FinishedProgress,
+                Log::Pause(_) => LogType::Pause,
+            })
+            .last()
     }
 }
 
@@ -253,4 +280,12 @@ mod drop_handle {
                 .replace(self.start_time.elapsed());
         }
     }
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+enum LogType {
+    Simple,
+    RunningProgress,
+    FinishedProgress,
+    Pause,
 }

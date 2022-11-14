@@ -7,7 +7,7 @@ use std::{
 
 use inquire::{
     error::CustomUserError,
-    ui::{Color, RenderConfig, StyleSheet},
+    ui::{Color, RenderConfig, StyleSheet, Styled},
     validator::{ErrorMessage, Validation},
     Password, PasswordDisplayMode, Select, Text,
 };
@@ -18,6 +18,32 @@ use crate::{log, prelude::*};
 fn postpad(lines: u16) {
     for _ in 0..lines {
         println!();
+    }
+}
+
+fn into_inquire_color(color: crossterm::style::Color) -> Color {
+    use crossterm::style::Color as C;
+
+    match color {
+        C::Black => Color::Black,
+        C::Red => Color::LightRed,
+        C::DarkRed => Color::DarkRed,
+        C::Green => Color::LightGreen,
+        C::DarkGreen => Color::DarkGreen,
+        C::Yellow => Color::LightYellow,
+        C::DarkYellow => Color::DarkYellow,
+        C::Blue => Color::LightBlue,
+        C::DarkBlue => Color::DarkBlue,
+        C::Magenta => Color::LightMagenta,
+        C::DarkMagenta => Color::DarkMagenta,
+        C::Cyan => Color::LightCyan,
+        C::DarkCyan => Color::DarkCyan,
+        C::White => Color::White,
+        C::Grey => Color::Grey,
+        C::DarkGrey => Color::DarkGrey,
+        C::Rgb { r, g, b } => Color::Rgb { r, g, b },
+        C::AnsiValue(b) => Color::AnsiValue(b),
+        C::Reset => panic!("`Reset` is not an inquire color"),
     }
 }
 
@@ -92,7 +118,7 @@ where
     pub fn get(self) -> T {
         let prompt = format!("{}:", self.message);
 
-        let pause_lock = log::pause_rendering(3)?;
+        let pause_lock = log::pause_rendering(2)?;
 
         let default_clone = self.default.clone();
         let validator =
@@ -118,7 +144,13 @@ where
                 }
             };
 
-        let mut text = Text::new(&prompt).with_validator(validator);
+        let (color, prefix) = pause_lock.prefix();
+        let render_config = RenderConfig::default()
+            .with_global_prefix(Styled::new(prefix).with_fg(into_inquire_color(color)));
+
+        let mut text = Text::new(&prompt)
+            .with_render_config(render_config)
+            .with_validator(validator);
 
         if let Some(default) = &self.default {
             text = text.with_default(default);
@@ -129,7 +161,6 @@ where
         }
 
         let res = text.prompt();
-        postpad(1);
 
         match res {
             Ok(resp) => {
@@ -163,7 +194,7 @@ where
 {
     #[throws(Error)]
     pub fn get(self) -> Secret<T> {
-        let pause_lock = log::pause_rendering(5)?;
+        let pause_lock = log::pause_rendering(4)?;
 
         let prompt = format!("{}:", self.message);
         let prompt_confirm = format!("{} (confirm):", self.message);
@@ -181,7 +212,9 @@ where
             }
         };
 
+        let (color, prefix) = pause_lock.prefix();
         let render_config = RenderConfig::default()
+            .with_global_prefix(Styled::new(prefix).with_fg(into_inquire_color(color)))
             .with_help_message(StyleSheet::default().with_fg(Color::DarkBlue));
 
         let text = Password::new(&prompt)
@@ -193,7 +226,7 @@ where
             .with_validator(validator);
 
         let res = text.prompt();
-        postpad(3);
+        postpad(2);
 
         let secret = Secret::new(T::from_str(res?.trim()).unwrap_or_else(|_| unreachable!()));
         pause_lock.finish_with_message(Level::Info, format!("{}: {secret}", self.message));
@@ -226,10 +259,16 @@ impl<'a, T> SelectBuilder<'a, T> {
     #[throws(Error)]
     pub fn get(self) -> T {
         let num_options = self.options.len();
-        let pause_lock = log::pause_rendering(3 + num_options)?;
+        let pause_lock = log::pause_rendering(2 + num_options)?;
 
-        let option = Select::new(&self.message, self.options).prompt();
-        postpad(1 + num_options as u16);
+        let (color, prefix) = pause_lock.prefix();
+        let render_config = RenderConfig::default()
+            .with_global_prefix(Styled::new(prefix).with_fg(into_inquire_color(color)));
+
+        let option = Select::new(&self.message, self.options)
+            .with_render_config(render_config)
+            .prompt();
+        postpad(num_options as u16);
 
         let option = option?;
         pause_lock.finish_with_message(Level::Info, format!("{} {}", self.message, option.title));

@@ -37,7 +37,7 @@ impl State {
 }
 
 pub fn braille_spin(state: State) -> char {
-    animate(
+    get_frame(
         state,
         BRAILLE_SPIN_ANIMATION,
         BRAILLE_SPIN_PAUSED,
@@ -46,7 +46,7 @@ pub fn braille_spin(state: State) -> char {
 }
 
 pub fn box_side_swell(state: State) -> char {
-    animate(
+    get_frame(
         state,
         BOX_SIDE_SWELL_ANIMATION,
         BOX_SIDE_SWELL_PAUSED,
@@ -55,7 +55,7 @@ pub fn box_side_swell(state: State) -> char {
 }
 
 pub fn box_turn_swell(state: State) -> char {
-    animate(
+    get_frame(
         state,
         BOX_TURN_SWELL_ANIMATION,
         BOX_TURN_SWELL_PAUSED,
@@ -64,7 +64,7 @@ pub fn box_turn_swell(state: State) -> char {
 }
 
 pub fn box_end_swell(state: State) -> char {
-    animate(
+    get_frame(
         state,
         BOX_END_SWELL_ANIMATION,
         BOX_END_SWELL_PAUSED,
@@ -73,7 +73,7 @@ pub fn box_end_swell(state: State) -> char {
 }
 
 pub fn separator_swell(state: State) -> char {
-    animate(
+    get_frame(
         state,
         SEPARATOR_SWELL_ANIMATION,
         SEPARATOR_SWELL_PAUSED,
@@ -81,7 +81,7 @@ pub fn separator_swell(state: State) -> char {
     )
 }
 
-fn animate(
+fn get_frame(
     state: State,
     animation_chars: [char; LENGTH],
     paused_char: char,

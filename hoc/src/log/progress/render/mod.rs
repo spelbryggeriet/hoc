@@ -1,6 +1,5 @@
 use std::{
-    io::{self, Write},
-    panic,
+    io, mem, panic,
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc, Condvar, Mutex,
@@ -9,18 +8,20 @@ use std::{
     time::Duration,
 };
 
-use crossterm::{cursor, execute, queue, style, terminal, ExecutableCommand, QueueableCommand};
+use crossterm::{cursor, execute, style, terminal, ExecutableCommand};
 use log_facade::Level;
 use once_cell::sync::OnceCell;
 use spin_sleep::{SpinSleeper, SpinStrategy};
 
 use self::view::{Position, RootView, View};
-use super::{Log, PauseLog, ProgressLog, SimpleLog};
+use super::{Log, LogType, PauseLog, ProgressLog, SimpleLog};
 use crate::{log::Error, prelude::*};
 
-mod animation;
 #[macro_use]
 mod view;
+
+mod anim;
+mod term;
 
 pub fn init() {
     RenderThread::get_or_init();
@@ -36,7 +37,7 @@ pub struct RenderThread {
     handle: Mutex<Option<JoinHandle<Result<(), Error>>>>,
     wants_terminate: Arc<AtomicBool>,
     wants_pause: Arc<(Mutex<Option<usize>>, Condvar)>,
-    is_paused: Arc<(Mutex<Option<Arc<Mutex<Option<(Level, String)>>>>>, Condvar)>,
+    is_paused: Arc<(Mutex<Option<PauseData>>, Condvar)>,
 }
 
 impl RenderThread {
@@ -81,11 +82,14 @@ impl RenderThread {
                         render_info.is_paused = true;
 
                         let progress = super::Progress::get_or_init();
+                        if progress.last_log_type() == Some(LogType::RunningProgress) {
+                            progress.push_empty_log();
+                        }
                         let (is_finished_mutex, message_mutex) =
                             progress.push_pause_log(pause_height);
 
-                        let mut logs = progress.logs();
-                        while let Some(log) = logs.pop_front() {
+                        let mut logs_mutex = progress.logs();
+                        while let Some(log) = logs_mutex.pop_front() {
                             view.set_infinite_height();
 
                             match &log {
@@ -110,7 +114,7 @@ impl RenderThread {
                                     )?;
 
                                     if is_running {
-                                        logs.push_front(log);
+                                        logs_mutex.push_front(log);
                                         break;
                                     }
                                 }
@@ -122,36 +126,40 @@ impl RenderThread {
                                         pause_log,
                                         &mut previous_height,
                                     )?;
-                                    logs.push_front(log);
+                                    logs_mutex.push_front(log);
                                     break;
                                 }
                             }
+                        }
+                        drop(logs_mutex);
+
+                        if render_info.previous_log_type == Some(LogType::RunningProgress) {
+                            progress.push_empty_log();
                         }
 
                         let pause_cursor = render_info
                             .pause_cursor
                             .expect("pause curser should be set");
 
-                        let mut stdout = io::stdout();
-
+                        // Calculate the amount of lines to get to the start of the pause area.
                         let line_diff = if let Some(previous_height) = previous_height {
                             previous_height - pause_cursor.row() - 1
                         } else {
                             pause_height.saturating_sub(1)
                         };
 
-                        if line_diff > 0 {
-                            stdout.queue(cursor::MoveToPreviousLine(line_diff as u16))?;
-                        }
-                        stdout.queue(cursor::MoveToColumn(pause_cursor.column() as u16))?;
-
-                        stdout.flush()?;
+                        term::move_cursor_up(line_diff as u16)?;
 
                         {
                             let (is_paused_mutex, is_paused_cvar) = &*is_paused;
                             let mut is_paused_lock =
                                 is_paused_mutex.lock().expect(EXPECT_THREAD_NOT_POSIONED);
-                            is_paused_lock.replace(message_mutex);
+                            let prefix = format!("{} ", anim::box_side_swell(anim::State::Paused))
+                                .repeat(pause_cursor.column() / 2);
+                            is_paused_lock.replace(PauseData {
+                                message: message_mutex,
+                                prefix: (ProgressLog::RUNNING_COLOR, prefix),
+                            });
                             is_paused_cvar.notify_one();
                         }
 
@@ -162,25 +170,12 @@ impl RenderThread {
                         }
 
                         if previous_height.is_some() {
-                            if line_diff > 0 {
-                                stdout.queue(cursor::MoveToNextLine(line_diff as u16))?;
-                            }
-                            stdout.queue(cursor::MoveToColumn(pause_cursor.column() as u16))?;
+                            let line_diff = line_diff - pause_height.saturating_sub(1);
+                            term::move_cursor_down(line_diff as u16)?;
+                            term::move_cursor_to_column(0)?;
                         } else {
-                            if pause_height > 0 {
-                                for _ in 0..pause_height {
-                                    queue!(
-                                        stdout,
-                                        cursor::MoveToColumn(pause_cursor.column() as u16),
-                                        terminal::Clear(terminal::ClearType::UntilNewLine),
-                                        cursor::MoveToPreviousLine(1),
-                                    )?;
-                                }
-                            } else {
-                                stdout.queue(cursor::MoveToColumn(0))?;
-                            }
+                            term::clear(pause_height as u16)?;
                         }
-                        stdout.flush()?;
 
                         let mut is_finished_lock =
                             is_finished_mutex.lock().expect(EXPECT_THREAD_NOT_POSIONED);
@@ -243,6 +238,8 @@ impl RenderThread {
                 }
 
                 spin_sleeper.sleep(Duration::new(0, 16_666_667));
+
+                render_info.advance_animation();
             }
 
             let (terminal_cols, _) = terminal::size()?;
@@ -305,7 +302,7 @@ impl RenderThread {
         simple_log: &SimpleLog,
         previous_height: &mut Option<usize>,
     ) {
-        let prepadding = render_info.previous_log_type.map_or(0, |t| {
+        let prepadding = render_info.previous_log_type.map(|t| {
             if t != LogType::Simple && t != LogType::Pause {
                 2
             } else {
@@ -313,9 +310,11 @@ impl RenderThread {
             }
         });
 
-        view.cursor_mut().move_down(prepadding);
-        render!(view => "");
-        view.print()?;
+        if let Some(prepadding) = prepadding {
+            view.cursor_mut().move_down(prepadding);
+            render!(view => "");
+            view.print()?;
+        }
 
         simple_log.render(view);
         view.print()?;
@@ -337,21 +336,21 @@ impl RenderThread {
         // Reset terminal cursor to the appropriate line determined by the previous height. The
         // previous height should only have been set if a running progress rendered last in the
         // last rendering pass.
-        Self::terminal_reset_cursor(*previous_height)?;
+        if let Some(previous_height) = previous_height {
+            term::move_cursor_up(previous_height.saturating_sub(1) as u16)?;
+        }
+        term::move_cursor_to_column(0)?;
 
-        let prepadding = render_info.previous_log_type.map_or(0, |t| {
-            if t != LogType::RunningProgress {
-                2
-            } else {
-                0
-            }
-        });
+        let prepadding = render_info
+            .previous_log_type
+            .and_then(|t| (t != LogType::RunningProgress).then_some(2));
 
-        view.cursor_mut().move_down(prepadding);
-        render!(view => "");
-        view.print()?;
+        if let Some(prepadding) = prepadding {
+            view.cursor_mut().move_down(prepadding);
+            render!(view => "");
+            view.print()?;
+        }
 
-        render_info.advance_animation();
         progress_log.render(view, render_info);
         let print_height = view.print()?;
 
@@ -370,8 +369,8 @@ impl RenderThread {
         if let Some(previous_height) = previous_height {
             if previous_height > print_height {
                 let diff = previous_height as u16 - print_height as u16;
-                Self::terminal_move_cursor_down(diff)?;
-                Self::terminal_clear(diff)?;
+                term::move_cursor_down(diff)?;
+                term::clear(diff)?;
             }
         }
     }
@@ -383,7 +382,7 @@ impl RenderThread {
         pause_log: &PauseLog,
         previous_height: &mut Option<usize>,
     ) {
-        let prepadding = render_info.previous_log_type.map_or(0, |_| {
+        let prepadding = render_info.previous_log_type.and_then(|_| {
             if pause_log.height > 0 && render_info.is_paused
                 || pause_log
                     .message
@@ -391,15 +390,17 @@ impl RenderThread {
                     .expect(EXPECT_THREAD_NOT_POSIONED)
                     .is_some()
             {
-                1
+                Some(1)
             } else {
-                0
+                None
             }
         });
 
-        view.cursor_mut().move_down(prepadding);
-        render!(view => "");
-        view.print()?;
+        if let Some(prepadding) = prepadding {
+            view.cursor_mut().move_down(prepadding);
+            render!(view => "");
+            view.print()?;
+        }
 
         pause_log.render(view, render_info);
         view.print()?;
@@ -419,36 +420,6 @@ impl RenderThread {
     }
 
     #[throws(Error)]
-    fn terminal_clear(lines_up: u16) {
-        let mut stdout = io::stdout();
-
-        stdout.queue(cursor::MoveToColumn(0))?;
-
-        if lines_up > 0 {
-            for _ in 0..lines_up {
-                queue!(
-                    stdout,
-                    terminal::Clear(terminal::ClearType::UntilNewLine),
-                    cursor::MoveToPreviousLine(1),
-                )?;
-            }
-        }
-
-        stdout.flush()?;
-    }
-
-    #[throws(Error)]
-    fn terminal_move_cursor_down(lines_down: u16) {
-        let mut stdout = io::stdout();
-
-        if lines_down > 0 {
-            stdout.queue(cursor::MoveToNextLine(lines_down))?;
-        }
-
-        stdout.flush()?;
-    }
-
-    #[throws(Error)]
     pub fn terminate(&self) {
         self.wants_terminate.store(true, Ordering::SeqCst);
         if let Some(thread_handle) = self.handle.lock().expect(EXPECT_THREAD_NOT_POSIONED).take() {
@@ -461,7 +432,7 @@ impl RenderThread {
 
 #[must_use]
 pub struct PauseLock {
-    message: Arc<Mutex<Option<(Level, String)>>>,
+    data: PauseData,
 }
 
 impl PauseLock {
@@ -481,24 +452,34 @@ impl PauseLock {
             wants_pause_cvar.notify_one();
         }
 
-        let message = {
+        let data = {
             let (is_paused_mutex, is_paused_cvar) = &*render_thread.is_paused;
             let mut is_paused_lock = is_paused_mutex.lock().expect(EXPECT_THREAD_NOT_POSIONED);
             loop {
-                is_paused_lock = match &*is_paused_lock {
+                is_paused_lock = match &mut *is_paused_lock {
                     None => is_paused_cvar
                         .wait(is_paused_lock)
                         .expect(EXPECT_THREAD_NOT_POSIONED),
-                    Some(message_mutex) => break Arc::clone(message_mutex),
+                    Some(data) => {
+                        break PauseData {
+                            message: Arc::clone(&data.message),
+                            prefix: (data.prefix.0, mem::take(&mut data.prefix.1)),
+                        }
+                    }
                 }
             }
         };
 
-        Self { message }
+        Self { data }
+    }
+
+    pub fn prefix(&self) -> (style::Color, &str) {
+        (self.data.prefix.0, &self.data.prefix.1)
     }
 
     pub fn finish_with_message(self, level: Level, message: String) {
-        self.message
+        self.data
+            .message
             .lock()
             .expect(EXPECT_THREAD_NOT_POSIONED)
             .replace((level, message));
@@ -526,18 +507,25 @@ impl Drop for PauseLock {
     }
 }
 
+struct PauseData {
+    message: Arc<Mutex<Option<(Level, String)>>>,
+    prefix: (style::Color, String),
+}
+
 struct RenderInfo {
     is_paused: bool,
     pause_cursor: Option<Position>,
-    frames: animation::Frames,
+    frames: anim::Frames,
     animation_frame: usize,
     previous_log_type: Option<LogType>,
 }
 
 impl RenderInfo {
+    const EXPECT_INFINITE_ANIM: &str = "animation frames should be infinite";
+
     fn new() -> Self {
-        let mut frames = animation::Frames::new();
-        let animation_frame = frames.next().expect("animation frames should be infinite");
+        let mut frames = anim::Frames::new();
+        let animation_frame = frames.next().expect(Self::EXPECT_INFINITE_ANIM);
         Self {
             is_paused: false,
             pause_cursor: None,
@@ -548,16 +536,8 @@ impl RenderInfo {
     }
 
     fn advance_animation(&mut self) {
-        self.frames.next();
+        self.animation_frame = self.frames.next().expect(Self::EXPECT_INFINITE_ANIM);
     }
-}
-
-#[derive(Copy, Clone, PartialEq, Eq)]
-enum LogType {
-    Simple,
-    RunningProgress,
-    FinishedProgress,
-    Pause,
 }
 
 impl SimpleLog {
@@ -621,11 +601,11 @@ impl ProgressLog {
         let is_finished = run_time.is_some();
 
         let animation_state = if is_finished {
-            animation::State::Finished
+            anim::State::Finished
         } else if render_info.is_paused {
-            animation::State::Paused
+            anim::State::Paused
         } else {
-            animation::State::Animating(render_info.animation_frame)
+            anim::State::Animating(render_info.animation_frame)
         };
         let color = if is_finished {
             Self::FINISHED_COLOR
@@ -636,7 +616,7 @@ impl ProgressLog {
         // Print indicator and progress message.
         view.set_color(color);
         render!(view =>
-            animation::braille_spin(animation_state),
+            anim::braille_spin(animation_state),
             " ",
             self.message,
         );
@@ -667,7 +647,7 @@ impl ProgressLog {
             view.cursor_mut().move_down(1);
             view.cursor_mut().move_to_column(0);
             render!(view =>
-                animation::box_turn_swell(animation_state),
+                anim::box_turn_swell(animation_state),
                 "╶".repeat(view.max_width() - 1),
             );
             view.clear_color();
@@ -678,7 +658,7 @@ impl ProgressLog {
         if render_no_nested {
             render!(view =>
                 " ",
-                animation::separator_swell(animation_state),
+                anim::separator_swell(animation_state),
                 " ",
             );
             render_elapsed(view);
@@ -700,7 +680,7 @@ impl ProgressLog {
             let frame_offset = -2 * (View::cursor(view).row() - start_row) as isize;
 
             render!(view =>
-                animation::box_side_swell(animation_state.frame_offset(frame_offset)),
+                anim::box_side_swell(animation_state.frame_offset(frame_offset)),
                 " ",
             );
         };
@@ -785,7 +765,7 @@ impl ProgressLog {
         view.cursor_mut().move_down(1);
         view.cursor_mut().move_to_column(0);
         render!(view =>
-            animation::box_turn_swell(
+            anim::box_turn_swell(
                 animation_state.frame_offset(-2 * (view.cursor().row() - start_row) as isize),
             ),
         );
@@ -798,7 +778,7 @@ impl ProgressLog {
         } else {
             // Print elapsed time.
             render!(view =>
-                animation::box_end_swell(
+                anim::box_end_swell(
                     animation_state
                         .frame_offset(-2 * (view.cursor().row() - start_row + 1) as isize),
                 ),
