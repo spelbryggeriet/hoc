@@ -908,7 +908,7 @@ dependencies = [
 [[package]]
 name = "inquire"
 version = "0.5.2"
-source = "git+https://github.com/hampuslidin/inquire.git?branch=feature/global-prefix#5a5a61cd27d9d38d64710e85c3605832825b2882"
+source = "git+https://github.com/hampuslidin/inquire.git?branch=feature/global-prefix#e1d5873b9afb7fbb624b783abc6984fe590bb0bd"
 dependencies = [
  "bitflags",
  "crossterm",

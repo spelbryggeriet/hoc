@@ -7,7 +7,7 @@ use std::{
 
 use inquire::{
     error::CustomUserError,
-    ui::{Color, RenderConfig, StyleSheet, Styled},
+    ui::{Color, RenderConfig, StyleSheet},
     validator::{ErrorMessage, Validation},
     Password, PasswordDisplayMode, Select, Text,
 };
@@ -18,32 +18,6 @@ use crate::{log, prelude::*};
 fn postpad(lines: u16) {
     for _ in 0..lines {
         println!();
-    }
-}
-
-fn into_inquire_color(color: crossterm::style::Color) -> Color {
-    use crossterm::style::Color as C;
-
-    match color {
-        C::Black => Color::Black,
-        C::Red => Color::LightRed,
-        C::DarkRed => Color::DarkRed,
-        C::Green => Color::LightGreen,
-        C::DarkGreen => Color::DarkGreen,
-        C::Yellow => Color::LightYellow,
-        C::DarkYellow => Color::DarkYellow,
-        C::Blue => Color::LightBlue,
-        C::DarkBlue => Color::DarkBlue,
-        C::Magenta => Color::LightMagenta,
-        C::DarkMagenta => Color::DarkMagenta,
-        C::Cyan => Color::LightCyan,
-        C::DarkCyan => Color::DarkCyan,
-        C::White => Color::White,
-        C::Grey => Color::Grey,
-        C::DarkGrey => Color::DarkGrey,
-        C::Rgb { r, g, b } => Color::Rgb { r, g, b },
-        C::AnsiValue(b) => Color::AnsiValue(b),
-        C::Reset => panic!("`Reset` is not an inquire color"),
     }
 }
 
@@ -144,9 +118,8 @@ where
                 }
             };
 
-        let (color, prefix) = pause_lock.prefix();
-        let render_config = RenderConfig::default()
-            .with_global_prefix(Styled::new(prefix).with_fg(into_inquire_color(color)));
+        let render_config =
+            RenderConfig::default().with_global_indentation(pause_lock.indentation() as u16);
 
         let mut text = Text::new(&prompt)
             .with_render_config(render_config)
@@ -212,9 +185,8 @@ where
             }
         };
 
-        let (color, prefix) = pause_lock.prefix();
         let render_config = RenderConfig::default()
-            .with_global_prefix(Styled::new(prefix).with_fg(into_inquire_color(color)))
+            .with_global_indentation(pause_lock.indentation() as u16)
             .with_help_message(StyleSheet::default().with_fg(Color::DarkBlue));
 
         let text = Password::new(&prompt)
@@ -261,9 +233,8 @@ impl<'a, T> SelectBuilder<'a, T> {
         let num_options = self.options.len();
         let pause_lock = log::pause_rendering(2 + num_options)?;
 
-        let (color, prefix) = pause_lock.prefix();
-        let render_config = RenderConfig::default()
-            .with_global_prefix(Styled::new(prefix).with_fg(into_inquire_color(color)));
+        let render_config =
+            RenderConfig::default().with_global_indentation(pause_lock.indentation() as u16);
 
         let option = Select::new(&self.message, self.options)
             .with_render_config(render_config)

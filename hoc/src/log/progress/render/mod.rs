@@ -1,5 +1,5 @@
 use std::{
-    io, mem, panic,
+    io, panic,
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc, Condvar, Mutex,
@@ -154,11 +154,9 @@ impl RenderThread {
                             let (is_paused_mutex, is_paused_cvar) = &*is_paused;
                             let mut is_paused_lock =
                                 is_paused_mutex.lock().expect(EXPECT_THREAD_NOT_POSIONED);
-                            let prefix = format!("{} ", anim::box_side_swell(anim::State::Paused))
-                                .repeat(pause_cursor.column() / 2);
                             is_paused_lock.replace(PauseData {
                                 message: message_mutex,
-                                prefix: (ProgressLog::RUNNING_COLOR, prefix),
+                                indentation: pause_cursor.column(),
                             });
                             is_paused_cvar.notify_one();
                         }
@@ -463,7 +461,7 @@ impl PauseLock {
                     Some(data) => {
                         break PauseData {
                             message: Arc::clone(&data.message),
-                            prefix: (data.prefix.0, mem::take(&mut data.prefix.1)),
+                            indentation: data.indentation,
                         }
                     }
                 }
@@ -473,8 +471,8 @@ impl PauseLock {
         Self { data }
     }
 
-    pub fn prefix(&self) -> (style::Color, &str) {
-        (self.data.prefix.0, &self.data.prefix.1)
+    pub fn indentation(&self) -> usize {
+        self.data.indentation
     }
 
     pub fn finish_with_message(self, level: Level, message: String) {
@@ -509,7 +507,7 @@ impl Drop for PauseLock {
 
 struct PauseData {
     message: Arc<Mutex<Option<(Level, String)>>>,
-    prefix: (style::Color, String),
+    indentation: usize,
 }
 
 struct RenderInfo {
