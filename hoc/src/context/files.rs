@@ -26,7 +26,7 @@ pub struct Files {
 }
 
 impl Files {
-    pub fn new<P>(files_dir: P) -> Self
+    pub(super) fn new<P>(files_dir: P) -> Self
     where
         P: Into<PathBuf>,
     {

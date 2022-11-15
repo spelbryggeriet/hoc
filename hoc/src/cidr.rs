@@ -61,7 +61,7 @@ impl Cidr {
         ip_addr >= self.start_address() && ip_addr < self.end_address()
     }
 
-    pub fn _step(&self, step: u128) -> Option<IpAddr> {
+    pub fn step(&self, step: u128) -> Option<IpAddr> {
         let (mut bits, _) = self.bits();
 
         bits += step;

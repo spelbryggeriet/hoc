@@ -27,14 +27,14 @@ pub struct Kv {
 }
 
 impl Kv {
-    pub fn new() -> Self {
+    pub(super) fn new() -> Self {
         Self {
             map: IndexMap::new(),
         }
     }
 
     #[throws(Error)]
-    pub fn get_value<'key, K>(&self, key: K) -> Item
+    pub fn get_item<'key, K>(&self, key: K) -> Item
     where
         K: Into<Cow<'key, Key>>,
     {
@@ -171,7 +171,7 @@ impl Kv {
                     // Traverse through the suffixes.
                     for (index, suffix) in indices.into_iter().zip(suffixes) {
                         let nested_key = KeyOwned::new_unchecked(prefix.join(suffix));
-                        if let Ok(item) = self.get_value(nested_key) {
+                        if let Ok(item) = self.get_item(nested_key) {
                             if index >= array.len() {
                                 array.extend(
                                     iter::repeat_with(|| Item::Value(Value::Bool(false)))
@@ -202,7 +202,7 @@ impl Kv {
                     .as_os_str()
                     .to_string_lossy();
                 let nested_key = KeyOwned::new_unchecked(prefix.join(&suffix));
-                if let Ok(item) = self.get_value(nested_key) {
+                if let Ok(item) = self.get_item(nested_key) {
                     map.insert(field.to_string(), item);
                 };
             }
@@ -230,34 +230,42 @@ impl Kv {
 
         debug!("Put value: {key} => {value}");
 
-        if self.map.contains_key(&**key) {
-            error!("Value for key {key} is already set");
+        let item = Item::Value(value);
 
-            let should_continue = select!("How do you want to resolve the key conflict?")
-                .with_option("Skip", || {
-                    warn!("Skipping to set value for key {key}");
-                    false
-                })
-                .with_option("Overwrite", || {
-                    warn!("Overwriting existing item for key {key}");
-                    true
-                })
-                .get()?;
+        match self.map.get(&**key) {
+            Some(existing) if *existing != item => {
+                error!("Key {key} is already set with a different item");
 
-            if !should_continue {
+                let should_continue = select!("How do you want to resolve the key conflict?")
+                    .with_option("Skip", || {
+                        warn!("Skipping to set value for key {key}");
+                        false
+                    })
+                    .with_option("Overwrite", || {
+                        warn!("Overwriting existing item for key {key}");
+                        true
+                    })
+                    .get()?;
+
+                if !should_continue {
+                    return;
+                }
+
+                if log_enabled!(Level::Debug) {
+                    trace!(
+                        "Old item for key {key}: {}",
+                        serde_json::to_string(&self.get_item(&*key)?)?
+                    );
+                }
+            }
+            Some(_) => {
+                debug!("The same item is already set, skipping");
                 return;
             }
-
-            if log_enabled!(Level::Debug) {
-                trace!(
-                    "Old item for key {key}: {}",
-                    serde_json::to_string(&self.get_value(&*key)?)?
-                );
-            }
+            _ => (),
         }
 
-        self.map
-            .insert(key.into_owned().into_path_buf(), Item::Value(value));
+        self.map.insert(key.into_owned().into_path_buf(), item);
     }
 
     #[throws(Error)]
@@ -332,6 +340,19 @@ impl Item {
             Self::Map(map) => {
                 TypeDescription::Map(map.iter().map(|(_, i)| i.type_description()).collect())
             }
+        }
+    }
+
+    #[throws(<T as TryFrom<Self>>::Error)]
+    pub fn convert<T: TryFrom<Self>>(self) -> T {
+        T::try_from(self)?
+    }
+
+    #[throws(as Option)]
+    pub fn as_bool(&self) -> bool {
+        match self {
+            Self::Value(Value::Bool(b)) => *b,
+            _ => throw!(),
         }
     }
 }
@@ -756,22 +777,22 @@ mod tests {
 
     #[throws(Error)]
     fn get_joined_vec(kv: &Kv, key: &Key) -> String {
-        Vec::<String>::try_from(kv.get_value(key)?)?.join(",")
+        Vec::<String>::try_from(kv.get_item(key)?)?.join(",")
     }
 
     #[test]
     #[throws(Error)]
     fn get_single_leaf() {
         let kv = kv()?;
-        u32::try_from(kv.get_value(key!("unsigned"))?)?.expect_val(1);
-        i32::try_from(kv.get_value(key!("signed"))?)?.expect_val(-1);
-        f32::try_from(kv.get_value(key!("float"))?)?.expect_val(1.0);
-        u64::try_from(kv.get_value(key!("u64"))?)?.expect_val(u64::MAX);
-        bool::try_from(kv.get_value(key!("bool"))?)?.expect_val(false);
-        String::try_from(kv.get_value(key!("string"))?)?.expect_val("hello".to_string());
-        bool::try_from(kv.get_value(key!("nested/one"))?)?.expect_val(true);
-        bool::try_from(kv.get_value(key!("nested/*"))?)?.expect_val(true);
-        bool::try_from(kv.get_value(key!("nested/two/adam"))?)?.expect_val(false);
+        u32::try_from(kv.get_item(key!("unsigned"))?)?.expect_val(1);
+        i32::try_from(kv.get_item(key!("signed"))?)?.expect_val(-1);
+        f32::try_from(kv.get_item(key!("float"))?)?.expect_val(1.0);
+        u64::try_from(kv.get_item(key!("u64"))?)?.expect_val(u64::MAX);
+        bool::try_from(kv.get_item(key!("bool"))?)?.expect_val(false);
+        String::try_from(kv.get_item(key!("string"))?)?.expect_val("hello".to_string());
+        bool::try_from(kv.get_item(key!("nested/one"))?)?.expect_val(true);
+        bool::try_from(kv.get_item(key!("nested/*"))?)?.expect_val(true);
+        bool::try_from(kv.get_item(key!("nested/two/adam"))?)?.expect_val(false);
     }
 
     #[test]
@@ -795,7 +816,7 @@ mod tests {
         use Value::*;
 
         let kv = kv()?;
-        Vec::<Value>::try_from(kv.get_value(key!("*"))?)?.expect_val(vec![
+        Vec::<Value>::try_from(kv.get_item(key!("*"))?)?.expect_val(vec![
             UnsignedInteger(1),
             SignedInteger(-1),
             FloatingPointNumber(1.0),
@@ -803,8 +824,8 @@ mod tests {
             Bool(false),
             String("hello".into()),
         ]);
-        Vec::<bool>::try_from(kv.get_value(key!("nested/*"))?)?.expect_val(vec![true]);
-        Vec::<bool>::try_from(kv.get_value(key!("nested/*/*"))?)?.expect_val(vec![false]);
+        Vec::<bool>::try_from(kv.get_item(key!("nested/*"))?)?.expect_val(vec![true]);
+        Vec::<bool>::try_from(kv.get_item(key!("nested/*/*"))?)?.expect_val(vec![false]);
         get_joined_vec(&kv, key!("array/one/*"))?.expect_val("t1,t2,t3,t4".to_string());
         get_joined_vec(&kv, key!("array/one/**"))?.expect_val("t1,t2,t3,t4".to_string());
         get_joined_vec(&kv, key!("array/*/*"))?.expect_val("t1,t2,t3,t4,r1,r2,r3,r4".to_string());
@@ -814,7 +835,7 @@ mod tests {
     #[throws(Error)]
     fn get_multiple_arrays() {
         let kv = kv()?;
-        Vec::<Vec<String>>::try_from(kv.get_value(key!("array/*/**"))?)?.expect_val(vec![
+        Vec::<Vec<String>>::try_from(kv.get_item(key!("array/*/**"))?)?.expect_val(vec![
             vec![
                 "t1".to_string(),
                 "t2".to_string(),
@@ -892,21 +913,20 @@ mod tests {
             },
             "map" map=> map.clone(),
         };
-        IndexMap::<String, Item>::try_from(kv.get_value(key!("map/one/adam/alpha/**"))?)?
+        IndexMap::<String, Item>::try_from(kv.get_item(key!("map/one/adam/alpha/**"))?)?
             .expect_val(alpha);
-        IndexMap::<String, Item>::try_from(kv.get_value(key!("map/one/adam/**"))?)?
-            .expect_val(adam);
-        IndexMap::<String, Item>::try_from(kv.get_value(key!("map/one/**"))?)?.expect_val(one);
-        IndexMap::<String, Item>::try_from(kv.get_value(key!("map/**"))?)?.expect_val(map);
-        IndexMap::<String, Item>::try_from(kv.get_value(key!("**"))?)?.expect_val(root);
+        IndexMap::<String, Item>::try_from(kv.get_item(key!("map/one/adam/**"))?)?.expect_val(adam);
+        IndexMap::<String, Item>::try_from(kv.get_item(key!("map/one/**"))?)?.expect_val(one);
+        IndexMap::<String, Item>::try_from(kv.get_item(key!("map/**"))?)?.expect_val(map);
+        IndexMap::<String, Item>::try_from(kv.get_item(key!("**"))?)?.expect_val(root);
     }
 
     #[test]
     #[throws(Error)]
     fn get_multiple_maps() {
         let kv = kv()?;
-        Vec::<IndexMap<String, Item>>::try_from(kv.get_value(key!("map/**/alpha/**"))?)?
-            .expect_val(vec![
+        Vec::<IndexMap<String, Item>>::try_from(kv.get_item(key!("map/**/alpha/**"))?)?.expect_val(
+            vec![
                 item_map! {
                     "string" => "hello",
                     "int" => 1u32,
@@ -919,7 +939,8 @@ mod tests {
                         "i64" => i64::MIN,
                     },
                 },
-            ]);
+            ],
+        );
     }
 
     #[test]
@@ -928,6 +949,6 @@ mod tests {
     fn get_array_no_zero_index() {
         let mut kv = kv()?;
         kv.put_value(key!("invalid_array/1"), false)?;
-        Vec::<bool>::try_from(kv.get_value(key!("invalid_array/**"))?)?;
+        Vec::<bool>::try_from(kv.get_item(key!("invalid_array/**"))?)?;
     }
 }

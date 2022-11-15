@@ -7,7 +7,7 @@ pub fn run() {
 
     let mut progresses = Vec::with_capacity(10);
     for progress in 1..=10 {
-        progresses.push(progress!("Progress {progress}"));
+        progresses.push(progress_with_handle!("Progress {progress}"));
         runner.run_suite()?;
     }
 }

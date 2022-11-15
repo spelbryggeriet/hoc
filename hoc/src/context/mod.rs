@@ -14,7 +14,7 @@ use serde::{de::Visitor, ser::SerializeMap, Deserialize, Deserializer, Serialize
 use tokio::{
     fs::{File, OpenOptions},
     runtime::Handle,
-    sync::RwLock,
+    sync::{RwLock, RwLockReadGuard, RwLockWriteGuard},
     task,
 };
 
@@ -22,12 +22,12 @@ use crate::prelude::*;
 use cache::Cache;
 use files::Files;
 use key::Key;
-use kv::{Kv, Value};
+use kv::Kv;
 
-mod cache;
-mod files;
+pub mod cache;
+pub mod files;
 pub mod key;
-mod kv;
+pub mod kv;
 
 static CONTEXT: OnceCell<Context> = OnceCell::new();
 
@@ -121,55 +121,24 @@ impl Context {
         }
     }
 
-    #[throws(anyhow::Error)]
-    pub async fn kv_put_value<'key, K, V>(&self, key: K, value: V)
-    where
-        K: Into<Cow<'key, Key>>,
-        V: Into<Value>,
-    {
-        self.kv.write().await.put_value(key, value)?;
+    pub async fn kv(&self) -> RwLockReadGuard<Kv> {
+        self.kv.read().await
     }
 
-    #[throws(anyhow::Error)]
-    pub async fn files_create_file<'key, K>(&self, key: K) -> (File, PathBuf)
-    where
-        K: Into<Cow<'key, Key>>,
-    {
-        self.files.write().await.create_file(key)?
+    pub async fn kv_mut(&self) -> RwLockWriteGuard<Kv> {
+        self.kv.write().await
     }
 
-    #[throws(anyhow::Error)]
-    pub async fn files_get_file<'key, K>(&self, key: K) -> (File, PathBuf)
-    where
-        K: Into<Cow<'key, Key>>,
-    {
-        self.files.read().await.get_file(key)?
+    pub async fn files(&self) -> RwLockReadGuard<Files> {
+        self.files.read().await
     }
 
-    #[throws(anyhow::Error)]
-    pub async fn cache_get_or_create_file_with<K, F>(&self, key: K, f: F) -> (File, PathBuf)
-    where
-        K: Into<Cow<'static, Key>>,
-        F: for<'a> CachedFileFn<'a>,
-    {
-        self.cache
-            .write()
-            .await
-            .get_or_create_file_with(key, f)
-            .await?
+    pub async fn files_mut(&self) -> RwLockWriteGuard<Files> {
+        self.files.write().await
     }
 
-    #[throws(anyhow::Error)]
-    pub async fn cache_create_or_overwrite_file_with<K, F>(&self, key: K, f: F) -> (File, PathBuf)
-    where
-        K: Into<Cow<'static, Key>>,
-        F: for<'a> CachedFileFn<'a>,
-    {
-        self.cache
-            .write()
-            .await
-            .create_or_overwrite_file_with(key, f)
-            .await?
+    pub async fn cache_mut(&self) -> RwLockWriteGuard<Cache> {
+        self.cache.write().await
     }
 
     #[throws(anyhow::Error)]
@@ -210,12 +179,12 @@ impl FileBuilder<Persisted> {
 
     #[throws(anyhow::Error)]
     pub async fn get(self) -> (File, PathBuf) {
-        get_context().files_get_file(self.key).await?
+        get_context().files().await.get_file(self.key)?
     }
 
     #[throws(anyhow::Error)]
     pub async fn create(self) -> (File, PathBuf) {
-        get_context().files_create_file(self.key).await?
+        get_context().files_mut().await.create_file(self.key)?
     }
 
     pub fn cached<F>(self, file_cacher: F) -> FileBuilder<Cached<F>>
@@ -245,11 +214,15 @@ where
     pub async fn get(self) -> (File, PathBuf) {
         if !self.state.clear {
             get_context()
-                .cache_get_or_create_file_with(self.key, self.state.file_cacher)
+                .cache_mut()
+                .await
+                .get_or_create_file_with(self.key, self.state.file_cacher)
                 .await?
         } else {
             get_context()
-                .cache_create_or_overwrite_file_with(self.key, self.state.file_cacher)
+                .cache_mut()
+                .await
+                .create_or_overwrite_file_with(self.key, self.state.file_cacher)
                 .await?
         }
     }

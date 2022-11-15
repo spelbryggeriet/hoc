@@ -1,12 +1,12 @@
-macro_rules! progress {
+macro_rules! progress_with_handle {
     ($($args:tt)*) => {{
         $crate::log::progress(format!($($args)*))
     }};
 }
 
-macro_rules! progress_scoped {
+macro_rules! progress {
     ($($args:tt)*) => {
-        let __progress = progress!($($args)*);
+        let __handle = progress_with_handle!($($args)*);
     };
 }
 
@@ -24,15 +24,25 @@ macro_rules! select {
     }};
 }
 
+macro_rules! get {
+    ($($args:tt)*) => {
+        async {
+            let __cow = $crate::util::try_from_arguments_to_key_cow(format_args!($($args)*))?;
+            $crate::context::get_context().kv().await.get_item(__cow)
+        }
+    };
+}
+
 macro_rules! put {
-    ($value:expr => $($args:tt)*) => {{
-        let __cow = $crate::util::try_from_arguments_to_key_cow(format_args!($($args)*))?;
-        $crate::context::get_context()
-            .kv_put_value(
-                __cow,
-                $value,
-            )
-    }};
+    ($value:expr => $($args:tt)*) => {
+        async {
+            let __cow = $crate::util::try_from_arguments_to_key_cow(format_args!($($args)*))?;
+            $crate::context::get_context()
+                .kv_mut()
+                .await
+                .put_value(__cow, $value)
+        }
+    };
 }
 
 macro_rules! context_file {

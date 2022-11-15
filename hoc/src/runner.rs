@@ -41,7 +41,7 @@ impl RunBuilder {
 
     #[throws(Error)]
     pub async fn run(mut self) -> Output {
-        let mut run_progress = Some(progress!("Running command: {}", self.cmd));
+        let mut run_progress = Some(progress_with_handle!("Running command: {}", self.cmd));
 
         return loop {
             match self.run_impl().await {
@@ -58,9 +58,9 @@ impl RunBuilder {
                     let new_progress = if modify_command {
                         self.cmd =
                             Cow::Owned(prompt!("New command").with_initial_input(&self.cmd).get()?);
-                        progress!("Running modified command: {}", self.cmd)
+                        progress_with_handle!("Running modified command: {}", self.cmd)
                     } else {
-                        progress!("Re-running command: {}", self.cmd)
+                        progress_with_handle!("Re-running command: {}", self.cmd)
                     };
 
                     run_progress.replace(new_progress);

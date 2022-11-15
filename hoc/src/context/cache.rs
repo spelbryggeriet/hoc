@@ -26,7 +26,7 @@ pub struct Cache {
 }
 
 impl Cache {
-    pub fn new<P>(cache_dir: P) -> Self
+    pub(super) fn new<P>(cache_dir: P) -> Self
     where
         P: Into<PathBuf>,
     {
@@ -72,27 +72,36 @@ impl Cache {
             Err(err) if err.kind() == io::ErrorKind::AlreadyExists => {
                 error!("File at path {path:?} already exists");
 
-                let should_truncate = select!("How do you want to resolve the file path conflict?")
+                let skipping = select!("How do you want to resolve the file path conflict?")
                     .with_option("Skip", || {
                         warn!("Skipping to create file for key {key}");
-                        false
+                        true
                     })
                     .with_option("Overwrite", || {
                         warn!("Overwriting existing file at path {path:?}");
-                        true
+                        false
                     })
                     .get()?;
 
-                file_options
+                let file = file_options
                     .create_new(false)
-                    .truncate(should_truncate)
+                    .truncate(!skipping)
                     .open(&path)
-                    .await?
+                    .await?;
+
+                if skipping {
+                    self.map
+                        .insert(key.into_owned().into_path_buf(), path.clone());
+
+                    return (file, path);
+                }
+
+                file
             }
             Err(err) => throw!(err),
         };
 
-        let caching_progress = progress!("Caching file {:?}", &**key);
+        let caching_progress = progress_with_handle!("Caching file {:?}", &**key);
 
         let mut retrying = false;
         loop {
