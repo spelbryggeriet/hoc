@@ -23,7 +23,7 @@ use crate::{
 #[derive(Serialize, Deserialize)]
 pub struct Kv {
     #[serde(flatten)]
-    map: IndexMap<PathBuf, Item>,
+    map: IndexMap<PathBuf, Value>,
 }
 
 impl Kv {
@@ -43,10 +43,12 @@ impl Kv {
         // If key does not contain any wildcards, then it is a "leaf", i.e. we can fetch the value
         // directly.
         if !key.as_os_str().as_bytes().contains(&b'*') {
+            debug!("Get item: {key}");
+
             return self
                 .map
                 .get(&**key)
-                .cloned()
+                .map(|value| Item::Value(value.clone()))
                 .ok_or_else(|| key::Error::KeyDoesNotExist(key.into_owned()))?;
         }
 
@@ -133,8 +135,8 @@ impl Kv {
         for (prefix, suffixes) in key_map {
             // If there are no suffixes, then it is a leaf and the prefix is its key.
             if suffixes.is_empty() {
-                if let Some(item) = self.map.get(prefix).cloned() {
-                    result.push(item);
+                if let Some(value) = self.map.get(prefix).cloned() {
+                    result.push(Item::Value(value));
                 }
                 continue;
             }
@@ -219,8 +221,12 @@ impl Kv {
         }
     }
 
+    /// Puts a value in the key-value store.
+    ///
+    /// Returns `None` if no previous value was present, `Some(None)` if a value is already present
+    /// but not replaced, or `Some(Some(value))` if a previous value has been replaced.
     #[throws(Error)]
-    pub fn put_value<'key, K, V>(&mut self, key: K, value: V)
+    pub fn put_value<'key, K, V>(&mut self, key: K, value: V, force: bool) -> Option<Option<Value>>
     where
         K: Into<Cow<'key, Key>>,
         V: Into<Value>,
@@ -230,26 +236,21 @@ impl Kv {
 
         debug!("Put value: {key} => {value}");
 
-        let item = Item::Value(value);
-
         match self.map.get(&**key) {
-            Some(existing) if *existing != item => {
-                error!("Key {key} is already set with a different item");
+            Some(existing) if *existing != value && !force => {
+                error!("Key {key} is already set with a different value");
 
                 let should_continue = select!("How do you want to resolve the key conflict?")
-                    .with_option("Skip", || {
-                        warn!("Skipping to set value for key {key}");
-                        false
-                    })
-                    .with_option("Overwrite", || {
-                        warn!("Overwriting existing item for key {key}");
-                        true
-                    })
+                    .with_option("Skip", || false)
+                    .with_option("Overwrite", || true)
                     .get()?;
 
                 if !should_continue {
-                    return;
+                    warn!("Skipping to set value for key {key}");
+                    return Some(None);
                 }
+
+                warn!("Overwriting existing item for key {key}");
 
                 if log_enabled!(Level::Debug) {
                     trace!(
@@ -258,18 +259,20 @@ impl Kv {
                     );
                 }
             }
-            Some(_) => {
-                debug!("The same item is already set, skipping");
-                return;
+            Some(_) if !force => {
+                debug!("The same value is already set, skipping");
+                return Some(None);
             }
             _ => (),
         }
 
-        self.map.insert(key.into_owned().into_path_buf(), item);
+        self.map
+            .insert(key.into_owned().into_path_buf(), value)
+            .map(Some)
     }
 
     #[throws(Error)]
-    pub fn _put_array<K, V, I>(&mut self, key_prefix: K, array: I)
+    pub fn _put_array<K, V, I>(&mut self, key_prefix: K, array: I, force: bool)
     where
         K: Into<PathBuf>,
         V: Into<Value>,
@@ -278,12 +281,12 @@ impl Kv {
         let key_prefix = key_prefix.into();
         for (index, value) in array.into_iter().enumerate() {
             let index_key = KeyOwned::new(key_prefix.join(index.to_string()))?;
-            self.put_value(index_key, value)?;
+            self.put_value(index_key, value, force)?;
         }
     }
 
     #[throws(Error)]
-    pub fn _put_map<K, V, Q, I>(&mut self, key_prefix: K, map: I)
+    pub fn _put_map<K, V, Q, I>(&mut self, key_prefix: K, map: I, force: bool)
     where
         K: Into<PathBuf>,
         V: Into<Value>,
@@ -293,7 +296,35 @@ impl Kv {
         let key_prefix = key_prefix.into();
         for (key, value) in map.into_iter() {
             let map_key = KeyOwned::new(key_prefix.join(key))?;
-            self.put_value(map_key, value)?;
+            self.put_value(map_key, value, force)?;
+        }
+    }
+
+    #[throws(Error)]
+    pub fn drop_value<'key, K>(&mut self, key: K, force: bool) -> Option<Value>
+    where
+        K: Into<Cow<'key, Key>>,
+    {
+        let key = key.into();
+
+        debug!("Drop value: {key}");
+
+        match self.map.remove(&**key) {
+            Some(existing) => Some(existing),
+            None if !force => {
+                error!("Key {key} does not exist");
+
+                let skipping = select!("How do you want to resolve the key conflict?")
+                    .with_option("Skip", || true)
+                    .get()?;
+
+                if skipping {
+                    warn!("Skipping to drop value for key {key}");
+                }
+
+                None
+            }
+            _ => None,
         }
     }
 
@@ -753,25 +784,25 @@ mod tests {
             "i64" => i64::MIN,
         };
         let two = ["t1", "t2", "t3", "t4", "r1", "r2", "r3", "r4"];
-        kv.put_value(key!("unsigned"), 1u32)?;
-        kv.put_value(key!("signed"), -1)?;
-        kv.put_value(key!("float"), 1.0)?;
-        kv.put_value(key!("u64"), u64::MAX)?;
-        kv.put_value(key!("bool"), false)?;
-        kv.put_value(key!("string"), "hello")?;
-        kv.put_value(key!("nested/one"), true)?;
-        kv.put_value(key!("nested/two/adam"), false)?;
-        kv.put_value(key!("nested/two/betsy/alpha/token"), ttokens[0])?;
-        kv.put_value(key!("nested/two/betsy/beta/token"), ttokens[1])?;
-        kv.put_value(key!("nested/two/betsy/delta/token"), ttokens[2])?;
-        kv.put_value(key!("nested/two/betsy/gamma/token"), ttokens[3])?;
-        kv._put_array("array/one", ttokens)?;
-        kv._put_array("array/two", rtokens.clone())?;
-        kv._put_map("map/one/adam/alpha", alpha)?;
-        kv._put_array("map/one/adam/beta", rtokens)?;
-        kv._put_map("map/one/betsy/alpha", alpha2)?;
-        kv._put_map("map/one/betsy/alpha/extra", extra)?;
-        kv._put_array("map/two", two)?;
+        kv.put_value(key!("unsigned"), 1u32, true)?;
+        kv.put_value(key!("signed"), -1, true)?;
+        kv.put_value(key!("float"), 1.0, true)?;
+        kv.put_value(key!("u64"), u64::MAX, true)?;
+        kv.put_value(key!("bool"), false, true)?;
+        kv.put_value(key!("string"), "hello", true)?;
+        kv.put_value(key!("nested/one"), true, true)?;
+        kv.put_value(key!("nested/two/adam"), false, true)?;
+        kv.put_value(key!("nested/two/betsy/alpha/token"), ttokens[0], true)?;
+        kv.put_value(key!("nested/two/betsy/beta/token"), ttokens[1], true)?;
+        kv.put_value(key!("nested/two/betsy/delta/token"), ttokens[2], true)?;
+        kv.put_value(key!("nested/two/betsy/gamma/token"), ttokens[3], true)?;
+        kv._put_array("array/one", ttokens, true)?;
+        kv._put_array("array/two", rtokens.clone(), true)?;
+        kv._put_map("map/one/adam/alpha", alpha, true)?;
+        kv._put_array("map/one/adam/beta", rtokens, true)?;
+        kv._put_map("map/one/betsy/alpha", alpha2, true)?;
+        kv._put_map("map/one/betsy/alpha/extra", extra, true)?;
+        kv._put_array("map/two", two, true)?;
         kv
     }
 
@@ -948,7 +979,48 @@ mod tests {
     #[throws(Error)]
     fn get_array_no_zero_index() {
         let mut kv = kv()?;
-        kv.put_value(key!("invalid_array/1"), false)?;
+        kv.put_value(key!("invalid_array/1"), false, true)?;
         Vec::<bool>::try_from(kv.get_item(key!("invalid_array/**"))?)?;
+    }
+}
+
+pub mod ledger {
+    use std::mem;
+
+    use async_trait::async_trait;
+
+    use super::{KeyOwned, Value};
+    use crate::ledger::Transaction;
+
+    pub struct Put {
+        key: KeyOwned,
+        previous_value: Option<Option<Value>>,
+    }
+
+    impl Put {
+        pub fn new(key: KeyOwned, previous_value: Option<Option<Value>>) -> Self {
+            Self {
+                key,
+                previous_value,
+            }
+        }
+    }
+
+    #[async_trait]
+    impl Transaction for Put {
+        async fn revert(&mut self) -> anyhow::Result<()> {
+            let mut kv = crate::context::get_context().kv_mut().await;
+            let key = mem::replace(&mut self.key, crate::context::key::KeyOwned::empty());
+            match self.previous_value.take() {
+                Some(Some(previous_value)) => {
+                    kv.put_value(key, previous_value, true)?;
+                }
+                Some(None) => (),
+                None => {
+                    kv.drop_value(key, true)?;
+                }
+            }
+            Ok(())
+        }
     }
 }

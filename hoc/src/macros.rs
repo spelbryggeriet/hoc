@@ -37,10 +37,15 @@ macro_rules! put {
     ($value:expr => $($args:tt)*) => {
         async {
             let __cow = $crate::util::try_from_arguments_to_key_cow(format_args!($($args)*))?;
-            $crate::context::get_context()
+            let __previous = $crate::context::get_context()
                 .kv_mut()
                 .await
-                .put_value(__cow, $value)
+                .put_value(__cow.as_ref(), $value, false)?;
+            $crate::ledger::Ledger::get_or_init()
+                .lock()
+                .await
+                .add($crate::context::kv::ledger::Put::new(__cow.into_owned(), __previous).into());
+            ::anyhow::Ok(())
         }
     };
 }

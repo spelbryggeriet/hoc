@@ -79,6 +79,10 @@ impl KeyOwned {
         unchecked
     }
 
+    pub fn empty() -> Self {
+        Self::new_unchecked("")
+    }
+
     pub(super) fn new_unchecked<P: Into<PathBuf>>(path_buf: P) -> Self {
         Self {
             inner: path_buf.into(),

@@ -1,7 +1,12 @@
 use std::{env, process::ExitCode};
 
 use clap::Parser;
+use futures::StreamExt;
 use scopeguard::defer;
+use tokio::pin;
+
+use self::{command::Command, ledger::Ledger};
+use prelude::*;
 
 #[macro_use]
 mod macros;
@@ -9,14 +14,12 @@ mod macros;
 mod cidr;
 mod command;
 mod context;
+mod ledger;
 mod log;
 mod prelude;
 mod prompt;
 mod runner;
 mod util;
-
-use command::Command;
-use prelude::*;
 
 #[derive(Parser)]
 struct App {
@@ -43,7 +46,34 @@ impl App {
             }
         }
 
-        self.command.run().await?;
+        match self.command.run().await {
+            Ok(()) => (),
+            Err(err) => {
+                error!("{err}");
+
+                let rollback = select!("Do you want to roll back the changes?")
+                    .with_option("Yes", || true)
+                    .with_option("No", || false)
+                    .get()?;
+
+                if rollback {
+                    progress!("Rolling back changes");
+
+                    let mut ledger = Ledger::get_or_init().lock().await;
+                    let stream = ledger.rollback();
+                    pin!(stream);
+                    while let Some(res) = stream.next().await {
+                        match res {
+                            Ok(()) => (),
+                            Err(err) => {
+                                error!("{err}");
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
