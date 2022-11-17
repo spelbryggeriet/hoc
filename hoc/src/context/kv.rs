@@ -994,11 +994,11 @@ pub mod ledger {
 
     pub struct Put {
         key: KeyOwned,
-        previous_value: Option<Option<Value>>,
+        previous_value: Option<Value>,
     }
 
     impl Put {
-        pub fn new(key: KeyOwned, previous_value: Option<Option<Value>>) -> Self {
+        pub fn new(key: KeyOwned, previous_value: Option<Value>) -> Self {
             Self {
                 key,
                 previous_value,
@@ -1008,14 +1008,17 @@ pub mod ledger {
 
     #[async_trait]
     impl Transaction for Put {
+        fn description(&self) -> &'static str {
+            "Put value"
+        }
+
         async fn revert(&mut self) -> anyhow::Result<()> {
             let mut kv = crate::context::get_context().kv_mut().await;
             let key = mem::replace(&mut self.key, crate::context::key::KeyOwned::empty());
             match self.previous_value.take() {
-                Some(Some(previous_value)) => {
+                Some(previous_value) => {
                     kv.put_value(key, previous_value, true)?;
                 }
-                Some(None) => (),
                 None => {
                     kv.drop_value(key, true)?;
                 }

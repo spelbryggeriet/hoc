@@ -62,15 +62,7 @@ impl App {
                     let mut ledger = Ledger::get_or_init().lock().await;
                     let stream = ledger.rollback();
                     pin!(stream);
-                    while let Some(res) = stream.next().await {
-                        match res {
-                            Ok(()) => (),
-                            Err(err) => {
-                                error!("{err}");
-                                break;
-                            }
-                        }
-                    }
+                    while let Some(()) = stream.next().await {}
                 }
             }
         }

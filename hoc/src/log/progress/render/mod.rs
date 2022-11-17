@@ -563,7 +563,7 @@ impl SimpleLog {
         match self.level? {
             Level::Error => ('\u{f00d}', style::Color::Red),
             Level::Warn => ('\u{f12a}', style::Color::Yellow),
-            Level::Info => ('\u{fcaf}', style::Color::White),
+            Level::Info => ('\u{f48b}', style::Color::White),
             Level::Debug => ('\u{fd2b}', style::Color::DarkMagenta),
             Level::Trace => ('\u{e241}', style::Color::DarkGrey),
         }

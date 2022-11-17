@@ -2,16 +2,14 @@ use std::{borrow::Cow, io::SeekFrom, path::PathBuf};
 
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
-use thiserror::Error;
 use tokio::{
     fs::{self, File, OpenOptions},
     io::{self, AsyncSeekExt},
 };
 
 use crate::{
-    context::key::{self, Key},
+    context::{key::Key, Error},
     prelude::*,
-    prompt,
 };
 
 use super::CachedFileFn;
@@ -132,7 +130,7 @@ impl Cache {
     }
 
     #[throws(Error)]
-    pub async fn create_or_overwrite_file_with<K, F>(&mut self, key: K, f: F) -> (File, PathBuf)
+    pub async fn _create_or_overwrite_file_with<K, F>(&mut self, key: K, f: F) -> (File, PathBuf)
     where
         K: Into<Cow<'static, Key>>,
         F: for<'a> CachedFileFn<'a>,
@@ -157,26 +155,11 @@ impl Cache {
 
         f(&mut file, &path, false)
             .await
-            .map_err(|err| Error::Custom(err.into()))?;
+            .map_err(|err| Error::_Custom(err.into()))?;
 
         self.map
             .insert(key.into_owned().into_path_buf(), path.clone());
 
         (file, path)
     }
-}
-
-#[derive(Debug, Error)]
-pub enum Error {
-    #[error(transparent)]
-    Io(#[from] io::Error),
-
-    #[error(transparent)]
-    Key(#[from] key::Error),
-
-    #[error(transparent)]
-    Prompt(#[from] prompt::Error),
-
-    #[error(transparent)]
-    Custom(anyhow::Error),
 }

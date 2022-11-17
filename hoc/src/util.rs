@@ -6,6 +6,8 @@ use std::{
     str::FromStr,
 };
 
+use rand::seq::SliceRandom;
+
 use crate::{
     context::key::{self, Key, KeyOwned},
     prelude::*,
@@ -85,6 +87,12 @@ pub fn numeral(n: u64) -> Cow<'static, str> {
             list.join("-".into()).into()
         }
     }
+}
+
+pub fn random_string(source: &str, len: usize) -> String {
+    let mut rng = rand::thread_rng();
+    let sample: Vec<char> = source.chars().collect();
+    sample.choose_multiple(&mut rng, len).collect()
 }
 
 pub struct Secret<T>(T);

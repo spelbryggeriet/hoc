@@ -41,10 +41,14 @@ macro_rules! put {
                 .kv_mut()
                 .await
                 .put_value(__cow.as_ref(), $value, false)?;
-            $crate::ledger::Ledger::get_or_init()
-                .lock()
-                .await
-                .add($crate::context::kv::ledger::Put::new(__cow.into_owned(), __previous).into());
+
+            if __previous.is_none() || __previous != Some(None) {
+                $crate::ledger::Ledger::get_or_init()
+                    .lock()
+                    .await
+                    .add($crate::context::kv::ledger::Put::new(__cow.into_owned(), __previous.flatten()));
+            }
+
             ::anyhow::Ok(())
         }
     };

@@ -1,19 +1,15 @@
-use std::{
-    borrow::Cow,
-    fs::{self, File as BlockingFile},
-    io,
-    path::PathBuf,
-};
+use std::{borrow::Cow, fs::File as BlockingFile, future::Future, io, path::PathBuf};
 
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
-use thiserror::Error;
-use tokio::fs::File;
+use tokio::fs::{self, File, OpenOptions};
 
 use crate::{
-    context::key::{self, Key},
+    context::{
+        key::{self, Key},
+        Error,
+    },
     prelude::*,
-    prompt,
 };
 
 #[derive(Serialize, Deserialize)]
@@ -37,36 +33,45 @@ impl Files {
     }
 
     #[throws(Error)]
-    pub fn create_file<'key, K>(&mut self, key: K) -> (File, PathBuf)
+    pub async fn create_file<'key, K, F, Fut>(
+        &mut self,
+        key: K,
+        on_overwrite: F,
+    ) -> ((File, PathBuf), bool)
     where
         K: Into<Cow<'key, Key>>,
+        F: FnOnce(PathBuf) -> Fut,
+        Fut: Future<Output = Result<(), Error>>,
     {
         let key = key.into();
 
         debug!("Create file for key: {key}");
 
-        let mut file_options = BlockingFile::options();
-        file_options.write(true).read(true);
+        let mut file_options = OpenOptions::new();
+        file_options.read(true).write(true);
 
+        let mut had_previous_file = false;
         if let Some(path) = self.map.get(&**key) {
             error!("File for key {key} is already created");
 
-            let file_options_clone = file_options.clone();
-            let file_pair = select!("How do you want to resolve the key conflict?")
-                .with_option("Skip", || -> Result<_, Error> {
-                    warn!("Skipping to create file for key {key}");
-                    Ok(Some((File::from_std(file_options_clone.open(path)?), path)))
-                })
-                .with_option("Overwrite", || {
-                    warn!("Overwriting existing file for key {key}");
-                    file_options.truncate(true);
-                    Ok(None)
-                })
-                .get()??;
+            had_previous_file = true;
+            let overwrite = select!("How do you want to resolve the key conflict?")
+                .with_option("Skip", || false)
+                .with_option("Overwrite", || true)
+                .get()?;
 
-            if let Some((file, path)) = file_pair {
-                return (file, path.clone());
+            if !overwrite {
+                warn!("Skipping to create file for key {key}");
+                return (
+                    (file_options.open(path).await?, path.clone()),
+                    had_previous_file,
+                );
             }
+
+            warn!("Overwriting existing file for key {key}");
+            file_options.truncate(true).create(true);
+
+            on_overwrite(path.clone()).await?;
         } else {
             file_options.create_new(true);
         }
@@ -74,33 +79,35 @@ impl Files {
         let path = self.files_dir.join(&**key);
 
         if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)?;
+            fs::create_dir_all(parent).await?;
         }
 
-        let file = match file_options.open(&path) {
+        let file = match file_options.open(&path).await {
             Ok(file) => file,
             Err(err) if err.kind() == io::ErrorKind::AlreadyExists => {
                 error!("File at path {path:?} already exists");
 
-                let mut file_options_clone = file_options.clone();
-                select!("How do you want to resolve the file path conflict?")
-                    .with_option("Skip", || -> Result<_, Error> {
-                        warn!("Skipping to create file for key {key}");
-                        Ok(file_options_clone.create_new(false).open(&path)?)
-                    })
-                    .with_option("Overwrite", || {
-                        warn!("Overwriting existing file at path {path:?}");
-                        Ok(file_options.create_new(false).truncate(true).open(&path)?)
-                    })
-                    .get()??
+                file_options.create_new(false);
+                let overwrite = select!("How do you want to resolve the file path conflict?")
+                    .with_option("Skip", || false)
+                    .with_option("Overwrite", || true)
+                    .get()?;
+
+                if !overwrite {
+                    warn!("Skipping to create file for key {key}");
+                    file_options.open(&path).await?
+                } else {
+                    warn!("Overwriting existing file at path {path:?}");
+                    file_options.truncate(true).open(&path).await?
+                }
             }
             Err(err) => throw!(err),
         };
 
         self.map
-            .insert(key.clone().into_owned().into_path_buf(), path);
+            .insert(key.clone().into_owned().into_path_buf(), path.clone());
 
-        (File::from_std(file), key.into_owned().into_path_buf())
+        ((file, path), had_previous_file)
     }
 
     #[throws(Error)]
@@ -129,20 +136,94 @@ impl Files {
             return (File::from_std(file), PathBuf::from(path));
         }
 
-        error!("File for key {key} does not exists");
+        throw!(key::Error::KeyDoesNotExist(key.into_owned()));
+    }
 
-        return select!("How do you want to resolve the key conflict?").get()?;
+    #[throws(Error)]
+    pub async fn remove_file<'key, K>(&mut self, key: K, force: bool)
+    where
+        K: Into<Cow<'key, Key>>,
+    {
+        let key = key.into();
+
+        debug!("Remove file for key: {key}");
+
+        match self.map.remove(&**key) {
+            Some(path) => {
+                fs::remove_file(path).await?;
+            }
+            None if !force => {
+                error!("Key {key} does not exist.");
+
+                let skipping = select!("How do you want to resolve the key conflict?")
+                    .with_option("Skip", || true)
+                    .get()?;
+
+                if skipping {
+                    warn!("Skipping to remove file for key {key}");
+                }
+            }
+            None => (),
+        }
     }
 }
 
-#[derive(Debug, Error)]
-pub enum Error {
-    #[error(transparent)]
-    Io(#[from] io::Error),
+pub mod ledger {
+    use std::{mem, path::PathBuf};
 
-    #[error(transparent)]
-    Key(#[from] key::Error),
+    use async_trait::async_trait;
+    use tokio::fs;
 
-    #[error(transparent)]
-    Prompt(#[from] prompt::Error),
+    use crate::{
+        context::{
+            self,
+            key::{self, KeyOwned},
+        },
+        ledger::Transaction,
+        prelude::*,
+    };
+
+    pub struct Create {
+        key: KeyOwned,
+        current_file: PathBuf,
+        previous_file: Option<PathBuf>,
+    }
+
+    impl Create {
+        pub fn new(key: KeyOwned, current_file: PathBuf, previous_file: Option<PathBuf>) -> Self {
+            Self {
+                key,
+                current_file,
+                previous_file,
+            }
+        }
+    }
+
+    #[async_trait]
+    impl Transaction for Create {
+        fn description(&self) -> &'static str {
+            "Create file"
+        }
+
+        async fn revert(&mut self) -> anyhow::Result<()> {
+            let context = context::get_context();
+            let current_file = mem::take(&mut self.current_file);
+            let key = mem::replace(&mut self.key, key::KeyOwned::empty());
+            match self.previous_file.take() {
+                Some(previous_file) => {
+                    debug!("Move temporary file: {previous_file:?} => {current_file:?}");
+                    fs::rename(previous_file, current_file).await?;
+                    context
+                        .temp_files_mut()
+                        .await
+                        .remove_file(key, true)
+                        .await?;
+                }
+                None => {
+                    context.files_mut().await.remove_file(key, true).await?;
+                }
+            }
+            Ok(())
+        }
+    }
 }

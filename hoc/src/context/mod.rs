@@ -1,7 +1,7 @@
 use std::{
     borrow::Cow,
     fmt::{self, Formatter},
-    fs::{self, File as BlockingFile},
+    fs::File as BlockingFile,
     future::{Future, IntoFuture},
     io,
     os::unix::fs::PermissionsExt,
@@ -11,23 +11,22 @@ use std::{
 
 use once_cell::sync::OnceCell;
 use serde::{de::Visitor, ser::SerializeMap, Deserialize, Deserializer, Serialize};
+use thiserror::Error;
 use tokio::{
-    fs::{File, OpenOptions},
+    fs::{self, File, OpenOptions},
     runtime::Handle,
     sync::{RwLock, RwLockReadGuard, RwLockWriteGuard},
     task,
 };
 
-use crate::prelude::*;
-use cache::Cache;
-use files::Files;
-use key::Key;
-use kv::Kv;
+use self::{cache::Cache, files::Files, key::Key, kv::Kv, temp::TempFiles};
+use crate::{ledger::Ledger, prelude::*, prompt};
 
 pub mod cache;
 pub mod files;
 pub mod key;
 pub mod kv;
+pub mod temp;
 
 static CONTEXT: OnceCell<Context> = OnceCell::new();
 
@@ -52,6 +51,7 @@ pub fn get_context() -> &'static Context {
 pub struct Context {
     kv: RwLock<Kv>,
     files: RwLock<Files>,
+    temp_files: RwLock<TempFiles>,
     cache: RwLock<Cache>,
     data_dir: PathBuf,
 }
@@ -69,12 +69,12 @@ impl Context {
         let cache_dir = cache_dir.into();
 
         debug!("Creating data directory");
-        fs::create_dir_all(&data_dir)?;
+        fs::create_dir_all(&data_dir).await?;
 
         debug!("Setting data directory permissions");
         let mut permissions = data_dir.metadata()?.permissions();
         permissions.set_mode(0o700);
-        fs::set_permissions(&data_dir, permissions)?;
+        fs::set_permissions(&data_dir, permissions).await?;
 
         let context_path = data_dir.join("context.yaml");
 
@@ -91,7 +91,8 @@ impl Context {
                 debug!("Deserializing context from file");
                 let mut context: Self = serde_yaml::from_reader(File::into_std(file).await)?;
                 context.files.write().await.files_dir = data_dir.join("files");
-                context.cache.write().await.cache_dir = cache_dir;
+                context.temp_files.write().await.files_dir = cache_dir.join("temp");
+                context.cache.write().await.cache_dir = cache_dir.join("cache");
                 context.data_dir = data_dir;
                 context
             }
@@ -109,7 +110,8 @@ impl Context {
                 let context = Self {
                     kv: RwLock::new(Kv::new()),
                     files: RwLock::new(Files::new(data_dir.join("files"))),
-                    cache: RwLock::new(Cache::new(cache_dir)),
+                    temp_files: RwLock::new(TempFiles::new(cache_dir.join("temp"))),
+                    cache: RwLock::new(Cache::new(cache_dir.join("cache"))),
                     data_dir,
                 };
 
@@ -137,13 +139,21 @@ impl Context {
         self.files.write().await
     }
 
+    pub async fn temp_files(&self) -> RwLockReadGuard<TempFiles> {
+        self.temp_files.read().await
+    }
+
+    pub async fn temp_files_mut(&self) -> RwLockWriteGuard<TempFiles> {
+        self.temp_files.write().await
+    }
+
     pub async fn cache_mut(&self) -> RwLockWriteGuard<Cache> {
         self.cache.write().await
     }
 
     #[throws(anyhow::Error)]
     pub fn persist(&self) {
-        info!("Persisting context");
+        progress!("Persisting context");
 
         debug!("Opening context file for writing");
         let file = BlockingFile::options()
@@ -154,7 +164,11 @@ impl Context {
         debug!("Serializing context to file");
         serde_yaml::to_writer(file, self)?;
 
-        debug!("Context persisted");
+        debug!("Cleaning temporary files");
+        let temp_files = self.temp_files.write();
+        task::block_in_place(|| {
+            Handle::current().block_on(async { temp_files.await.clean().await })
+        })?;
     }
 }
 
@@ -164,9 +178,9 @@ pub struct FileBuilder<S> {
 }
 
 pub struct Persisted(());
+pub struct Temporary(());
 pub struct Cached<F> {
     file_cacher: F,
-    clear: bool,
 }
 
 impl FileBuilder<Persisted> {
@@ -184,7 +198,41 @@ impl FileBuilder<Persisted> {
 
     #[throws(anyhow::Error)]
     pub async fn create(self) -> (File, PathBuf) {
-        get_context().files_mut().await.create_file(self.key)?
+        let context = get_context();
+        let mut previous_path = None;
+        let ((file, path), had_previous_path) = context
+            .files_mut()
+            .await
+            .create_file(self.key.as_ref(), |path| async {
+                let (_, temp_path) = context
+                    .temp_files_mut()
+                    .await
+                    .create_file(self.key.as_ref())?;
+                fs::rename(path, &temp_path).await?;
+                previous_path.replace(temp_path);
+                Ok(())
+            })
+            .await?;
+
+        if !had_previous_path || previous_path.is_some() {
+            Ledger::get_or_init()
+                .lock()
+                .await
+                .add(files::ledger::Create::new(
+                    self.key.into_owned(),
+                    path.clone(),
+                    previous_path,
+                ));
+        }
+
+        (file, path)
+    }
+
+    pub fn _temporary(self) -> FileBuilder<Temporary> {
+        FileBuilder {
+            key: self.key,
+            state: Temporary(()),
+        }
     }
 
     pub fn cached<F>(self, file_cacher: F) -> FileBuilder<Cached<F>>
@@ -193,11 +241,20 @@ impl FileBuilder<Persisted> {
     {
         FileBuilder {
             key: self.key,
-            state: Cached {
-                file_cacher,
-                clear: false,
-            },
+            state: Cached { file_cacher },
         }
+    }
+}
+
+impl FileBuilder<Temporary> {
+    #[throws(anyhow::Error)]
+    pub async fn get(self) -> (File, PathBuf) {
+        get_context().temp_files().await.get_file(self.key)?
+    }
+
+    #[throws(anyhow::Error)]
+    pub async fn create(self) -> (File, PathBuf) {
+        get_context().temp_files_mut().await.create_file(self.key)?
     }
 }
 
@@ -205,26 +262,22 @@ impl<F> FileBuilder<Cached<F>>
 where
     F: for<'a> CachedFileFn<'a>,
 {
-    pub fn _clear_if_present(mut self) -> Self {
-        self.state.clear = true;
-        self
+    #[throws(anyhow::Error)]
+    pub async fn get(self) -> (File, PathBuf) {
+        get_context()
+            .cache_mut()
+            .await
+            .get_or_create_file_with(self.key, self.state.file_cacher)
+            .await?
     }
 
     #[throws(anyhow::Error)]
-    pub async fn get(self) -> (File, PathBuf) {
-        if !self.state.clear {
-            get_context()
-                .cache_mut()
-                .await
-                .get_or_create_file_with(self.key, self.state.file_cacher)
-                .await?
-        } else {
-            get_context()
-                .cache_mut()
-                .await
-                .create_or_overwrite_file_with(self.key, self.state.file_cacher)
-                .await?
-        }
+    pub async fn _rewrite(self) -> (File, PathBuf) {
+        get_context()
+            .cache_mut()
+            .await
+            ._create_or_overwrite_file_with(self.key, self.state.file_cacher)
+            .await?
     }
 }
 
@@ -246,6 +299,15 @@ where
 type FileBuilderFuture = Pin<Box<dyn Future<Output = anyhow::Result<(File, PathBuf)>>>>;
 
 impl IntoFuture for FileBuilder<Persisted> {
+    type IntoFuture = FileBuilderFuture;
+    type Output = <FileBuilderFuture as Future>::Output;
+
+    fn into_future(self) -> Self::IntoFuture {
+        Box::pin(self.get())
+    }
+}
+
+impl IntoFuture for FileBuilder<Temporary> {
     type IntoFuture = FileBuilderFuture;
     type Output = <FileBuilderFuture as Future>::Output;
 
@@ -297,7 +359,6 @@ impl<'de> Deserialize<'de> for Context {
         struct FieldVisitor;
         impl<'de> Visitor<'de> for FieldVisitor {
             type Value = Field;
-
             fn expecting(&self, f: &mut Formatter) -> fmt::Result {
                 write!(f, "a field identifier")
             }
@@ -356,6 +417,7 @@ impl<'de> Deserialize<'de> for Context {
                 Context {
                     kv: RwLock::new(kv),
                     files: RwLock::new(files),
+                    temp_files: RwLock::new(TempFiles::empty()),
                     cache: RwLock::new(cache),
                     data_dir: PathBuf::new(),
                 }
@@ -364,4 +426,19 @@ impl<'de> Deserialize<'de> for Context {
 
         deserializer.deserialize_map(ContextVisitor)
     }
+}
+
+#[derive(Debug, Error)]
+pub enum Error {
+    #[error(transparent)]
+    Io(#[from] io::Error),
+
+    #[error(transparent)]
+    Key(#[from] key::Error),
+
+    #[error(transparent)]
+    Prompt(#[from] prompt::Error),
+
+    #[error(transparent)]
+    _Custom(anyhow::Error),
 }
