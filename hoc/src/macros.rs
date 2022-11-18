@@ -1,24 +1,23 @@
-use std::borrow::Cow;
-
 use crate::{
-    context::{self, key::Key, kv},
+    context::{self, key::KeyOwned, kv},
     ledger::Ledger,
     prelude::*,
 };
 
 #[throws(anyhow::Error)]
-pub async fn put<V: Into<kv::Value>>(key: Cow<'static, Key>, value: V) {
-    let previous_value =
-        context::get_context()
-            .kv_mut()
-            .await
-            .put_value(key.as_ref(), value, false)?;
+pub async fn put<K: Into<KeyOwned>, V: Into<kv::Value>>(key: K, value: V) {
+    let key = key.into();
+
+    let previous_value = context::get_context()
+        .kv_mut()
+        .await
+        .put_value(&key, value, false)?;
 
     if previous_value.is_none() || previous_value != Some(None) {
-        Ledger::get_or_init().lock().await.add(kv::ledger::Put::new(
-            key.into_owned(),
-            previous_value.flatten(),
-        ));
+        Ledger::get_or_init()
+            .lock()
+            .await
+            .add(kv::ledger::Put::new(key, previous_value.flatten()));
     }
 }
 
@@ -36,23 +35,23 @@ macro_rules! progress {
 
 macro_rules! prompt {
     ($($args:tt)*) => {{
-        let __cow = $crate::util::from_arguments_to_str_cow(format_args!($($args)*));
-        $crate::prompt::PromptBuilder::new(__cow)
+        let __msg = $crate::util::from_arguments_to_str_cow(format_args!($($args)*));
+        $crate::prompt::PromptBuilder::new(__msg)
     }};
 }
 
 macro_rules! select {
     ($($args:tt)*) => {{
-        let __cow = $crate::util::from_arguments_to_str_cow(format_args!($($args)*));
-        $crate::prompt::SelectBuilder::new(__cow)
+        let __msg = $crate::util::from_arguments_to_str_cow(format_args!($($args)*));
+        $crate::prompt::SelectBuilder::new(__msg)
     }};
 }
 
 macro_rules! get {
     ($($args:tt)*) => {
         async {
-            let __cow = $crate::util::try_from_arguments_to_key_cow(format_args!($($args)*))?;
-            $crate::context::get_context().kv().await.get_item(__cow)
+            let __key = $crate::util::from_arguments_to_str_cow(format_args!($($args)*));
+            $crate::context::get_context().kv().await.get_item(&__key)
         }
     };
 }
@@ -60,7 +59,7 @@ macro_rules! get {
 macro_rules! put {
     ($value:expr => $($args:tt)*) => {
         $crate::macros::put(
-            $crate::util::try_from_arguments_to_key_cow(format_args!($($args)*))?,
+            &$crate::util::from_arguments_to_str_cow(format_args!($($args)*)),
             $value,
         )
     };
@@ -68,8 +67,8 @@ macro_rules! put {
 
 macro_rules! context_file {
     ($($args:tt)*) => {{
-        let __cow = $crate::util::try_from_arguments_to_key_cow(format_args!($($args)*))?;
-        $crate::context::fs::FileBuilder::new(__cow)
+        let __key = $crate::util::from_arguments_to_key_cow(format_args!($($args)*));
+        $crate::context::fs::FileBuilder::new(__key)
     }};
 }
 
@@ -86,7 +85,7 @@ macro_rules! _temp_file {
 
 macro_rules! run {
     ($($args:tt)*) => {{
-        let __cow = $crate::util::from_arguments_to_str_cow(format_args!($($args)*));
-        $crate::runner::RunBuilder::new(__cow)
+        let __cmd = $crate::util::from_arguments_to_str_cow(format_args!($($args)*));
+        $crate::runner::RunBuilder::new(__cmd)
     }};
 }

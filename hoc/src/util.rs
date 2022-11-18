@@ -9,7 +9,7 @@ use std::{
 use rand::seq::SliceRandom;
 
 use crate::{
-    context::key::{self, Key, KeyOwned},
+    context::key::{Key, KeyOwned},
     prelude::*,
 };
 
@@ -21,12 +21,11 @@ pub fn from_arguments_to_str_cow(arguments: Arguments) -> Cow<'static, str> {
     }
 }
 
-#[throws(key::Error)]
-pub fn try_from_arguments_to_key_cow(arguments: Arguments) -> Cow<'static, Key> {
+pub fn from_arguments_to_key_cow(arguments: Arguments) -> Cow<'static, Key> {
     if let Some(s) = arguments.as_str() {
-        Cow::Borrowed(Key::new(s)?)
+        Cow::Borrowed(Key::new(s))
     } else {
-        Cow::Owned(KeyOwned::new(arguments.to_string())?)
+        Cow::Owned(KeyOwned::new().join(&arguments.to_string()))
     }
 }
 

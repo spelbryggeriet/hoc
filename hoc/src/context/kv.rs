@@ -1,11 +1,8 @@
 use std::{
     borrow::Cow,
     convert::Infallible,
-    ffi::OsStr,
     fmt::{self, Debug, Display, Formatter},
-    io, iter,
-    path::{Component, Path, PathBuf},
-    vec,
+    io, iter, vec,
 };
 
 use indexmap::{IndexMap, IndexSet};
@@ -16,7 +13,7 @@ use thiserror::Error;
 use crate::{
     context::{
         self,
-        key::{self, Key, KeyOwned},
+        key::{self, Key, KeyComponent, KeyOwned},
     },
     log,
     prelude::*,
@@ -37,11 +34,11 @@ impl Kv {
     }
 
     #[throws(Error)]
-    pub fn get_item<'key, K>(&self, key: K) -> Item
+    pub fn get_item<'key, K>(&self, key: &K) -> Item
     where
-        K: Into<Cow<'key, Key>>,
+        K: AsRef<Key> + ?Sized,
     {
-        let key = key.into();
+        let key = key.as_ref();
 
         // If key does not contain any wildcards, then it is a "leaf", i.e. we can fetch the value
         // directly.
@@ -52,7 +49,7 @@ impl Kv {
                 .map
                 .get(&*key)
                 .map(|value| Item::Value(value.clone()))
-                .ok_or_else(|| key::Error::KeyDoesNotExist(key.into_owned()))?;
+                .ok_or_else(|| key::Error::KeyDoesNotExist(key.to_owned()))?;
         }
 
         let mut comps = key.components();
@@ -74,7 +71,7 @@ impl Kv {
                 if comp.is_nested_wildcard() {
                     ".*".to_string()
                 } else {
-                    regex::escape(&comp.to_string_lossy()).replace(r#"\*"#, "[^/]*")
+                    regex::escape(comp.as_str()).replace(r#"\*"#, "[^/]*")
                 }
             })
             .collect::<Vec<_>>()
@@ -95,11 +92,7 @@ impl Kv {
 
         // Get a copy of all the keys in this instance. We can't hold references to it since we
         // might mutably borrow from the map later on.
-        let keys: Vec<_> = self
-            .map
-            .keys()
-            .map(|k| k.to_string_lossy().into_owned())
-            .collect();
+        let keys: Vec<_> = self.map.keys().map(|k| k.as_str().to_owned()).collect();
 
         // Build a map of prefixes and suffixes. Each prefix might have zero or more suffixes. If
         // the prefix has no suffixes, then it is a leaf. If it has one or multple suffixes, then
@@ -113,18 +106,16 @@ impl Kv {
                     (None, None) => (),
                     (prefix, suffix) => {
                         key_map
-                            .entry(Path::new(prefix.map(|m| m.as_str()).unwrap_or_default()))
+                            .entry(prefix.map_or(Key::empty(), |m| Key::new(m.as_str())))
                             .and_modify(|suffixes: &mut IndexSet<_>| {
                                 if let Some(suffix) = suffix {
-                                    suffixes
-                                        .insert(Self::nested_suffix(Path::new(suffix.as_str())));
+                                    suffixes.insert(Self::nested_suffix(Key::new(suffix.as_str())));
                                 }
                             })
                             .or_insert_with(|| {
                                 let mut suffixes = IndexSet::new();
                                 if let Some(suffix) = suffix {
-                                    suffixes
-                                        .insert(Self::nested_suffix(Path::new(suffix.as_str())));
+                                    suffixes.insert(Self::nested_suffix(Key::new(suffix.as_str())));
                                 }
                                 suffixes
                             });
@@ -138,7 +129,7 @@ impl Kv {
         for (prefix, suffixes) in key_map {
             // If there are no suffixes, then it is a leaf and the prefix is its key.
             if suffixes.is_empty() {
-                if let Ok(item) = self.get_item(Key::new(prefix)?) {
+                if let Ok(item) = self.get_item(prefix) {
                     result.push(item);
                 }
                 continue;
@@ -153,9 +144,7 @@ impl Kv {
                         .components()
                         .next()
                         .unwrap()
-                        .as_os_str()
-                        .to_str()
-                        .unwrap()
+                        .as_str()
                         .parse::<usize>()
                 })
                 .collect::<Result<Vec<_>, _>>();
@@ -175,8 +164,8 @@ impl Kv {
 
                     // Traverse through the suffixes.
                     for (index, suffix) in indices.into_iter().zip(suffixes) {
-                        let nested_key = KeyOwned::new_unchecked(prefix.join(suffix));
-                        if let Ok(item) = self.get_item(nested_key) {
+                        let nested_key = prefix.join(&suffix);
+                        if let Ok(item) = self.get_item(&nested_key) {
                             if index >= array.len() {
                                 array.extend(
                                     iter::repeat_with(|| Item::Value(Value::Bool(false)))
@@ -200,15 +189,11 @@ impl Kv {
             // Traverse through the suffixes and delegate the handling to the caller of this
             // function.
             for suffix in suffixes {
-                let field = suffix
-                    .components()
-                    .next()
-                    .unwrap()
-                    .as_os_str()
-                    .to_string_lossy();
-                let nested_key = KeyOwned::new_unchecked(prefix.join(&suffix));
-                if let Ok(item) = self.get_item(nested_key) {
-                    map.insert(field.to_string(), item);
+                if let Ok(item) = self.get_item(&prefix.join(&suffix)) {
+                    map.insert(
+                        suffix.components().next().unwrap().as_str().to_owned(),
+                        item,
+                    );
                 };
             }
 
@@ -220,7 +205,7 @@ impl Kv {
         } else if result.len() > 1 {
             Item::Array(result)
         } else {
-            throw!(key::Error::KeyDoesNotExist(key.into_owned()))
+            throw!(key::Error::KeyDoesNotExist(key.to_owned()))
         }
     }
 
@@ -231,7 +216,7 @@ impl Kv {
     #[throws(Error)]
     pub fn put_value<'key, K, V>(&mut self, key: K, value: V, force: bool) -> Option<Option<Value>>
     where
-        K: Into<Cow<'key, Key>>,
+        K: Into<KeyOwned>,
         V: Into<Value>,
     {
         let key = key.into();
@@ -278,48 +263,47 @@ impl Kv {
             );
         }
 
-        self.map.insert(key.into_owned(), value).map(Some)
+        self.map.insert(key.to_owned(), value).map(Some)
     }
 
     #[throws(Error)]
     pub fn _put_array<K, V, I>(&mut self, key_prefix: K, array: I, force: bool)
     where
-        K: Into<PathBuf>,
+        K: Into<KeyOwned>,
         V: Into<Value>,
         I: IntoIterator<Item = V>,
     {
         let key_prefix = key_prefix.into();
         for (index, value) in array.into_iter().enumerate() {
-            let index_key = KeyOwned::new(key_prefix.join(index.to_string()))?;
-            self.put_value(index_key, value, force)?;
+            self.put_value(key_prefix.join(&index.to_string()), value, force)?;
         }
     }
 
     #[throws(Error)]
-    pub fn _put_map<K, V, Q, I>(&mut self, key_prefix: K, map: I, force: bool)
+    pub fn _put_map<'key, K, V, Q, I>(&mut self, key_prefix: K, map: I, force: bool)
     where
-        K: Into<PathBuf>,
+        K: Into<KeyOwned>,
         V: Into<Value>,
-        Q: AsRef<Path>,
-        I: IntoIterator<Item = (Q, V)>,
+        Q: AsRef<Key> + ?Sized + 'key,
+        I: IntoIterator<Item = (&'key Q, V)>,
     {
         let key_prefix = key_prefix.into();
         for (key, value) in map.into_iter() {
-            let map_key = KeyOwned::new(key_prefix.join(key))?;
+            let map_key = key_prefix.join(key);
             self.put_value(map_key, value, force)?;
         }
     }
 
     #[throws(Error)]
-    pub fn drop_value<'key, K>(&mut self, key: K, force: bool) -> Option<Value>
+    pub fn drop_value<K>(&mut self, key: &K, force: bool) -> Option<Value>
     where
-        K: Into<Cow<'key, Key>>,
+        K: AsRef<Key> + ?Sized,
     {
-        let key = key.into();
+        let key = key.as_ref();
 
         debug!("Drop value: {key}");
 
-        match self.map.remove(&*key) {
+        match self.map.remove(key.as_ref()) {
             Some(existing) => Some(existing),
             None if !force => {
                 error!("Key {key} does not exist");
@@ -338,7 +322,7 @@ impl Kv {
         }
     }
 
-    fn nested_suffix(full_suffix: &Path) -> Cow<Path> {
+    fn nested_suffix(full_suffix: &Key) -> Cow<Key> {
         if full_suffix.components().count() == 1 {
             Cow::Borrowed(full_suffix)
         } else {
@@ -346,8 +330,8 @@ impl Kv {
                 full_suffix
                     .components()
                     .take(1)
-                    .chain(Some(Component::Normal(OsStr::new("**"))))
-                    .collect::<PathBuf>(),
+                    .chain(Some(KeyComponent::new("**")))
+                    .collect::<KeyOwned>(),
             )
         }
     }
@@ -400,7 +384,7 @@ impl Item {
     #[throws(as Option)]
     pub fn get<'key, K>(&self, key: K) -> &Self
     where
-        K: Into<Cow<'key, Key>>,
+        K: Into<&'key Key>,
     {
         let key = key.into();
 
@@ -409,11 +393,11 @@ impl Item {
             match current {
                 Self::Value(_) => throw!(),
                 Self::Array(array) => {
-                    let index = component.to_string_lossy().parse::<usize>().ok()?;
+                    let index = component.as_str().parse::<usize>().ok()?;
                     current = array.get(index)?;
                 }
                 Self::Map(map) => {
-                    current = map.get(&*component.to_string_lossy())?;
+                    current = map.get(&*component.as_str())?;
                 }
             }
         }
@@ -424,7 +408,7 @@ impl Item {
     #[throws(as Option)]
     pub fn take<'key, K>(self, key: K) -> Self
     where
-        K: Into<Cow<'key, Key>>,
+        K: Into<&'key Key>,
     {
         let key = key.into();
 
@@ -433,11 +417,11 @@ impl Item {
             match current {
                 Self::Value(_) => throw!(),
                 Self::Array(array) => {
-                    let index = component.to_string_lossy().parse::<usize>().ok()?;
+                    let index = component.as_str().parse::<usize>().ok()?;
                     current = array.into_iter().skip(index).next()?;
                 }
                 Self::Map(mut map) => {
-                    current = map.remove(&*component.to_string_lossy())?;
+                    current = map.remove(&*component.as_str())?;
                 }
             }
         }
@@ -774,7 +758,7 @@ pub mod ledger {
     use async_trait::async_trait;
 
     use super::{KeyOwned, Value};
-    use crate::ledger::Transaction;
+    use crate::{context, ledger::Transaction};
 
     pub struct Put {
         key: KeyOwned,
@@ -797,14 +781,14 @@ pub mod ledger {
         }
 
         async fn revert(&mut self) -> anyhow::Result<()> {
-            let mut kv = crate::context::get_context().kv_mut().await;
-            let key = mem::replace(&mut self.key, crate::context::key::KeyOwned::empty());
+            let mut kv = context::get_context().kv_mut().await;
+            let key = mem::replace(&mut self.key, KeyOwned::new());
             match self.previous_value.take() {
                 Some(previous_value) => {
                     kv.put_value(key, previous_value, true)?;
                 }
                 None => {
-                    kv.drop_value(key, true)?;
+                    kv.drop_value(&key, true)?;
                 }
             }
             Ok(())
@@ -817,12 +801,6 @@ mod tests {
     use std::fmt::Debug;
 
     use super::*;
-
-    macro_rules! key {
-        ($key:literal) => {
-            Key::new_unchecked($key)
-        };
-    }
 
     macro_rules! item_map {
         ($map:ident => @impl $key:literal map=> $value:expr, $($rest:tt)*) => {
@@ -876,9 +854,9 @@ mod tests {
     }
 
     macro_rules! value_map {
-        ($($key:literal => $value:expr),* $(,)?) => { {
-            let mut map = IndexMap::<String, Value>::new();
-            $(map.insert($key.to_string(), {$value}.into());)*
+        ($($key:literal => $value:expr),* $(,)?) => {{
+            let mut map = IndexMap::<&str, Value>::new();
+            $(map.insert($key, {$value}.into());)*
             map
         }};
     }
@@ -913,18 +891,18 @@ mod tests {
             "i64" => i64::MIN,
         };
         let two = ["t1", "t2", "t3", "t4", "r1", "r2", "r3", "r4"];
-        kv.put_value(key!("unsigned"), 1u32, true)?;
-        kv.put_value(key!("signed"), -1, true)?;
-        kv.put_value(key!("float"), 1.0, true)?;
-        kv.put_value(key!("u64"), u64::MAX, true)?;
-        kv.put_value(key!("bool"), false, true)?;
-        kv.put_value(key!("string"), "hello", true)?;
-        kv.put_value(key!("nested/one"), true, true)?;
-        kv.put_value(key!("nested/two/adam"), false, true)?;
-        kv.put_value(key!("nested/two/betsy/alpha/token"), ttokens[0], true)?;
-        kv.put_value(key!("nested/two/betsy/beta/token"), ttokens[1], true)?;
-        kv.put_value(key!("nested/two/betsy/delta/token"), ttokens[2], true)?;
-        kv.put_value(key!("nested/two/betsy/gamma/token"), ttokens[3], true)?;
+        kv.put_value("unsigned", 1u32, true)?;
+        kv.put_value("signed", -1, true)?;
+        kv.put_value("float", 1.0, true)?;
+        kv.put_value("u64", u64::MAX, true)?;
+        kv.put_value("bool", false, true)?;
+        kv.put_value("string", "hello", true)?;
+        kv.put_value("nested/one", true, true)?;
+        kv.put_value("nested/two/adam", false, true)?;
+        kv.put_value("nested/two/betsy/alpha/token", ttokens[0], true)?;
+        kv.put_value("nested/two/betsy/beta/token", ttokens[1], true)?;
+        kv.put_value("nested/two/betsy/delta/token", ttokens[2], true)?;
+        kv.put_value("nested/two/betsy/gamma/token", ttokens[3], true)?;
         kv._put_array("array/one", ttokens, true)?;
         kv._put_array("array/two", rtokens.clone(), true)?;
         kv._put_map("map/one/adam/alpha", alpha, true)?;
@@ -936,7 +914,7 @@ mod tests {
     }
 
     #[throws(Error)]
-    fn get_joined_vec(kv: &Kv, key: &Key) -> String {
+    fn get_joined_vec<K: AsRef<Key> + ?Sized>(kv: &Kv, key: &K) -> String {
         Vec::<String>::try_from(kv.get_item(key)?)?.join(",")
     }
 
@@ -944,30 +922,29 @@ mod tests {
     #[throws(Error)]
     fn get_single_leaf() {
         let kv = kv()?;
-        u32::try_from(kv.get_item(key!("unsigned"))?)?.expect_val(1);
-        i32::try_from(kv.get_item(key!("signed"))?)?.expect_val(-1);
-        f32::try_from(kv.get_item(key!("float"))?)?.expect_val(1.0);
-        u64::try_from(kv.get_item(key!("u64"))?)?.expect_val(u64::MAX);
-        bool::try_from(kv.get_item(key!("bool"))?)?.expect_val(false);
-        String::try_from(kv.get_item(key!("string"))?)?.expect_val("hello".to_string());
-        bool::try_from(kv.get_item(key!("nested/one"))?)?.expect_val(true);
-        bool::try_from(kv.get_item(key!("nested/*"))?)?.expect_val(true);
-        bool::try_from(kv.get_item(key!("nested/two/adam"))?)?.expect_val(false);
+        u32::try_from(kv.get_item("unsigned")?)?.expect_val(1);
+        i32::try_from(kv.get_item("signed")?)?.expect_val(-1);
+        f32::try_from(kv.get_item("float")?)?.expect_val(1.0);
+        u64::try_from(kv.get_item("u64")?)?.expect_val(u64::MAX);
+        bool::try_from(kv.get_item("bool")?)?.expect_val(false);
+        String::try_from(kv.get_item("string")?)?.expect_val("hello".to_string());
+        bool::try_from(kv.get_item("nested/one")?)?.expect_val(true);
+        bool::try_from(kv.get_item("nested/*")?)?.expect_val(true);
+        bool::try_from(kv.get_item("nested/two/adam")?)?.expect_val(false);
     }
 
     #[test]
     #[throws(Error)]
     fn get_multiple_leafs() {
         let kv = kv()?;
-        get_joined_vec(&kv, key!("nested/two/betsy/*/token"))?
-            .expect_val("t1,t2,t3,t4".to_string());
-        get_joined_vec(&kv, key!("nested/two/betsy/*ta/token"))?.expect_val("t2,t3".to_string());
-        get_joined_vec(&kv, key!("nested/two/*/*/token"))?.expect_val("t1,t2,t3,t4".to_string());
-        get_joined_vec(&kv, key!("nested/*/*/*/token"))?.expect_val("t1,t2,t3,t4".to_string());
-        get_joined_vec(&kv, key!("nested/*/*/*a*a/token"))?.expect_val("t1,t4".to_string());
-        get_joined_vec(&kv, key!("nested/**/token"))?.expect_val("t1,t2,t3,t4".to_string());
-        get_joined_vec(&kv, key!("nested/**/**/token"))?.expect_val("t1,t2,t3,t4".to_string());
-        get_joined_vec(&kv, key!("nested/**/betsy/*l*/token"))?.expect_val("t1,t3".to_string());
+        get_joined_vec(&kv, "nested/two/betsy/*/token")?.expect_val("t1,t2,t3,t4".to_string());
+        get_joined_vec(&kv, "nested/two/betsy/*ta/token")?.expect_val("t2,t3".to_string());
+        get_joined_vec(&kv, "nested/two/*/*/token")?.expect_val("t1,t2,t3,t4".to_string());
+        get_joined_vec(&kv, "nested/*/*/*/token")?.expect_val("t1,t2,t3,t4".to_string());
+        get_joined_vec(&kv, "nested/*/*/*a*a/token")?.expect_val("t1,t4".to_string());
+        get_joined_vec(&kv, "nested/**/token")?.expect_val("t1,t2,t3,t4".to_string());
+        get_joined_vec(&kv, "nested/**/**/token")?.expect_val("t1,t2,t3,t4".to_string());
+        get_joined_vec(&kv, "nested/**/betsy/*l*/token")?.expect_val("t1,t3".to_string());
     }
 
     #[test]
@@ -976,7 +953,7 @@ mod tests {
         use Value::*;
 
         let kv = kv()?;
-        Vec::<Value>::try_from(kv.get_item(key!("*"))?)?.expect_val(vec![
+        Vec::<Value>::try_from(kv.get_item("*")?)?.expect_val(vec![
             UnsignedInteger(1),
             SignedInteger(-1),
             FloatingPointNumber(1.0),
@@ -984,18 +961,18 @@ mod tests {
             Bool(false),
             String("hello".into()),
         ]);
-        Vec::<bool>::try_from(kv.get_item(key!("nested/*"))?)?.expect_val(vec![true]);
-        Vec::<bool>::try_from(kv.get_item(key!("nested/*/*"))?)?.expect_val(vec![false]);
-        get_joined_vec(&kv, key!("array/one/*"))?.expect_val("t1,t2,t3,t4".to_string());
-        get_joined_vec(&kv, key!("array/one/**"))?.expect_val("t1,t2,t3,t4".to_string());
-        get_joined_vec(&kv, key!("array/*/*"))?.expect_val("t1,t2,t3,t4,r1,r2,r3,r4".to_string());
+        Vec::<bool>::try_from(kv.get_item("nested/*")?)?.expect_val(vec![true]);
+        Vec::<bool>::try_from(kv.get_item("nested/*/*")?)?.expect_val(vec![false]);
+        get_joined_vec(&kv, "array/one/*")?.expect_val("t1,t2,t3,t4".to_string());
+        get_joined_vec(&kv, "array/one/**")?.expect_val("t1,t2,t3,t4".to_string());
+        get_joined_vec(&kv, "array/*/*")?.expect_val("t1,t2,t3,t4,r1,r2,r3,r4".to_string());
     }
 
     #[test]
     #[throws(Error)]
     fn get_multiple_arrays() {
         let kv = kv()?;
-        Vec::<Vec<String>>::try_from(kv.get_item(key!("array/*/**"))?)?.expect_val(vec![
+        Vec::<Vec<String>>::try_from(kv.get_item("array/*/**")?)?.expect_val(vec![
             vec![
                 "t1".to_string(),
                 "t2".to_string(),
@@ -1073,34 +1050,32 @@ mod tests {
             },
             "map" map=> map.clone(),
         };
-        IndexMap::<String, Item>::try_from(kv.get_item(key!("map/one/adam/alpha/**"))?)?
+        IndexMap::<String, Item>::try_from(kv.get_item("map/one/adam/alpha/**")?)?
             .expect_val(alpha);
-        IndexMap::<String, Item>::try_from(kv.get_item(key!("map/one/adam/**"))?)?.expect_val(adam);
-        IndexMap::<String, Item>::try_from(kv.get_item(key!("map/one/**"))?)?.expect_val(one);
-        IndexMap::<String, Item>::try_from(kv.get_item(key!("map/**"))?)?.expect_val(map);
-        IndexMap::<String, Item>::try_from(kv.get_item(key!("**"))?)?.expect_val(root);
+        IndexMap::<String, Item>::try_from(kv.get_item("map/one/adam/**")?)?.expect_val(adam);
+        IndexMap::<String, Item>::try_from(kv.get_item("map/one/**")?)?.expect_val(one);
+        IndexMap::<String, Item>::try_from(kv.get_item("map/**")?)?.expect_val(map);
+        IndexMap::<String, Item>::try_from(kv.get_item("**")?)?.expect_val(root);
     }
 
     #[test]
     #[throws(Error)]
     fn get_multiple_maps() {
         let kv = kv()?;
-        Vec::<IndexMap<String, Item>>::try_from(kv.get_item(key!("map/**/alpha/**"))?)?.expect_val(
-            vec![
-                item_map! {
-                    "string" => "hello",
-                    "int" => 1u32,
+        Vec::<IndexMap<String, Item>>::try_from(kv.get_item("map/**/alpha/**")?)?.expect_val(vec![
+            item_map! {
+                "string" => "hello",
+                "int" => 1u32,
+            },
+            item_map! {
+                "string" => "hello",
+                "int" => 2u32,
+                "extra" map=> item_map! {
+                    "bool" => false,
+                    "i64" => i64::MIN,
                 },
-                item_map! {
-                    "string" => "hello",
-                    "int" => 2u32,
-                    "extra" map=> item_map! {
-                        "bool" => false,
-                        "i64" => i64::MIN,
-                    },
-                },
-            ],
-        );
+            },
+        ]);
     }
 
     #[test]
@@ -1108,7 +1083,7 @@ mod tests {
     #[throws(Error)]
     fn get_array_no_zero_index() {
         let mut kv = kv()?;
-        kv.put_value(key!("invalid_array/1"), false, true)?;
-        Vec::<bool>::try_from(kv.get_item(key!("invalid_array/**"))?)?;
+        kv.put_value("invalid_array/1", false, true)?;
+        Vec::<bool>::try_from(kv.get_item("invalid_array/**")?)?;
     }
 }

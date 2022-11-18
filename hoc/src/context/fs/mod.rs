@@ -47,7 +47,7 @@ impl FileBuilder<Persisted> {
         let (had_previous_file, (file, path)) = context
             .files_mut()
             .await
-            .create_file(self.key.as_ref(), |path| async {
+            .create_file(&self.key, |path| async {
                 let (_, temp_path) = context.temp_mut().await.create_file()?;
                 tokio::fs::rename(path, &temp_path).await?;
                 previous_path.replace(temp_path);
@@ -91,7 +91,7 @@ where
         let (had_previous_file, (file, path)) = context
             .cache_mut()
             .await
-            .get_or_create_file(self.key.as_ref(), self.state.file_cacher, |path| async {
+            .get_or_create_file(&self.key, self.state.file_cacher, |path| async {
                 let (_, temp_path) = context.temp_mut().await.create_file()?;
                 tokio::fs::rename(path, &temp_path).await?;
                 previous_path.replace(temp_path);

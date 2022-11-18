@@ -34,13 +34,13 @@ impl Files {
     }
 
     #[throws(Error)]
-    pub async fn create_file<'key, K, F, Fut>(
+    pub async fn create_file<K, F, Fut>(
         &mut self,
         key: K,
         on_overwrite: F,
     ) -> (bool, (File, PathBuf))
     where
-        K: Into<Cow<'key, Key>>,
+        K: Into<KeyOwned>,
         F: FnOnce(PathBuf) -> Fut,
         Fut: Future<Output = Result<(), Error>>,
     {
@@ -71,7 +71,7 @@ impl Files {
             file_options.create_new(true);
         }
 
-        let path = self.files_dir.join(&*key.to_string_lossy());
+        let path = self.files_dir.join(key.as_str());
 
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).await?;
@@ -101,7 +101,7 @@ impl Files {
             warn!("Create file: {key} (overwriting)");
         }
 
-        self.map.insert(key.clone().into_owned(), path.clone());
+        self.map.insert(key, path.clone());
 
         (had_previous_file, (file, path))
     }
@@ -136,13 +136,13 @@ impl Files {
     }
 
     #[throws(Error)]
-    pub async fn remove_file<'key, K>(&mut self, key: K, force: bool)
+    pub async fn remove_file<K>(&mut self, key: &K, force: bool)
     where
-        K: Into<Cow<'key, Key>>,
+        K: AsRef<Key> + ?Sized,
     {
-        let key = key.into();
+        let key = key.as_ref();
 
-        match self.map.remove(&*key) {
+        match self.map.remove(key) {
             Some(path) => {
                 debug!("Remove file: {key}");
                 fs::remove_file(path).await?;
@@ -170,10 +170,7 @@ pub mod ledger {
     use tokio::fs;
 
     use crate::{
-        context::{
-            self,
-            key::{self, KeyOwned},
-        },
+        context::{self, key::KeyOwned},
         ledger::Transaction,
         prelude::*,
     };
@@ -201,7 +198,7 @@ pub mod ledger {
         }
 
         async fn revert(&mut self) -> anyhow::Result<()> {
-            let key = mem::replace(&mut self.key, key::KeyOwned::empty());
+            let key = mem::replace(&mut self.key, KeyOwned::new());
             let current_file = mem::take(&mut self.current_file);
             match self.previous_file.take() {
                 Some(previous_file) => {
@@ -212,7 +209,7 @@ pub mod ledger {
                     context::get_context()
                         .files_mut()
                         .await
-                        .remove_file(key, true)
+                        .remove_file(&key, true)
                         .await?;
                 }
             }

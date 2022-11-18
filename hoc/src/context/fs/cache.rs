@@ -1,4 +1,4 @@
-use std::{borrow::Cow, path::PathBuf};
+use std::path::PathBuf;
 
 use futures::Future;
 use indexmap::IndexMap;
@@ -38,14 +38,14 @@ impl Cache {
     }
 
     #[throws(Error)]
-    pub async fn get_or_create_file<'key, K, C, O, Fut>(
+    pub async fn get_or_create_file<K, C, O, Fut>(
         &mut self,
         key: K,
         on_cache: C,
         on_overwrite: O,
     ) -> (bool, (File, PathBuf))
     where
-        K: Into<Cow<'key, Key>>,
+        K: Into<KeyOwned>,
         C: for<'a> CachedFileFn<'a>,
         O: FnOnce(PathBuf) -> Fut,
         Fut: Future<Output = Result<(), Error>>,
@@ -72,7 +72,7 @@ impl Cache {
 
         file_options.create_new(true);
 
-        let path = self.cache_dir.join(&*key.to_string_lossy());
+        let path = self.cache_dir.join(key.as_str());
 
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).await?;
@@ -91,7 +91,7 @@ impl Cache {
                 if !should_overwrite {
                     debug!("Create cached file: {key} (skipping)");
                     let file = file_options.open(&path).await?;
-                    self.map.insert(key.into_owned(), path.clone());
+                    self.map.insert(key, path.clone());
                     return (had_previous_file, (file, path));
                 }
 
@@ -109,26 +109,26 @@ impl Cache {
             warn!("Create cached file: {key} (overwriting)");
         }
 
-        self.map.insert(key.into_owned(), path.clone());
+        self.map.insert(key, path.clone());
 
         (had_previous_file, (file, path))
     }
 
     #[throws(Error)]
-    pub async fn _create_or_overwrite_file<'key, K, C, O, Fut>(
+    pub async fn _create_or_overwrite_file<K, C, O, Fut>(
         &mut self,
         key: K,
         on_cache: C,
         on_overwrite: O,
     ) -> (bool, (File, PathBuf))
     where
-        K: Into<Cow<'key, Key>>,
+        K: Into<KeyOwned>,
         C: for<'a> CachedFileFn<'a>,
         O: FnOnce(PathBuf) -> Fut,
         Fut: Future<Output = Result<(), Error>>,
     {
         let key = key.into();
-        let path = self.cache_dir.join(&*key.to_string_lossy());
+        let path = self.cache_dir.join(key.as_str());
 
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).await?;
@@ -160,19 +160,19 @@ impl Cache {
             debug!("Create cached file: {key} (overwriting)");
         }
 
-        self.map.insert(key.into_owned(), path.clone());
+        self.map.insert(key, path.clone());
 
         (had_previous_file, (file, path))
     }
 
     #[throws(Error)]
-    pub async fn remove_file<'key, K>(&mut self, key: K, force: bool)
+    pub async fn remove_file<K>(&mut self, key: &K, force: bool)
     where
-        K: Into<Cow<'key, Key>>,
+        K: AsRef<Key> + ?Sized,
     {
-        let key = key.into();
+        let key = key.as_ref();
 
-        match self.map.remove(&*key) {
+        match self.map.remove(key) {
             Some(path) => {
                 debug!("Remove cached file: {key}");
                 match fs::remove_file(path).await {
@@ -204,10 +204,7 @@ pub mod ledger {
     use tokio::fs;
 
     use crate::{
-        context::{
-            self,
-            key::{self, KeyOwned},
-        },
+        context::{self, key::KeyOwned},
         ledger::Transaction,
         prelude::*,
     };
@@ -235,7 +232,7 @@ pub mod ledger {
         }
 
         async fn revert(&mut self) -> anyhow::Result<()> {
-            let key = mem::replace(&mut self.key, key::KeyOwned::empty());
+            let key = mem::replace(&mut self.key, KeyOwned::new());
             let current_file = mem::take(&mut self.current_file);
             match self.previous_file.take() {
                 Some(previous_file) => {
@@ -246,7 +243,7 @@ pub mod ledger {
                     context::get_context()
                         .cache_mut()
                         .await
-                        .remove_file(key, true)
+                        .remove_file(&key, true)
                         .await?;
                 }
             }
