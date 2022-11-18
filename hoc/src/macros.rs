@@ -61,6 +61,17 @@ macro_rules! context_file {
     }};
 }
 
+macro_rules! _temp_file {
+    () => {
+        async {
+            $crate::context::get_context()
+                .temp_files_mut()
+                .await
+                .create_file()
+        }
+    };
+}
+
 macro_rules! run {
     ($($args:tt)*) => {{
         let __cow = $crate::util::from_arguments_to_str_cow(format_args!($($args)*));

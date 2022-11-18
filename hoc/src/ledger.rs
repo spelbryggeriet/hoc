@@ -5,7 +5,10 @@ use once_cell::sync::OnceCell;
 use tokio::sync::Mutex;
 
 use crate::{
-    context::{files::ledger::Create as FilesCreate, kv::ledger::Put as KvPut},
+    context::{
+        cache::ledger::Create as CacheCreate, files::ledger::Create as FilesCreate,
+        kv::ledger::Put as KvPut,
+    },
     prelude::*,
 };
 
@@ -24,6 +27,7 @@ pub trait Transaction {
 pub enum Actor {
     KvPut,
     FilesCreate,
+    CacheCreate,
 }
 
 pub struct Ledger {

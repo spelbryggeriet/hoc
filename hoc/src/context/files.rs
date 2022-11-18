@@ -37,7 +37,7 @@ impl Files {
         &mut self,
         key: K,
         on_overwrite: F,
-    ) -> ((File, PathBuf), bool)
+    ) -> (bool, (File, PathBuf))
     where
         K: Into<Cow<'key, Key>>,
         F: FnOnce(PathBuf) -> Fut,
@@ -63,8 +63,8 @@ impl Files {
             if !overwrite {
                 warn!("Skipping to create file for key {key}");
                 return (
-                    (file_options.open(path).await?, path.clone()),
                     had_previous_file,
+                    (file_options.open(path).await?, path.clone()),
                 );
             }
 
@@ -107,7 +107,7 @@ impl Files {
         self.map
             .insert(key.clone().into_owned().into_path_buf(), path.clone());
 
-        ((file, path), had_previous_file)
+        (had_previous_file, (file, path))
     }
 
     #[throws(Error)]
@@ -206,21 +206,19 @@ pub mod ledger {
         }
 
         async fn revert(&mut self) -> anyhow::Result<()> {
-            let context = context::get_context();
-            let current_file = mem::take(&mut self.current_file);
             let key = mem::replace(&mut self.key, key::KeyOwned::empty());
+            let current_file = mem::take(&mut self.current_file);
             match self.previous_file.take() {
                 Some(previous_file) => {
-                    debug!("Move temporary file: {previous_file:?} => {current_file:?}");
+                    debug!("Move temporary file to persistent file location: {previous_file:?} => {current_file:?}");
                     fs::rename(previous_file, current_file).await?;
-                    context
-                        .temp_files_mut()
+                }
+                None => {
+                    context::get_context()
+                        .files_mut()
                         .await
                         .remove_file(key, true)
                         .await?;
-                }
-                None => {
-                    context.files_mut().await.remove_file(key, true).await?;
                 }
             }
             Ok(())

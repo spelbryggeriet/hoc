@@ -139,10 +139,6 @@ impl Context {
         self.files.write().await
     }
 
-    pub async fn temp_files(&self) -> RwLockReadGuard<TempFiles> {
-        self.temp_files.read().await
-    }
-
     pub async fn temp_files_mut(&self) -> RwLockWriteGuard<TempFiles> {
         self.temp_files.write().await
     }
@@ -178,7 +174,6 @@ pub struct FileBuilder<S> {
 }
 
 pub struct Persisted(());
-pub struct Temporary(());
 pub struct Cached<F> {
     file_cacher: F,
 }
@@ -200,21 +195,18 @@ impl FileBuilder<Persisted> {
     pub async fn create(self) -> (File, PathBuf) {
         let context = get_context();
         let mut previous_path = None;
-        let ((file, path), had_previous_path) = context
+        let (had_previous_file, (file, path)) = context
             .files_mut()
             .await
             .create_file(self.key.as_ref(), |path| async {
-                let (_, temp_path) = context
-                    .temp_files_mut()
-                    .await
-                    .create_file(self.key.as_ref())?;
+                let (_, temp_path) = context.temp_files_mut().await.create_file()?;
                 fs::rename(path, &temp_path).await?;
                 previous_path.replace(temp_path);
                 Ok(())
             })
             .await?;
 
-        if !had_previous_path || previous_path.is_some() {
+        if !had_previous_file || previous_path.is_some() {
             Ledger::get_or_init()
                 .lock()
                 .await
@@ -228,13 +220,6 @@ impl FileBuilder<Persisted> {
         (file, path)
     }
 
-    pub fn _temporary(self) -> FileBuilder<Temporary> {
-        FileBuilder {
-            key: self.key,
-            state: Temporary(()),
-        }
-    }
-
     pub fn cached<F>(self, file_cacher: F) -> FileBuilder<Cached<F>>
     where
         F: for<'a> CachedFileFn<'a>,
@@ -246,38 +231,66 @@ impl FileBuilder<Persisted> {
     }
 }
 
-impl FileBuilder<Temporary> {
-    #[throws(anyhow::Error)]
-    pub async fn get(self) -> (File, PathBuf) {
-        get_context().temp_files().await.get_file(self.key)?
-    }
-
-    #[throws(anyhow::Error)]
-    pub async fn create(self) -> (File, PathBuf) {
-        get_context().temp_files_mut().await.create_file(self.key)?
-    }
-}
-
 impl<F> FileBuilder<Cached<F>>
 where
     F: for<'a> CachedFileFn<'a>,
 {
     #[throws(anyhow::Error)]
-    pub async fn get(self) -> (File, PathBuf) {
-        get_context()
+    pub async fn get_or_create(self) -> (File, PathBuf) {
+        let context = get_context();
+        let mut previous_path = None;
+        let (had_previous_file, (file, path)) = context
             .cache_mut()
             .await
-            .get_or_create_file_with(self.key, self.state.file_cacher)
-            .await?
+            .get_or_create_file(self.key.as_ref(), self.state.file_cacher, |path| async {
+                let (_, temp_path) = context.temp_files_mut().await.create_file()?;
+                fs::rename(path, &temp_path).await?;
+                previous_path.replace(temp_path);
+                Ok(())
+            })
+            .await?;
+
+        if !had_previous_file || previous_path.is_some() {
+            Ledger::get_or_init()
+                .lock()
+                .await
+                .add(cache::ledger::Create::new(
+                    self.key.into_owned(),
+                    path.clone(),
+                    previous_path,
+                ));
+        }
+
+        (file, path)
     }
 
     #[throws(anyhow::Error)]
-    pub async fn _rewrite(self) -> (File, PathBuf) {
-        get_context()
+    pub async fn _create_or_overwrite(self) -> (File, PathBuf) {
+        let context = get_context();
+        let mut previous_path = None;
+        let (had_previous_file, (file, path)) = context
             .cache_mut()
             .await
-            ._create_or_overwrite_file_with(self.key, self.state.file_cacher)
-            .await?
+            ._create_or_overwrite_file(self.key.as_ref(), self.state.file_cacher, |path| async {
+                let (_, temp_path) = context.temp_files_mut().await.create_file()?;
+                fs::rename(path, &temp_path).await?;
+                previous_path.replace(temp_path);
+                Ok(())
+            })
+            .await?;
+
+        if !had_previous_file || previous_path.is_some() {
+            Ledger::get_or_init()
+                .lock()
+                .await
+                .add(cache::ledger::Create::new(
+                    self.key.into_owned(),
+                    path.clone(),
+                    previous_path,
+                ));
+        }
+
+        (file, path)
     }
 }
 
@@ -307,15 +320,6 @@ impl IntoFuture for FileBuilder<Persisted> {
     }
 }
 
-impl IntoFuture for FileBuilder<Temporary> {
-    type IntoFuture = FileBuilderFuture;
-    type Output = <FileBuilderFuture as Future>::Output;
-
-    fn into_future(self) -> Self::IntoFuture {
-        Box::pin(self.get())
-    }
-}
-
 impl<F> IntoFuture for FileBuilder<Cached<F>>
 where
     F: for<'a> CachedFileFn<'a> + 'static,
@@ -324,7 +328,7 @@ where
     type Output = <FileBuilderFuture as Future>::Output;
 
     fn into_future(self) -> Self::IntoFuture {
-        Box::pin(self.get())
+        Box::pin(self.get_or_create())
     }
 }
 
@@ -440,5 +444,5 @@ pub enum Error {
     Prompt(#[from] prompt::Error),
 
     #[error(transparent)]
-    _Custom(anyhow::Error),
+    _Custom(#[from] anyhow::Error),
 }

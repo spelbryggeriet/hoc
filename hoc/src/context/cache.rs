@@ -1,5 +1,6 @@
 use std::{borrow::Cow, io::SeekFrom, path::PathBuf};
 
+use futures::Future;
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 use tokio::{
@@ -35,21 +36,32 @@ impl Cache {
     }
 
     #[throws(Error)]
-    pub async fn get_or_create_file_with<K, F>(&mut self, key: K, f: F) -> (File, PathBuf)
+    pub async fn get_or_create_file<'key, K, F, O, Fut>(
+        &mut self,
+        key: K,
+        cacher: F,
+        on_overwrite: O,
+    ) -> (bool, (File, PathBuf))
     where
-        K: Into<Cow<'static, Key>>,
+        K: Into<Cow<'key, Key>>,
         F: for<'a> CachedFileFn<'a>,
+        O: FnOnce(PathBuf) -> Fut,
+        Fut: Future<Output = Result<(), Error>>,
     {
         let key = key.into();
 
-        debug!("Creating cached file for key: {key}");
+        debug!("Create cached file for key: {key}");
 
+        let mut had_previous_file = false;
         let mut file_options = OpenOptions::new();
         file_options.write(true).read(true);
 
         if let Some(path) = self.map.get(&**key) {
             match file_options.open(path).await {
-                Ok(file) => return (file, path.clone()),
+                Ok(file) => {
+                    had_previous_file = true;
+                    return (had_previous_file, (file, path.clone()));
+                }
                 Err(err) if err.kind() == io::ErrorKind::NotFound => (),
                 Err(err) => throw!(err),
             }
@@ -68,33 +80,27 @@ impl Cache {
         let mut file = match file_options.open(&path).await {
             Ok(file) => file,
             Err(err) if err.kind() == io::ErrorKind::AlreadyExists => {
-                error!("File at path {path:?} already exists");
+                error!("Cached file at path {path:?} already exists");
 
+                had_previous_file = true;
+                file_options.create_new(false);
                 let skipping = select!("How do you want to resolve the file path conflict?")
-                    .with_option("Skip", || {
-                        warn!("Skipping to create file for key {key}");
-                        true
-                    })
-                    .with_option("Overwrite", || {
-                        warn!("Overwriting existing file at path {path:?}");
-                        false
-                    })
+                    .with_option("Skip", || true)
+                    .with_option("Overwrite", || false)
                     .get()?;
 
-                let file = file_options
-                    .create_new(false)
-                    .truncate(!skipping)
-                    .open(&path)
-                    .await?;
-
                 if skipping {
+                    warn!("Skipping to create cached file for key {key}");
+                    let file = file_options.open(&path).await?;
                     self.map
                         .insert(key.into_owned().into_path_buf(), path.clone());
 
-                    return (file, path);
+                    return (had_previous_file, (file, path));
                 }
 
-                file
+                warn!("Overwriting existing cached file at path {path:?}");
+                on_overwrite(path.clone()).await?;
+                file_options.truncate(true).open(&path).await?
             }
             Err(err) => throw!(err),
         };
@@ -103,7 +109,7 @@ impl Cache {
 
         let mut retrying = false;
         loop {
-            if let Err(err) = f(&mut file, &path, retrying).await {
+            if let Err(err) = cacher(&mut file, &path, retrying).await {
                 let custom_err = err.into();
                 error!("{custom_err}");
 
@@ -126,18 +132,25 @@ impl Cache {
         self.map
             .insert(key.into_owned().into_path_buf(), path.clone());
 
-        (file, path)
+        (had_previous_file, (file, path))
     }
 
     #[throws(Error)]
-    pub async fn _create_or_overwrite_file_with<K, F>(&mut self, key: K, f: F) -> (File, PathBuf)
+    pub async fn _create_or_overwrite_file<'key, K, F, O, Fut>(
+        &mut self,
+        key: K,
+        cacher: F,
+        on_overwrite: O,
+    ) -> (bool, (File, PathBuf))
     where
-        K: Into<Cow<'static, Key>>,
+        K: Into<Cow<'key, Key>>,
         F: for<'a> CachedFileFn<'a>,
+        O: FnOnce(PathBuf) -> Fut,
+        Fut: Future<Output = Result<(), Error>>,
     {
         let key = key.into();
 
-        debug!("Creating cached file for key: {key}");
+        debug!("Create cached file for key: {key}");
 
         let path = self.cache_dir.join(&**key);
 
@@ -145,21 +158,141 @@ impl Cache {
             fs::create_dir_all(parent).await?;
         }
 
-        let mut file = OpenOptions::new()
+        let mut had_previous_file = false;
+        let mut file_options = OpenOptions::new();
+        file_options
             .write(true)
             .read(true)
             .create(true)
             .truncate(true)
-            .open(&path)
-            .await?;
+            .create_new(true);
+        let mut file = match file_options.open(&path).await {
+            Ok(file) => file,
+            Err(err) if err.kind() == io::ErrorKind::AlreadyExists => {
+                had_previous_file = true;
+                on_overwrite(path.clone()).await?;
+                file_options.create_new(false).open(&path).await?
+            }
+            Err(err) => throw!(err),
+        };
 
-        f(&mut file, &path, false)
-            .await
-            .map_err(|err| Error::_Custom(err.into()))?;
+        let caching_progress = progress_with_handle!("Caching file {:?}", &**key);
+
+        let mut retrying = false;
+        loop {
+            if let Err(err) = cacher(&mut file, &path, retrying).await {
+                let custom_err = err.into();
+                error!("{custom_err}");
+
+                retrying = false;
+                select!("How do you want to resolve the error?")
+                    .with_option("Retry", || retrying = true)
+                    .get()?;
+            } else {
+                break;
+            };
+
+            if retrying {
+                file.set_len(0).await?;
+                file.seek(SeekFrom::Start(0)).await?;
+            }
+        }
+
+        caching_progress.finish();
 
         self.map
             .insert(key.into_owned().into_path_buf(), path.clone());
 
-        (file, path)
+        (had_previous_file, (file, path))
+    }
+
+    #[throws(Error)]
+    pub async fn remove_file<'key, K>(&mut self, key: K, force: bool)
+    where
+        K: Into<Cow<'key, Key>>,
+    {
+        let key = key.into();
+
+        debug!("Remove cached file for key: {key}");
+
+        match self.map.remove(&**key) {
+            Some(path) => {
+                match fs::remove_file(path).await {
+                    Ok(()) => (),
+                    Err(err) if force && err.kind() == io::ErrorKind::NotFound => (),
+                    Err(err) => throw!(err),
+                };
+            }
+            None if !force => {
+                error!("Key {key} does not exist.");
+
+                let skipping = select!("How do you want to resolve the key conflict?")
+                    .with_option("Skip", || true)
+                    .get()?;
+
+                if skipping {
+                    warn!("Skipping to remove cached file for key {key}");
+                }
+            }
+            None => (),
+        }
+    }
+}
+
+pub mod ledger {
+    use std::{mem, path::PathBuf};
+
+    use async_trait::async_trait;
+    use tokio::fs;
+
+    use crate::{
+        context::{
+            self,
+            key::{self, KeyOwned},
+        },
+        ledger::Transaction,
+        prelude::*,
+    };
+
+    pub struct Create {
+        key: KeyOwned,
+        current_file: PathBuf,
+        previous_file: Option<PathBuf>,
+    }
+
+    impl Create {
+        pub fn new(key: KeyOwned, current_file: PathBuf, previous_file: Option<PathBuf>) -> Self {
+            Self {
+                key,
+                current_file,
+                previous_file,
+            }
+        }
+    }
+
+    #[async_trait]
+    impl Transaction for Create {
+        fn description(&self) -> &'static str {
+            "Create cached file"
+        }
+
+        async fn revert(&mut self) -> anyhow::Result<()> {
+            let key = mem::replace(&mut self.key, key::KeyOwned::empty());
+            let current_file = mem::take(&mut self.current_file);
+            match self.previous_file.take() {
+                Some(previous_file) => {
+                    debug!("Move temporary file to cache file location: {previous_file:?} => {current_file:?}");
+                    fs::rename(previous_file, current_file).await?;
+                }
+                None => {
+                    context::get_context()
+                        .cache_mut()
+                        .await
+                        .remove_file(key, true)
+                        .await?;
+                }
+            }
+            Ok(())
+        }
     }
 }
