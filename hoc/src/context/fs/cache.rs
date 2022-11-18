@@ -52,8 +52,6 @@ impl Cache {
     {
         let key = key.into();
 
-        debug!("Create cached file for key: {key}");
-
         let mut had_previous_file = false;
         let mut file_options = OpenOptions::new();
         file_options.write(true).read(true);
@@ -62,6 +60,7 @@ impl Cache {
             match file_options.open(path).await {
                 Ok(file) => {
                     had_previous_file = true;
+                    debug!("Get cached file: {key}");
                     return (had_previous_file, (file, path.clone()));
                 }
                 Err(err) if err.kind() == io::ErrorKind::NotFound => (),
@@ -79,6 +78,7 @@ impl Cache {
             fs::create_dir_all(parent).await?;
         }
 
+        let mut should_overwrite = false;
         let mut file = match file_options.open(&path).await {
             Ok(file) => file,
             Err(err) if err.kind() == io::ErrorKind::AlreadyExists => {
@@ -86,17 +86,15 @@ impl Cache {
 
                 had_previous_file = true;
                 file_options.create_new(false);
-                let should_overwrite = context::util::already_exists_prompt()?;
+                should_overwrite = context::util::overwrite_prompt()?;
 
                 if !should_overwrite {
-                    warn!("Skipping to create cached file for key {key}");
+                    debug!("Create cached file: {key} (skipping)");
                     let file = file_options.open(&path).await?;
                     self.map.insert(key.into_owned(), path.clone());
-
                     return (had_previous_file, (file, path));
                 }
 
-                warn!("Overwriting existing cached file at path {path:?}");
                 on_overwrite(path.clone()).await?;
                 file_options.truncate(true).open(&path).await?
             }
@@ -123,6 +121,12 @@ impl Cache {
 
         caching_progress.finish();
 
+        if !should_overwrite {
+            debug!("Create cached file: {key}");
+        } else {
+            warn!("Create cached file: {key} (overwriting)");
+        }
+
         self.map.insert(key.into_owned(), path.clone());
 
         (had_previous_file, (file, path))
@@ -142,9 +146,6 @@ impl Cache {
         Fut: Future<Output = Result<(), Error>>,
     {
         let key = key.into();
-
-        debug!("Create cached file for key: {key}");
-
         let path = self.cache_dir.join(&*key.to_string_lossy());
 
         if let Some(parent) = path.parent() {
@@ -189,6 +190,12 @@ impl Cache {
 
         caching_progress.finish();
 
+        if !had_previous_file {
+            debug!("Create cached file: {key}");
+        } else {
+            debug!("Create cached file: {key} (overwriting)");
+        }
+
         self.map.insert(key.into_owned(), path.clone());
 
         (had_previous_file, (file, path))
@@ -201,10 +208,9 @@ impl Cache {
     {
         let key = key.into();
 
-        debug!("Remove cached file for key: {key}");
-
         match self.map.remove(&*key) {
             Some(path) => {
+                debug!("Remove cached file: {key}");
                 match fs::remove_file(path).await {
                     Ok(()) => (),
                     Err(err) if force && err.kind() == io::ErrorKind::NotFound => (),
@@ -219,10 +225,10 @@ impl Cache {
                     .get()?;
 
                 if skipping {
-                    warn!("Skipping to remove cached file for key {key}");
+                    warn!("Remove cached file: {key} (skipping)");
                 }
             }
-            None => (),
+            None => debug!("Remove cached file: {key} (skipping)"),
         }
     }
 }
@@ -269,7 +275,7 @@ pub mod ledger {
             let current_file = mem::take(&mut self.current_file);
             match self.previous_file.take() {
                 Some(previous_file) => {
-                    debug!("Move temporary file to cache file location: {previous_file:?} => {current_file:?}");
+                    debug!("Move temporary file: {previous_file:?} => {current_file:?}");
                     fs::rename(previous_file, current_file).await?;
                 }
                 None => {

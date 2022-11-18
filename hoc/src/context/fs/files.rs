@@ -46,29 +46,26 @@ impl Files {
     {
         let key = key.into();
 
-        debug!("Create file for key: {key}");
-
         let mut file_options = OpenOptions::new();
         file_options.read(true).write(true);
 
         let mut had_previous_file = false;
+        let mut should_overwrite = false;
         if let Some(path) = self.map.get(&*key) {
             error!("File for key {key} is already created");
 
             had_previous_file = true;
-            let should_overwrite = context::util::already_exists_prompt()?;
+            should_overwrite = context::util::overwrite_prompt()?;
 
             if !should_overwrite {
-                warn!("Skipping to create file for key {key}");
+                warn!("Create file: {key} (skipping)");
                 return (
                     had_previous_file,
                     (file_options.open(path).await?, path.clone()),
                 );
             }
 
-            warn!("Overwriting existing file for key {key}");
             file_options.truncate(true).create(true);
-
             on_overwrite(path.clone()).await?;
         } else {
             file_options.create_new(true);
@@ -86,18 +83,23 @@ impl Files {
                 error!("File at path {path:?} already exists");
 
                 file_options.create_new(false);
-                let should_overwrite = context::util::already_exists_prompt()?;
+                should_overwrite = context::util::overwrite_prompt()?;
 
                 if !should_overwrite {
-                    warn!("Skipping to create file for key {key}");
-                    file_options.open(&path).await?
+                    warn!("Create file: {key} (skipping)");
+                    return (had_previous_file, (file_options.open(&path).await?, path));
                 } else {
-                    warn!("Overwriting existing file at path {path:?}");
                     file_options.truncate(true).open(&path).await?
                 }
             }
             Err(err) => throw!(err),
         };
+
+        if !should_overwrite {
+            debug!("Create file: {key}");
+        } else {
+            warn!("Create file: {key} (overwriting)");
+        }
 
         self.map.insert(key.clone().into_owned(), path.clone());
 
@@ -140,10 +142,9 @@ impl Files {
     {
         let key = key.into();
 
-        debug!("Remove file for key: {key}");
-
         match self.map.remove(&*key) {
             Some(path) => {
+                debug!("Remove file: {key}");
                 fs::remove_file(path).await?;
             }
             None if !force => {
@@ -154,7 +155,7 @@ impl Files {
                     .get()?;
 
                 if skipping {
-                    warn!("Skipping to remove file for key {key}");
+                    warn!("Remove file: {key} (skipping)");
                 }
             }
             None => (),
@@ -204,7 +205,7 @@ pub mod ledger {
             let current_file = mem::take(&mut self.current_file);
             match self.previous_file.take() {
                 Some(previous_file) => {
-                    debug!("Move temporary file to persistent file location: {previous_file:?} => {current_file:?}");
+                    debug!("Move temporary file: {previous_file:?} => {current_file:?}");
                     fs::rename(previous_file, current_file).await?;
                 }
                 None => {

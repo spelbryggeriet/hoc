@@ -1,14 +1,14 @@
-use crate::{context::Error, prelude::*};
+use crate::{prelude::*, prompt};
 
-#[throws(Error)]
-pub fn already_exists_prompt() -> bool {
+#[throws(prompt::Error)]
+pub fn overwrite_prompt() -> bool {
     select!("How do you want to resolve the file path conflict?")
         .with_option("Skip", || false)
         .with_option("Overwrite", || true)
         .get()?
 }
 
-#[throws(Error)]
+#[throws(prompt::Error)]
 pub fn retry_prompt() -> bool {
     select!("How do you want to resolve the error?")
         .with_option("Retry", || true)

@@ -13,7 +13,10 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::{
-    context::key::{self, Key, KeyOwned},
+    context::{
+        self,
+        key::{self, Key, KeyOwned},
+    },
     log,
     prelude::*,
     prompt,
@@ -233,36 +236,45 @@ impl Kv {
         let key = key.into();
         let value = value.into();
 
-        debug!("Put value: {key} => {value}");
+        let mut should_overwrite = false;
+        'get: {
+            match self.map.get(&*key) {
+                Some(existing) if *existing != value => {
+                    if force {
+                        should_overwrite = true;
+                        break 'get;
+                    }
 
-        match self.map.get(&*key) {
-            Some(existing) if *existing != value && !force => {
-                error!("Key {key} is already set with a different value");
+                    error!("Key {key} is already set with a different value");
 
-                let should_continue = select!("How do you want to resolve the key conflict?")
-                    .with_option("Skip", || false)
-                    .with_option("Overwrite", || true)
-                    .get()?;
+                    should_overwrite = context::util::overwrite_prompt()?;
 
-                if !should_continue {
-                    warn!("Skipping to set value for key {key}");
+                    if !should_overwrite {
+                        warn!("Put value: {key} => {value} (skipping)");
+                        return Some(None);
+                    }
+                }
+                Some(_) if !force => {
+                    debug!("Put value: {key} => {value} (no change)");
                     return Some(None);
                 }
-
-                warn!("Overwriting existing item for key {key}");
-
-                if log_enabled!(Level::Debug) {
-                    trace!(
-                        "Old item for key {key}: {}",
-                        serde_json::to_string(&self.get_item(&*key)?)?
-                    );
-                }
+                _ => (),
             }
-            Some(_) if !force => {
-                debug!("The same value is already set, skipping");
-                return Some(None);
+        }
+
+        if !should_overwrite {
+            debug!("Put value: {key} => {value}");
+        } else {
+            if log_enabled!(Level::Trace) {
+                trace!(
+                    "Old item for key {key}: {}",
+                    serde_json::to_string(&self.get_item(&*key)?)?
+                );
             }
-            _ => (),
+            log!(
+                if force { Level::Debug } else { Level::Warn },
+                "Put value: {key} => {value} (overwriting)"
+            );
         }
 
         self.map.insert(key.into_owned(), value).map(Some)

@@ -38,16 +38,22 @@ impl Temp {
 
     #[throws(Error)]
     pub fn create_file(&mut self) -> (File, PathBuf) {
-        debug!("Create temporary file");
-
         let mut file_options = BlockingFile::options();
         file_options.write(true).truncate(true).read(true);
 
         blocking_fs::create_dir_all(&self.files_dir)?;
 
         let mut path = self.files_dir.clone();
+        let mut attempt = 1;
         let file = loop {
             path.push(util::random_string(Self::RAND_CHARS, 10));
+
+            if attempt == 1 {
+                debug!("Create temporary file: {path:?}");
+            } else {
+                warn!("Create temporary file: {path:?} (attempt {attempt})");
+            }
+
             match file_options
                 .read(true)
                 .write(true)
@@ -55,11 +61,11 @@ impl Temp {
                 .open(&path)
             {
                 Ok(file) => break file,
-                Err(err) if err.kind() == io::ErrorKind::AlreadyExists => {
-                    path.pop();
-                }
+                Err(err) if err.kind() == io::ErrorKind::AlreadyExists => path.pop(),
                 Err(err) => throw!(err),
             };
+
+            attempt += 1;
         };
 
         (File::from_std(file), path)
