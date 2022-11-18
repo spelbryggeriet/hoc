@@ -1,11 +1,11 @@
-use std::{borrow::Cow, io::SeekFrom, path::PathBuf};
+use std::{borrow::Cow, path::PathBuf};
 
 use futures::Future;
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 use tokio::{
     fs::{self, File, OpenOptions},
-    io::{self, AsyncSeekExt},
+    io,
 };
 
 use crate::{
@@ -38,15 +38,15 @@ impl Cache {
     }
 
     #[throws(Error)]
-    pub async fn get_or_create_file<'key, K, F, O, Fut>(
+    pub async fn get_or_create_file<'key, K, C, O, Fut>(
         &mut self,
         key: K,
-        cacher: F,
+        on_cache: C,
         on_overwrite: O,
     ) -> (bool, (File, PathBuf))
     where
         K: Into<Cow<'key, Key>>,
-        F: for<'a> CachedFileFn<'a>,
+        C: for<'a> CachedFileFn<'a>,
         O: FnOnce(PathBuf) -> Fut,
         Fut: Future<Output = Result<(), Error>>,
     {
@@ -101,25 +101,7 @@ impl Cache {
             Err(err) => throw!(err),
         };
 
-        let caching_progress = progress_with_handle!("Caching file for key {:}", key);
-
-        let mut retrying = false;
-        loop {
-            if let Err(err) = cacher(&mut file, &path, retrying).await {
-                let custom_err = err.into();
-                error!("{custom_err}");
-                retrying = context::util::retry_prompt()?;
-            } else {
-                break;
-            };
-
-            if retrying {
-                file.set_len(0).await?;
-                file.seek(SeekFrom::Start(0)).await?;
-            }
-        }
-
-        caching_progress.finish();
+        context::util::cache_loop(&key, &mut file, &path, on_cache).await?;
 
         if !should_overwrite {
             debug!("Create cached file: {key}");
@@ -133,15 +115,15 @@ impl Cache {
     }
 
     #[throws(Error)]
-    pub async fn _create_or_overwrite_file<'key, K, F, O, Fut>(
+    pub async fn _create_or_overwrite_file<'key, K, C, O, Fut>(
         &mut self,
         key: K,
-        cacher: F,
+        on_cache: C,
         on_overwrite: O,
     ) -> (bool, (File, PathBuf))
     where
         K: Into<Cow<'key, Key>>,
-        F: for<'a> CachedFileFn<'a>,
+        C: for<'a> CachedFileFn<'a>,
         O: FnOnce(PathBuf) -> Fut,
         Fut: Future<Output = Result<(), Error>>,
     {
@@ -170,25 +152,7 @@ impl Cache {
             Err(err) => throw!(err),
         };
 
-        let caching_progress = progress_with_handle!("Caching file for key {:}", key);
-
-        let mut retrying = false;
-        loop {
-            if let Err(err) = cacher(&mut file, &path, retrying).await {
-                let custom_err = err.into();
-                error!("{custom_err}");
-                retrying = context::util::retry_prompt()?;
-            } else {
-                break;
-            };
-
-            if retrying {
-                file.set_len(0).await?;
-                file.seek(SeekFrom::Start(0)).await?;
-            }
-        }
-
-        caching_progress.finish();
+        context::util::cache_loop(&key, &mut file, &path, on_cache).await?;
 
         if !had_previous_file {
             debug!("Create cached file: {key}");
