@@ -382,11 +382,11 @@ impl Item {
     }
 
     #[throws(as Option)]
-    pub fn get<'key, K>(&self, key: K) -> &Self
+    pub fn get<K>(&self, key: &K) -> &Self
     where
-        K: Into<&'key Key>,
+        K: AsRef<Key> + ?Sized,
     {
-        let key = key.into();
+        let key = key.as_ref();
 
         let mut current = self;
         for component in key.components() {
@@ -406,11 +406,11 @@ impl Item {
     }
 
     #[throws(as Option)]
-    pub fn take<'key, K>(self, key: K) -> Self
+    pub fn take<K>(self, key: &K) -> Self
     where
-        K: Into<&'key Key>,
+        K: AsRef<Key> + ?Sized,
     {
-        let key = key.into();
+        let key = key.as_ref();
 
         let mut current = self;
         for component in key.components() {

@@ -48,6 +48,18 @@ macro_rules! select {
 }
 
 macro_rules! get {
+    (move $item:expr => $($args:tt)*) => {{
+        let __key = $crate::util::from_arguments_to_str_cow(format_args!($($args)*));
+        let __item = $item;
+        __item.take(&__key)
+    }};
+
+    ($item:expr => $($args:tt)*) => {{
+        let __key = $crate::util::from_arguments_to_str_cow(format_args!($($args)*));
+        let __item = $item;
+        __item.get(&__key)
+    }};
+
     ($($args:tt)*) => {
         async {
             let __key = $crate::util::from_arguments_to_str_cow(format_args!($($args)*));
