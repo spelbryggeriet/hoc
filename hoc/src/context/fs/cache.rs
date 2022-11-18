@@ -9,11 +9,13 @@ use tokio::{
 };
 
 use crate::{
-    context::{key::Key, Error},
+    context::{
+        self,
+        key::{Key, KeyOwned},
+        CachedFileFn, Error,
+    },
     prelude::*,
 };
-
-use super::{key::KeyOwned, CachedFileFn};
 
 #[derive(Serialize, Deserialize)]
 pub struct Cache {
@@ -21,11 +23,11 @@ pub struct Cache {
     map: IndexMap<KeyOwned, PathBuf>,
 
     #[serde(skip)]
-    pub(super) cache_dir: PathBuf,
+    pub(in crate::context) cache_dir: PathBuf,
 }
 
 impl Cache {
-    pub(super) fn new<P>(cache_dir: P) -> Self
+    pub(in crate::context) fn new<P>(cache_dir: P) -> Self
     where
         P: Into<PathBuf>,
     {
@@ -84,12 +86,9 @@ impl Cache {
 
                 had_previous_file = true;
                 file_options.create_new(false);
-                let skipping = select!("How do you want to resolve the file path conflict?")
-                    .with_option("Skip", || true)
-                    .with_option("Overwrite", || false)
-                    .get()?;
+                let should_overwrite = context::util::already_exists_prompt()?;
 
-                if skipping {
+                if !should_overwrite {
                     warn!("Skipping to create cached file for key {key}");
                     let file = file_options.open(&path).await?;
                     self.map.insert(key.into_owned(), path.clone());
@@ -111,11 +110,7 @@ impl Cache {
             if let Err(err) = cacher(&mut file, &path, retrying).await {
                 let custom_err = err.into();
                 error!("{custom_err}");
-
-                retrying = false;
-                select!("How do you want to resolve the error?")
-                    .with_option("Retry", || retrying = true)
-                    .get()?;
+                retrying = context::util::retry_prompt()?;
             } else {
                 break;
             };
@@ -181,11 +176,7 @@ impl Cache {
             if let Err(err) = cacher(&mut file, &path, retrying).await {
                 let custom_err = err.into();
                 error!("{custom_err}");
-
-                retrying = false;
-                select!("How do you want to resolve the error?")
-                    .with_option("Retry", || retrying = true)
-                    .get()?;
+                retrying = context::util::retry_prompt()?;
             } else {
                 break;
             };

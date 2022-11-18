@@ -134,8 +134,8 @@ impl Kv {
         for (prefix, suffixes) in key_map {
             // If there are no suffixes, then it is a leaf and the prefix is its key.
             if suffixes.is_empty() {
-                if let Some(value) = self.map.get(Key::new(prefix)?).cloned() {
-                    result.push(Item::Value(value));
+                if let Ok(item) = self.get_item(Key::new(prefix)?) {
+                    result.push(item);
                 }
                 continue;
             }
@@ -680,6 +680,50 @@ pub enum Error {
     Serialization(#[from] serde_json::Error),
 }
 
+pub mod ledger {
+    use std::mem;
+
+    use async_trait::async_trait;
+
+    use super::{KeyOwned, Value};
+    use crate::ledger::Transaction;
+
+    pub struct Put {
+        key: KeyOwned,
+        previous_value: Option<Value>,
+    }
+
+    impl Put {
+        pub fn new(key: KeyOwned, previous_value: Option<Value>) -> Self {
+            Self {
+                key,
+                previous_value,
+            }
+        }
+    }
+
+    #[async_trait]
+    impl Transaction for Put {
+        fn description(&self) -> &'static str {
+            "Put value"
+        }
+
+        async fn revert(&mut self) -> anyhow::Result<()> {
+            let mut kv = crate::context::get_context().kv_mut().await;
+            let key = mem::replace(&mut self.key, crate::context::key::KeyOwned::empty());
+            match self.previous_value.take() {
+                Some(previous_value) => {
+                    kv.put_value(key, previous_value, true)?;
+                }
+                None => {
+                    kv.drop_value(key, true)?;
+                }
+            }
+            Ok(())
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::fmt::Debug;
@@ -978,49 +1022,5 @@ mod tests {
         let mut kv = kv()?;
         kv.put_value(key!("invalid_array/1"), false, true)?;
         Vec::<bool>::try_from(kv.get_item(key!("invalid_array/**"))?)?;
-    }
-}
-
-pub mod ledger {
-    use std::mem;
-
-    use async_trait::async_trait;
-
-    use super::{KeyOwned, Value};
-    use crate::ledger::Transaction;
-
-    pub struct Put {
-        key: KeyOwned,
-        previous_value: Option<Value>,
-    }
-
-    impl Put {
-        pub fn new(key: KeyOwned, previous_value: Option<Value>) -> Self {
-            Self {
-                key,
-                previous_value,
-            }
-        }
-    }
-
-    #[async_trait]
-    impl Transaction for Put {
-        fn description(&self) -> &'static str {
-            "Put value"
-        }
-
-        async fn revert(&mut self) -> anyhow::Result<()> {
-            let mut kv = crate::context::get_context().kv_mut().await;
-            let key = mem::replace(&mut self.key, crate::context::key::KeyOwned::empty());
-            match self.previous_value.take() {
-                Some(previous_value) => {
-                    kv.put_value(key, previous_value, true)?;
-                }
-                None => {
-                    kv.drop_value(key, true)?;
-                }
-            }
-            Ok(())
-        }
     }
 }

@@ -77,7 +77,7 @@ macro_rules! _temp_file {
     () => {
         async {
             $crate::context::get_context()
-                .temp_files_mut()
+                .temp_mut()
                 .await
                 .create_file()
         }

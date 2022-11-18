@@ -12,16 +12,16 @@ use tokio::{
 
 use crate::{context::Error, prelude::*, util};
 
-pub struct TempFiles {
-    pub(super) files_dir: PathBuf,
+pub struct Temp {
+    pub(in crate::context) files_dir: PathBuf,
 }
 
-impl TempFiles {
+impl Temp {
     const RAND_CHARS: &str = "ABCDEFGHIJKLMNOPQRSTUVXYZ\
                               abcdefghijklmnopqrstuvxyz\
                               0123456789";
 
-    pub(super) fn new<P>(files_dir: P) -> Self
+    pub(in crate::context) fn new<P>(files_dir: P) -> Self
     where
         P: Into<PathBuf>,
     {
@@ -30,7 +30,7 @@ impl TempFiles {
         }
     }
 
-    pub(super) fn empty() -> Self {
+    pub(in crate::context) fn empty() -> Self {
         Self {
             files_dir: PathBuf::new(),
         }
@@ -81,7 +81,7 @@ impl TempFiles {
     }
 }
 
-impl Drop for TempFiles {
+impl Drop for Temp {
     fn drop(&mut self) {
         let _ = task::block_in_place(|| Handle::current().block_on(self.clean()));
     }

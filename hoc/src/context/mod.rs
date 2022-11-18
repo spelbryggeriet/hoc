@@ -13,20 +13,27 @@ use once_cell::sync::OnceCell;
 use serde::{de::Visitor, ser::SerializeMap, Deserialize, Deserializer, Serialize};
 use thiserror::Error;
 use tokio::{
-    fs::{self, File, OpenOptions},
+    fs::{File, OpenOptions},
     runtime::Handle,
     sync::{RwLock, RwLockReadGuard, RwLockWriteGuard},
     task,
 };
 
-use self::{cache::Cache, files::Files, key::Key, kv::Kv, temp::TempFiles};
+use self::{
+    fs::{
+        cache::{self, Cache},
+        files::{self, Files},
+        temp::Temp,
+    },
+    key::Key,
+    kv::Kv,
+};
 use crate::{ledger::Ledger, prelude::*, prompt};
 
-pub mod cache;
-pub mod files;
+pub mod fs;
 pub mod key;
 pub mod kv;
-pub mod temp;
+mod util;
 
 static CONTEXT: OnceCell<Context> = OnceCell::new();
 
@@ -51,7 +58,7 @@ pub fn get_context() -> &'static Context {
 pub struct Context {
     kv: RwLock<Kv>,
     files: RwLock<Files>,
-    temp_files: RwLock<TempFiles>,
+    temp: RwLock<Temp>,
     cache: RwLock<Cache>,
     data_dir: PathBuf,
 }
@@ -69,12 +76,12 @@ impl Context {
         let cache_dir = cache_dir.into();
 
         debug!("Creating data directory");
-        fs::create_dir_all(&data_dir).await?;
+        tokio::fs::create_dir_all(&data_dir).await?;
 
         debug!("Setting data directory permissions");
         let mut permissions = data_dir.metadata()?.permissions();
         permissions.set_mode(0o700);
-        fs::set_permissions(&data_dir, permissions).await?;
+        tokio::fs::set_permissions(&data_dir, permissions).await?;
 
         let context_path = data_dir.join("context.yaml");
 
@@ -91,7 +98,7 @@ impl Context {
                 debug!("Deserializing context from file");
                 let mut context: Self = serde_yaml::from_reader(File::into_std(file).await)?;
                 context.files.write().await.files_dir = data_dir.join("files");
-                context.temp_files.write().await.files_dir = cache_dir.join("temp");
+                context.temp.write().await.files_dir = cache_dir.join("temp");
                 context.cache.write().await.cache_dir = cache_dir.join("cache");
                 context.data_dir = data_dir;
                 context
@@ -110,7 +117,7 @@ impl Context {
                 let context = Self {
                     kv: RwLock::new(Kv::new()),
                     files: RwLock::new(Files::new(data_dir.join("files"))),
-                    temp_files: RwLock::new(TempFiles::new(cache_dir.join("temp"))),
+                    temp: RwLock::new(Temp::new(cache_dir.join("temp"))),
                     cache: RwLock::new(Cache::new(cache_dir.join("cache"))),
                     data_dir,
                 };
@@ -139,8 +146,8 @@ impl Context {
         self.files.write().await
     }
 
-    pub async fn temp_files_mut(&self) -> RwLockWriteGuard<TempFiles> {
-        self.temp_files.write().await
+    pub async fn temp_mut(&self) -> RwLockWriteGuard<Temp> {
+        self.temp.write().await
     }
 
     pub async fn cache_mut(&self) -> RwLockWriteGuard<Cache> {
@@ -161,10 +168,8 @@ impl Context {
         serde_yaml::to_writer(file, self)?;
 
         debug!("Cleaning temporary files");
-        let temp_files = self.temp_files.write();
-        task::block_in_place(|| {
-            Handle::current().block_on(async { temp_files.await.clean().await })
-        })?;
+        let temp = self.temp.write();
+        task::block_in_place(|| Handle::current().block_on(async { temp.await.clean().await }))?;
     }
 }
 
@@ -199,8 +204,8 @@ impl FileBuilder<Persisted> {
             .files_mut()
             .await
             .create_file(self.key.as_ref(), |path| async {
-                let (_, temp_path) = context.temp_files_mut().await.create_file()?;
-                fs::rename(path, &temp_path).await?;
+                let (_, temp_path) = context.temp_mut().await.create_file()?;
+                tokio::fs::rename(path, &temp_path).await?;
                 previous_path.replace(temp_path);
                 Ok(())
             })
@@ -243,8 +248,8 @@ where
             .cache_mut()
             .await
             .get_or_create_file(self.key.as_ref(), self.state.file_cacher, |path| async {
-                let (_, temp_path) = context.temp_files_mut().await.create_file()?;
-                fs::rename(path, &temp_path).await?;
+                let (_, temp_path) = context.temp_mut().await.create_file()?;
+                tokio::fs::rename(path, &temp_path).await?;
                 previous_path.replace(temp_path);
                 Ok(())
             })
@@ -272,8 +277,8 @@ where
             .cache_mut()
             .await
             ._create_or_overwrite_file(self.key.as_ref(), self.state.file_cacher, |path| async {
-                let (_, temp_path) = context.temp_files_mut().await.create_file()?;
-                fs::rename(path, &temp_path).await?;
+                let (_, temp_path) = context.temp_mut().await.create_file()?;
+                tokio::fs::rename(path, &temp_path).await?;
                 previous_path.replace(temp_path);
                 Ok(())
             })
@@ -421,7 +426,7 @@ impl<'de> Deserialize<'de> for Context {
                 Context {
                     kv: RwLock::new(kv),
                     files: RwLock::new(files),
-                    temp_files: RwLock::new(TempFiles::empty()),
+                    temp: RwLock::new(Temp::empty()),
                     cache: RwLock::new(cache),
                     data_dir: PathBuf::new(),
                 }

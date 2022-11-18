@@ -6,13 +6,12 @@ use tokio::fs::{self, File, OpenOptions};
 
 use crate::{
     context::{
-        key::{self, Key},
+        self,
+        key::{self, Key, KeyOwned},
         Error,
     },
     prelude::*,
 };
-
-use super::key::KeyOwned;
 
 #[derive(Serialize, Deserialize)]
 pub struct Files {
@@ -20,11 +19,11 @@ pub struct Files {
     map: IndexMap<KeyOwned, PathBuf>,
 
     #[serde(skip)]
-    pub(super) files_dir: PathBuf,
+    pub(in crate::context) files_dir: PathBuf,
 }
 
 impl Files {
-    pub(super) fn new<P>(files_dir: P) -> Self
+    pub(in crate::context) fn new<P>(files_dir: P) -> Self
     where
         P: Into<PathBuf>,
     {
@@ -57,12 +56,9 @@ impl Files {
             error!("File for key {key} is already created");
 
             had_previous_file = true;
-            let overwrite = select!("How do you want to resolve the key conflict?")
-                .with_option("Skip", || false)
-                .with_option("Overwrite", || true)
-                .get()?;
+            let should_overwrite = context::util::already_exists_prompt()?;
 
-            if !overwrite {
+            if !should_overwrite {
                 warn!("Skipping to create file for key {key}");
                 return (
                     had_previous_file,
@@ -90,12 +86,9 @@ impl Files {
                 error!("File at path {path:?} already exists");
 
                 file_options.create_new(false);
-                let overwrite = select!("How do you want to resolve the file path conflict?")
-                    .with_option("Skip", || false)
-                    .with_option("Overwrite", || true)
-                    .get()?;
+                let should_overwrite = context::util::already_exists_prompt()?;
 
-                if !overwrite {
+                if !should_overwrite {
                     warn!("Skipping to create file for key {key}");
                     file_options.open(&path).await?
                 } else {
