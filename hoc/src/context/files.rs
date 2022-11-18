@@ -12,10 +12,12 @@ use crate::{
     prelude::*,
 };
 
+use super::key::KeyOwned;
+
 #[derive(Serialize, Deserialize)]
 pub struct Files {
     #[serde(flatten)]
-    map: IndexMap<PathBuf, PathBuf>,
+    map: IndexMap<KeyOwned, PathBuf>,
 
     #[serde(skip)]
     pub(super) files_dir: PathBuf,
@@ -51,7 +53,7 @@ impl Files {
         file_options.read(true).write(true);
 
         let mut had_previous_file = false;
-        if let Some(path) = self.map.get(&**key) {
+        if let Some(path) = self.map.get(&*key) {
             error!("File for key {key} is already created");
 
             had_previous_file = true;
@@ -76,7 +78,7 @@ impl Files {
             file_options.create_new(true);
         }
 
-        let path = self.files_dir.join(&**key);
+        let path = self.files_dir.join(&*key.to_string_lossy());
 
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).await?;
@@ -104,8 +106,7 @@ impl Files {
             Err(err) => throw!(err),
         };
 
-        self.map
-            .insert(key.clone().into_owned().into_path_buf(), path.clone());
+        self.map.insert(key.clone().into_owned(), path.clone());
 
         (had_previous_file, (file, path))
     }
@@ -122,7 +123,7 @@ impl Files {
         let mut file_options = BlockingFile::options();
         file_options.write(true).read(true);
 
-        if let Some(path) = self.map.get(&**key) {
+        if let Some(path) = self.map.get(&*key) {
             let file = match file_options.open(path) {
                 Ok(file) => file,
                 Err(err) if err.kind() == io::ErrorKind::NotFound => {
@@ -148,7 +149,7 @@ impl Files {
 
         debug!("Remove file for key: {key}");
 
-        match self.map.remove(&**key) {
+        match self.map.remove(&*key) {
             Some(path) => {
                 fs::remove_file(path).await?;
             }

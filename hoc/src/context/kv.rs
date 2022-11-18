@@ -4,7 +4,6 @@ use std::{
     ffi::OsStr,
     fmt::{self, Debug, Display, Formatter},
     io, iter,
-    os::unix::prelude::OsStrExt,
     path::{Component, Path, PathBuf},
 };
 
@@ -23,7 +22,7 @@ use crate::{
 #[derive(Serialize, Deserialize)]
 pub struct Kv {
     #[serde(flatten)]
-    map: IndexMap<PathBuf, Value>,
+    map: IndexMap<KeyOwned, Value>,
 }
 
 impl Kv {
@@ -42,12 +41,12 @@ impl Kv {
 
         // If key does not contain any wildcards, then it is a "leaf", i.e. we can fetch the value
         // directly.
-        if !key.as_os_str().as_bytes().contains(&b'*') {
+        if !key.contains_wildcard() {
             debug!("Get item: {key}");
 
             return self
                 .map
-                .get(&**key)
+                .get(&*key)
                 .map(|value| Item::Value(value.clone()))
                 .ok_or_else(|| key::Error::KeyDoesNotExist(key.into_owned()))?;
         }
@@ -57,7 +56,7 @@ impl Kv {
         // A key is "nested" if it ends with a '**' component. Nested in this case means that it
         // will traverse further down to build a map or an array structure, given the expanded
         // components.
-        let is_nested = matches!(key.components().last(), Some(comp) if comp.as_os_str() == "**");
+        let is_nested = matches!(key.components().last(), Some(comp) if comp.is_nested_wildcard());
 
         // If the key is nested, we remove the '**' wildcard component, and use the remaining
         // components as the prefix expression for the regexes below.
@@ -68,10 +67,10 @@ impl Kv {
         // Build the prefix expression, replacing wildcards and escaping regex tokens.
         let prefix_expr = comps
             .map(|comp| {
-                if comp.as_os_str() == "**" {
+                if comp.is_nested_wildcard() {
                     ".*".to_string()
                 } else {
-                    regex::escape(&comp.as_os_str().to_string_lossy()).replace(r#"\*"#, "[^/]*")
+                    regex::escape(&comp.to_string_lossy()).replace(r#"\*"#, "[^/]*")
                 }
             })
             .collect::<Vec<_>>()
@@ -135,7 +134,7 @@ impl Kv {
         for (prefix, suffixes) in key_map {
             // If there are no suffixes, then it is a leaf and the prefix is its key.
             if suffixes.is_empty() {
-                if let Some(value) = self.map.get(prefix).cloned() {
+                if let Some(value) = self.map.get(Key::new(prefix)?).cloned() {
                     result.push(Item::Value(value));
                 }
                 continue;
@@ -236,7 +235,7 @@ impl Kv {
 
         debug!("Put value: {key} => {value}");
 
-        match self.map.get(&**key) {
+        match self.map.get(&*key) {
             Some(existing) if *existing != value && !force => {
                 error!("Key {key} is already set with a different value");
 
@@ -266,9 +265,7 @@ impl Kv {
             _ => (),
         }
 
-        self.map
-            .insert(key.into_owned().into_path_buf(), value)
-            .map(Some)
+        self.map.insert(key.into_owned(), value).map(Some)
     }
 
     #[throws(Error)]
@@ -309,7 +306,7 @@ impl Kv {
 
         debug!("Drop value: {key}");
 
-        match self.map.remove(&**key) {
+        match self.map.remove(&*key) {
             Some(existing) => Some(existing),
             None if !force => {
                 error!("Key {key} does not exist");

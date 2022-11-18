@@ -13,12 +13,12 @@ use crate::{
     prelude::*,
 };
 
-use super::CachedFileFn;
+use super::{key::KeyOwned, CachedFileFn};
 
 #[derive(Serialize, Deserialize)]
 pub struct Cache {
     #[serde(flatten)]
-    map: IndexMap<PathBuf, PathBuf>,
+    map: IndexMap<KeyOwned, PathBuf>,
 
     #[serde(skip)]
     pub(super) cache_dir: PathBuf,
@@ -56,7 +56,7 @@ impl Cache {
         let mut file_options = OpenOptions::new();
         file_options.write(true).read(true);
 
-        if let Some(path) = self.map.get(&**key) {
+        if let Some(path) = self.map.get(&*key) {
             match file_options.open(path).await {
                 Ok(file) => {
                     had_previous_file = true;
@@ -67,11 +67,11 @@ impl Cache {
             }
         }
 
-        self.map.remove(&**key);
+        self.map.remove(&*key);
 
         file_options.create_new(true);
 
-        let path = self.cache_dir.join(&**key);
+        let path = self.cache_dir.join(&*key.to_string_lossy());
 
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).await?;
@@ -92,8 +92,7 @@ impl Cache {
                 if skipping {
                     warn!("Skipping to create cached file for key {key}");
                     let file = file_options.open(&path).await?;
-                    self.map
-                        .insert(key.into_owned().into_path_buf(), path.clone());
+                    self.map.insert(key.into_owned(), path.clone());
 
                     return (had_previous_file, (file, path));
                 }
@@ -105,7 +104,7 @@ impl Cache {
             Err(err) => throw!(err),
         };
 
-        let caching_progress = progress_with_handle!("Caching file {:?}", &**key);
+        let caching_progress = progress_with_handle!("Caching file for key {:}", key);
 
         let mut retrying = false;
         loop {
@@ -129,8 +128,7 @@ impl Cache {
 
         caching_progress.finish();
 
-        self.map
-            .insert(key.into_owned().into_path_buf(), path.clone());
+        self.map.insert(key.into_owned(), path.clone());
 
         (had_previous_file, (file, path))
     }
@@ -152,7 +150,7 @@ impl Cache {
 
         debug!("Create cached file for key: {key}");
 
-        let path = self.cache_dir.join(&**key);
+        let path = self.cache_dir.join(&*key.to_string_lossy());
 
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).await?;
@@ -176,7 +174,7 @@ impl Cache {
             Err(err) => throw!(err),
         };
 
-        let caching_progress = progress_with_handle!("Caching file {:?}", &**key);
+        let caching_progress = progress_with_handle!("Caching file for key {:}", key);
 
         let mut retrying = false;
         loop {
@@ -200,8 +198,7 @@ impl Cache {
 
         caching_progress.finish();
 
-        self.map
-            .insert(key.into_owned().into_path_buf(), path.clone());
+        self.map.insert(key.into_owned(), path.clone());
 
         (had_previous_file, (file, path))
     }
@@ -215,7 +212,7 @@ impl Cache {
 
         debug!("Remove cached file for key: {key}");
 
-        match self.map.remove(&**key) {
+        match self.map.remove(&*key) {
             Some(path) => {
                 match fs::remove_file(path).await {
                     Ok(()) => (),
