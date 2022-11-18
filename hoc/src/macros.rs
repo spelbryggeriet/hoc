@@ -69,7 +69,7 @@ macro_rules! put {
 macro_rules! context_file {
     ($($args:tt)*) => {{
         let __cow = $crate::util::try_from_arguments_to_key_cow(format_args!($($args)*))?;
-        $crate::context::FileBuilder::new(__cow)
+        $crate::context::fs::FileBuilder::new(__cow)
     }};
 }
 
