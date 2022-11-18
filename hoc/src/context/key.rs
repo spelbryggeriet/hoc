@@ -59,7 +59,7 @@ impl Key {
         unchecked
     }
 
-    pub(super) fn new_unchecked<P: AsRef<Path> + ?Sized>(key: &P) -> &Self {
+    pub fn new_unchecked<P: AsRef<Path> + ?Sized>(key: &P) -> &Self {
         unsafe { &*(key.as_ref() as *const Path as *const Key) }
     }
 
@@ -107,14 +107,14 @@ impl KeyOwned {
         unchecked
     }
 
-    pub fn empty() -> Self {
-        Self::new_unchecked("")
-    }
-
-    pub(super) fn new_unchecked<P: Into<PathBuf>>(path_buf: P) -> Self {
+    pub fn new_unchecked<P: Into<PathBuf>>(path_buf: P) -> Self {
         Self {
             inner: path_buf.into(),
         }
+    }
+
+    pub fn empty() -> Self {
+        Self::new_unchecked("")
     }
 }
 
@@ -188,6 +188,10 @@ impl<'a> KeyComponent<'a> {
         };
         check_key_component(component)?;
         component
+    }
+
+    pub fn is_flat_wildcard(&self) -> bool {
+        self.inner.as_os_str() == "*"
     }
 
     pub fn is_nested_wildcard(&self) -> bool {

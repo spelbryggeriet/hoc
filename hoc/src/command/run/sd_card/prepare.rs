@@ -15,7 +15,10 @@ use xz2::read::XzDecoder;
 
 use crate::{
     cidr::Cidr,
-    context::{key, kv},
+    context::{
+        key::{self, Key},
+        kv,
+    },
     prelude::*,
     util,
 };
@@ -135,14 +138,14 @@ async fn assign_ip_address(node_name: &str) {
         .parse()?;
     let used_addresses: Vec<IpAddr> = match get!("nodes/**").await {
         Ok(item) => item
-            .convert::<IndexMap<_, IndexMap<_, kv::Item>>>()?
-            .into_values()
-            .filter(|m| m.get("initialized").and_then(kv::Item::as_bool) == Some(true))
-            .filter_map(|mut m| {
-                m.remove("network")?
-                    .convert::<IndexMap<_, kv::Item>>()
-                    .ok()?
-                    .remove("start_address")?
+            .into_iter()
+            .filter(|i| {
+                i.get(Key::new_unchecked("initialized"))
+                    .and_then(kv::Item::as_bool)
+                    == Some(true)
+            })
+            .filter_map(|i| {
+                i.take(Key::new("network/start_address").ok()?)?
                     .convert::<String>()
                     .ok()
             })

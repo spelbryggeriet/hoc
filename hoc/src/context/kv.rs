@@ -5,6 +5,7 @@ use std::{
     fmt::{self, Debug, Display, Formatter},
     io, iter,
     path::{Component, Path, PathBuf},
+    vec,
 };
 
 use indexmap::{IndexMap, IndexSet};
@@ -395,6 +396,62 @@ impl Item {
             _ => throw!(),
         }
     }
+
+    #[throws(as Option)]
+    pub fn get<'key, K>(&self, key: K) -> &Self
+    where
+        K: Into<Cow<'key, Key>>,
+    {
+        let key = key.into();
+
+        let mut current = self;
+        for component in key.components() {
+            match current {
+                Self::Value(_) => throw!(),
+                Self::Array(array) => {
+                    let index = component.to_string_lossy().parse::<usize>().ok()?;
+                    current = array.get(index)?;
+                }
+                Self::Map(map) => {
+                    current = map.get(&*component.to_string_lossy())?;
+                }
+            }
+        }
+
+        current
+    }
+
+    #[throws(as Option)]
+    pub fn take<'key, K>(self, key: K) -> Self
+    where
+        K: Into<Cow<'key, Key>>,
+    {
+        let key = key.into();
+
+        let mut current = self;
+        for component in key.components() {
+            match current {
+                Self::Value(_) => throw!(),
+                Self::Array(array) => {
+                    let index = component.to_string_lossy().parse::<usize>().ok()?;
+                    current = array.into_iter().skip(index).next()?;
+                }
+                Self::Map(mut map) => {
+                    current = map.remove(&*component.to_string_lossy())?;
+                }
+            }
+        }
+
+        current
+    }
+
+    pub fn into_iter(self) -> IntoIter {
+        match self {
+            item @ Self::Value(_) => IntoIter::Value(Some(item).into_iter()),
+            Self::Array(array) => IntoIter::Array(array.into_iter()),
+            Self::Map(map) => IntoIter::Map(map.into_values()),
+        }
+    }
 }
 
 impl<T> TryFrom<Item> for Vec<T>
@@ -617,6 +674,25 @@ impl_from_for_value_and_item!(i8 as SignedInteger => |i| i as i64);
 impl_from_for_value_and_item!(f64 as FloatingPointNumber);
 impl_from_for_value_and_item!(f32 as FloatingPointNumber => |f| f as f64);
 impl_from_for_value_and_item!(bool as Bool);
+
+pub enum IntoIter {
+    Value(std::option::IntoIter<Item>),
+    Array(vec::IntoIter<Item>),
+    Map(indexmap::map::IntoValues<String, Item>),
+}
+
+impl Iterator for IntoIter {
+    type Item = Item;
+
+    #[throws(as Option)]
+    fn next(&mut self) -> Self::Item {
+        match self {
+            Self::Value(iter) => iter.next()?,
+            Self::Array(iter) => iter.next()?,
+            Self::Map(iter) => iter.next()?,
+        }
+    }
+}
 
 #[derive(Debug, PartialEq)]
 pub enum TypeDescription {
