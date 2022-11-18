@@ -15,7 +15,10 @@ use xz2::read::XzDecoder;
 
 use crate::{
     cidr::Cidr,
-    context::{key, kv},
+    context::{
+        key,
+        kv::{self, Item},
+    },
     prelude::*,
     util,
 };
@@ -112,9 +115,9 @@ async fn generate_node_name() -> String {
 
     let num_nodes = match get!("nodes/**").await {
         Ok(item) => item
-            .convert::<IndexMap<_, IndexMap<_, kv::Item>>>()?
+            .convert::<IndexMap<_, IndexMap<_, Item>>>()?
             .values()
-            .filter(|m| m.get("initialized").and_then(kv::Item::as_bool) == Some(true))
+            .filter(|m| m.get("initialized").and_then(Item::as_bool) == Some(true))
             .count(),
         Err(kv::Error::Key(key::Error::KeyDoesNotExist(_))) => 0,
         Err(err) => throw!(err),
@@ -136,7 +139,7 @@ async fn assign_ip_address(node_name: &str) {
     let used_addresses: Vec<IpAddr> = match get!("nodes/**").await {
         Ok(item) => item
             .into_iter()
-            .filter(|i| i.get("initialized").and_then(kv::Item::as_bool) == Some(true))
+            .filter(|i| i.get("initialized").and_then(Item::as_bool) == Some(true))
             .filter_map(|i| i.take("network/start_address")?.convert::<String>().ok())
             .map(|s| s.parse().map_err(Into::into))
             .collect::<anyhow::Result<_>>()?,
