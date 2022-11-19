@@ -2,6 +2,7 @@ use std::{
     borrow::Cow,
     fmt::{self, Arguments, Display, Formatter},
     fs,
+    net::IpAddr,
     ops::Deref,
     str::FromStr,
 };
@@ -9,7 +10,10 @@ use std::{
 use rand::seq::SliceRandom;
 
 use crate::{
-    context::key::{Key, KeyOwned},
+    context::{
+        key::{Key, KeyOwned},
+        kv::{self, Item},
+    },
     prelude::*,
 };
 
@@ -134,5 +138,16 @@ where
     fn from_str(path: &str) -> Self {
         let secret = fs::read_to_string(path)?;
         Secret(T::from_str(&secret)?)
+    }
+}
+
+impl TryFrom<Item> for IpAddr {
+    type Error = kv::Error;
+
+    #[throws(Self::Error)]
+    fn try_from(item: Item) -> Self {
+        item.convert::<String>()?
+            .parse()
+            .map_err(anyhow::Error::from)?
     }
 }

@@ -2,7 +2,9 @@ use std::{
     borrow::Cow,
     convert::Infallible,
     fmt::{self, Debug, Display, Formatter},
-    io, iter, vec,
+    io, iter,
+    marker::PhantomData,
+    vec,
 };
 
 use indexmap::{IndexMap, IndexSet};
@@ -368,8 +370,11 @@ impl Item {
         }
     }
 
-    #[throws(<T as TryFrom<Self>>::Error)]
-    pub fn convert<T: TryFrom<Self>>(self) -> T {
+    #[throws(Error)]
+    pub fn convert<T>(self) -> T
+    where
+        T: TryFrom<Self, Error = Error>,
+    {
         T::try_from(self)?
     }
 
@@ -435,6 +440,15 @@ impl Item {
             Self::Array(array) => IntoIter::Array(array.into_iter()),
             Self::Map(map) => IntoIter::Map(map.into_values()),
         }
+    }
+}
+
+impl<T> From<T> for Item
+where
+    T: Into<Value>,
+{
+    fn from(value: T) -> Self {
+        Item::Value(value.into())
     }
 }
 
@@ -547,6 +561,39 @@ impl Display for Value {
     }
 }
 
+macro_rules! impl_from_for_value {
+    ($ty:ty as $variant:ident) => {
+        impl From<$ty> for Value {
+            fn from(v: $ty) -> Self {
+                Self::$variant(v)
+            }
+        }
+    };
+
+    ($ty:ty as $variant:ident => |$val:ident| $conversion:expr) => {
+        impl From<$ty> for Value {
+            fn from($val: $ty) -> Self {
+                Self::$variant($conversion)
+            }
+        }
+    };
+}
+
+impl_from_for_value!(String as String);
+impl_from_for_value!(&str as String => |s| s.to_string());
+impl_from_for_value!(&String as String => |s| s.clone());
+impl_from_for_value!(u64 as UnsignedInteger);
+impl_from_for_value!(u32 as UnsignedInteger => |i| i as u64);
+impl_from_for_value!(u16 as UnsignedInteger => |i| i as u64);
+impl_from_for_value!(u8 as UnsignedInteger => |i| i as u64);
+impl_from_for_value!(i64 as SignedInteger);
+impl_from_for_value!(i32 as SignedInteger => |i| i as i64);
+impl_from_for_value!(i16 as SignedInteger => |i| i as i64);
+impl_from_for_value!(i8 as SignedInteger => |i| i as i64);
+impl_from_for_value!(f64 as FloatingPointNumber);
+impl_from_for_value!(f32 as FloatingPointNumber => |f| f as f64);
+impl_from_for_value!(bool as Bool);
+
 impl TryFrom<Item> for Value {
     type Error = Error;
 
@@ -614,50 +661,71 @@ impl_try_from_value_non_integer!(FloatingPointNumber for f32);
 impl_try_from_value_non_integer!(FloatingPointNumber for f64);
 impl_try_from_value_non_integer!(String for String);
 
-macro_rules! impl_from_for_value_and_item {
+#[derive(PartialEq)]
+pub enum ValueRef<'a> {
+    Bool(bool),
+    UnsignedInteger(u64),
+    SignedInteger(i64),
+    FloatingPointNumber(f64),
+    String(&'a str),
+}
+
+impl PartialEq<ValueRef<'_>> for Value {
+    fn eq(&self, other: &ValueRef) -> bool {
+        match (self, other) {
+            (Self::Bool(value), ValueRef::Bool(other)) => value == other,
+            (Self::UnsignedInteger(value), ValueRef::UnsignedInteger(other)) => value == other,
+            (Self::SignedInteger(value), ValueRef::SignedInteger(other)) => value == other,
+            (Self::FloatingPointNumber(value), ValueRef::FloatingPointNumber(other)) => {
+                value == other
+            }
+            (Self::String(value), ValueRef::String(other)) => value == other,
+            _ => false,
+        }
+    }
+}
+
+impl<'a> From<&'a str> for ValueRef<'a> {
+    fn from(v: &'a str) -> Self {
+        Self::String(v)
+    }
+}
+
+impl<'a> From<&'a String> for ValueRef<'a> {
+    fn from(v: &'a String) -> Self {
+        Self::String(v)
+    }
+}
+
+macro_rules! impl_from_for_value_ref {
     ($ty:ty as $variant:ident) => {
-        impl From<$ty> for Value {
+        impl From<$ty> for ValueRef<'_> {
             fn from(v: $ty) -> Self {
                 Self::$variant(v)
-            }
-        }
-
-        impl From<$ty> for Item {
-            fn from(v: $ty) -> Self {
-                Self::Value(Value::$variant(v))
             }
         }
     };
 
     ($ty:ty as $variant:ident => |$val:ident| $conversion:expr) => {
-        impl From<$ty> for Value {
+        impl From<$ty> for ValueRef<'_> {
             fn from($val: $ty) -> Self {
                 Self::$variant($conversion)
-            }
-        }
-
-        impl From<$ty> for Item {
-            fn from($val: $ty) -> Self {
-                Self::Value(Value::$variant($conversion))
             }
         }
     };
 }
 
-impl_from_for_value_and_item!(String as String);
-impl_from_for_value_and_item!(&str as String => |s| s.to_string());
-impl_from_for_value_and_item!(&String as String => |s| s.clone());
-impl_from_for_value_and_item!(u64 as UnsignedInteger);
-impl_from_for_value_and_item!(u32 as UnsignedInteger => |i| i as u64);
-impl_from_for_value_and_item!(u16 as UnsignedInteger => |i| i as u64);
-impl_from_for_value_and_item!(u8 as UnsignedInteger => |i| i as u64);
-impl_from_for_value_and_item!(i64 as SignedInteger);
-impl_from_for_value_and_item!(i32 as SignedInteger => |i| i as i64);
-impl_from_for_value_and_item!(i16 as SignedInteger => |i| i as i64);
-impl_from_for_value_and_item!(i8 as SignedInteger => |i| i as i64);
-impl_from_for_value_and_item!(f64 as FloatingPointNumber);
-impl_from_for_value_and_item!(f32 as FloatingPointNumber => |f| f as f64);
-impl_from_for_value_and_item!(bool as Bool);
+impl_from_for_value_ref!(u64 as UnsignedInteger);
+impl_from_for_value_ref!(u32 as UnsignedInteger => |i| i as u64);
+impl_from_for_value_ref!(u16 as UnsignedInteger => |i| i as u64);
+impl_from_for_value_ref!(u8 as UnsignedInteger => |i| i as u64);
+impl_from_for_value_ref!(i64 as SignedInteger);
+impl_from_for_value_ref!(i32 as SignedInteger => |i| i as i64);
+impl_from_for_value_ref!(i16 as SignedInteger => |i| i as i64);
+impl_from_for_value_ref!(i8 as SignedInteger => |i| i as i64);
+impl_from_for_value_ref!(f64 as FloatingPointNumber);
+impl_from_for_value_ref!(f32 as FloatingPointNumber => |f| f as f64);
+impl_from_for_value_ref!(bool as Bool);
 
 pub enum IntoIter {
     Value(std::option::IntoIter<Item>),
@@ -675,6 +743,105 @@ impl Iterator for IntoIter {
             Self::Array(iter) => iter.next()?,
             Self::Map(iter) => iter.next()?,
         }
+    }
+}
+
+pub trait IteratorExt: Iterator + Sized {
+    fn filter_key_value<'a, K, V>(self, key: &'a K, value: V) -> FilterKeyValue<'a, Self>
+    where
+        K: AsRef<Key> + ?Sized,
+        V: Into<ValueRef<'a>>,
+        Self: Iterator<Item = Item>,
+    {
+        FilterKeyValue {
+            inner: self,
+            key: key.as_ref(),
+            value: value.into(),
+        }
+    }
+
+    fn try_get_key<'a, K>(self, key: &'a K) -> TryGetKey<'a, Self>
+    where
+        K: AsRef<Key> + ?Sized,
+        Self: Iterator<Item = Item>,
+    {
+        TryGetKey {
+            inner: self,
+            key: key.as_ref(),
+        }
+    }
+
+    fn and_convert<T>(self) -> AndConvert<Self, T>
+    where
+        T: TryFrom<Item, Error = Error>,
+        Self: Iterator<Item = Result<Item, Error>>,
+    {
+        AndConvert {
+            inner: self,
+            _marker: Default::default(),
+        }
+    }
+}
+
+impl<I> IteratorExt for I where I: Iterator {}
+
+pub struct FilterKeyValue<'a, I> {
+    inner: I,
+    key: &'a Key,
+    value: ValueRef<'a>,
+}
+
+impl<I> Iterator for FilterKeyValue<'_, I>
+where
+    I: Iterator<Item = Item>,
+{
+    type Item = Item;
+
+    #[throws(as Option)]
+    fn next(&mut self) -> Self::Item {
+        let elem = self.inner.next()?;
+        match elem.get(self.key)? {
+            Item::Value(value) if value == &self.value => elem,
+            _ => throw!(),
+        }
+    }
+}
+
+pub struct TryGetKey<'a, I> {
+    inner: I,
+    key: &'a Key,
+}
+
+impl<I> Iterator for TryGetKey<'_, I>
+where
+    I: Iterator<Item = Item>,
+{
+    type Item = Result<Item, Error>;
+
+    #[throws(as Option)]
+    fn next(&mut self) -> Self::Item {
+        self.inner
+            .next()?
+            .take(self.key)
+            .ok_or_else(|| key::Error::KeyDoesNotExist(self.key.to_owned()).into())
+    }
+}
+
+pub struct AndConvert<I, T> {
+    inner: I,
+    _marker: PhantomData<T>,
+}
+
+impl<I, T> Iterator for AndConvert<I, T>
+where
+    I: Iterator<Item = Result<Item, Error>>,
+    T: TryFrom<Item, Error = Error>,
+{
+    type Item = Result<T, Error>;
+
+    #[throws(as Option)]
+    fn next(&mut self) -> Self::Item {
+        self.inner.next()?.and_then(Item::convert)
     }
 }
 
@@ -750,6 +917,9 @@ pub enum Error {
 
     #[error(transparent)]
     Serialization(#[from] serde_json::Error),
+
+    #[error(transparent)]
+    Custom(#[from] anyhow::Error),
 }
 
 pub mod ledger {

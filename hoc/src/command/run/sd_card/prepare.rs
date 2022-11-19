@@ -6,7 +6,6 @@ use std::{
     path::Path,
 };
 
-use indexmap::IndexMap;
 use tokio::{
     fs::File,
     io::{self, AsyncWriteExt},
@@ -15,10 +14,7 @@ use xz2::read::XzDecoder;
 
 use crate::{
     cidr::Cidr,
-    context::{
-        key,
-        kv::{self, Item},
-    },
+    context::{key, kv},
     prelude::*,
     util,
 };
@@ -115,16 +111,17 @@ async fn generate_node_name() -> String {
 
     let num_nodes = match get!("nodes/**").await {
         Ok(item) => item
-            .convert::<IndexMap<_, IndexMap<_, Item>>>()?
-            .values()
-            .filter(|m| m.get("initialized").and_then(Item::as_bool) == Some(true))
+            .into_iter()
+            .filter_key_value("initialized", true)
             .count(),
         Err(kv::Error::Key(key::Error::KeyDoesNotExist(_))) => 0,
         Err(err) => throw!(err),
     };
+
     let node_name = format!("node-{}", util::numeral(num_nodes as u64 + 1));
     put!(false => "nodes/{node_name}/initialized").await?;
     info!("Node name: {node_name}");
+
     node_name
 }
 
@@ -132,17 +129,14 @@ async fn generate_node_name() -> String {
 async fn assign_ip_address(node_name: &str) {
     progress!("Assigning IP address");
 
-    let start_address: IpAddr = get!("network/start_address")
-        .await?
-        .convert::<String>()?
-        .parse()?;
+    let start_address: IpAddr = get!("network/start_address").await?.convert()?;
     let used_addresses: Vec<IpAddr> = match get!("nodes/**").await {
         Ok(item) => item
             .into_iter()
-            .filter(|i| i.get("initialized").and_then(Item::as_bool) == Some(true))
-            .filter_map(|i| i.take("network/start_address")?.convert::<String>().ok())
-            .map(|s| s.parse().map_err(Into::into))
-            .collect::<anyhow::Result<_>>()?,
+            .filter_key_value("initialized", true)
+            .try_get_key("network/start_address")
+            .and_convert()
+            .collect::<Result<_, _>>()?,
         Err(kv::Error::Key(key::Error::KeyDoesNotExist(_))) => Vec::new(),
         Err(err) => throw!(err),
     };
