@@ -192,9 +192,7 @@ async fn unmount_sd_card(disk: DiskInfo) -> Result<(), Error> {
     progress!("Unmounting SD card");
 
     let id = disk.id;
-    run!("diskutil unmountDisk {id}")
-        .revertible(revert_cmd!("diskutil mountDisk {id}"))
-        .await?;
+    run!("diskutil unmountDisk {id}").await?;
 
     Ok(())
 }
