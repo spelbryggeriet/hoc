@@ -69,7 +69,7 @@ impl Kv {
         let prefix_expr = comps
             .map(|comp| {
                 if comp.is_nested_wildcard() {
-                    ".*".to_string()
+                    ".*".to_owned()
                 } else {
                     regex::escape(comp.as_str()).replace(r#"\*"#, "[^/]*")
                 }
@@ -579,7 +579,7 @@ macro_rules! impl_from_for_value {
 }
 
 impl_from_for_value!(String as String);
-impl_from_for_value!(&str as String => |s| s.to_string());
+impl_from_for_value!(&str as String => |s| s.to_owned());
 impl_from_for_value!(&String as String => |s| s.clone());
 impl_from_for_value!(u64 as UnsignedInteger);
 impl_from_for_value!(u32 as UnsignedInteger => |i| i as u64);
@@ -972,17 +972,17 @@ mod tests {
 
     macro_rules! item_map {
         ($map:ident => @impl $key:literal map=> $value:expr, $($rest:tt)*) => {
-            $map.insert($key.to_string(), Item::Map($value));
+            $map.insert($key.to_owned(), Item::Map($value));
             item_map!($map => @impl $($rest)*);
         };
 
         ($map:ident => @impl $key:literal array=> $value:expr, $($rest:tt)*) => {
-            $map.insert($key.to_string(), Item::Array($value));
+            $map.insert($key.to_owned(), Item::Array($value));
             item_map!($map => @impl $($rest)*);
         };
 
         ($map:ident => @impl $key:literal => $value:expr, $($rest:tt)*) => {
-            $map.insert($key.to_string(), Item::from($value));
+            $map.insert($key.to_owned(), Item::from($value));
             item_map!($map => @impl $($rest)*);
         };
 
@@ -1095,7 +1095,7 @@ mod tests {
         f32::try_from(kv.get_item("float")?)?.expect_val(1.0);
         u64::try_from(kv.get_item("u64")?)?.expect_val(u64::MAX);
         bool::try_from(kv.get_item("bool")?)?.expect_val(false);
-        String::try_from(kv.get_item("string")?)?.expect_val("hello".to_string());
+        String::try_from(kv.get_item("string")?)?.expect_val("hello".to_owned());
         bool::try_from(kv.get_item("nested/one")?)?.expect_val(true);
         bool::try_from(kv.get_item("nested/*")?)?.expect_val(true);
         bool::try_from(kv.get_item("nested/two/adam")?)?.expect_val(false);
@@ -1105,14 +1105,14 @@ mod tests {
     #[throws(Error)]
     fn get_multiple_leafs() {
         let kv = kv()?;
-        get_joined_vec(&kv, "nested/two/betsy/*/token")?.expect_val("t1,t2,t3,t4".to_string());
-        get_joined_vec(&kv, "nested/two/betsy/*ta/token")?.expect_val("t2,t3".to_string());
-        get_joined_vec(&kv, "nested/two/*/*/token")?.expect_val("t1,t2,t3,t4".to_string());
-        get_joined_vec(&kv, "nested/*/*/*/token")?.expect_val("t1,t2,t3,t4".to_string());
-        get_joined_vec(&kv, "nested/*/*/*a*a/token")?.expect_val("t1,t4".to_string());
-        get_joined_vec(&kv, "nested/**/token")?.expect_val("t1,t2,t3,t4".to_string());
-        get_joined_vec(&kv, "nested/**/**/token")?.expect_val("t1,t2,t3,t4".to_string());
-        get_joined_vec(&kv, "nested/**/betsy/*l*/token")?.expect_val("t1,t3".to_string());
+        get_joined_vec(&kv, "nested/two/betsy/*/token")?.expect_val("t1,t2,t3,t4".to_owned());
+        get_joined_vec(&kv, "nested/two/betsy/*ta/token")?.expect_val("t2,t3".to_owned());
+        get_joined_vec(&kv, "nested/two/*/*/token")?.expect_val("t1,t2,t3,t4".to_owned());
+        get_joined_vec(&kv, "nested/*/*/*/token")?.expect_val("t1,t2,t3,t4".to_owned());
+        get_joined_vec(&kv, "nested/*/*/*a*a/token")?.expect_val("t1,t4".to_owned());
+        get_joined_vec(&kv, "nested/**/token")?.expect_val("t1,t2,t3,t4".to_owned());
+        get_joined_vec(&kv, "nested/**/**/token")?.expect_val("t1,t2,t3,t4".to_owned());
+        get_joined_vec(&kv, "nested/**/betsy/*l*/token")?.expect_val("t1,t3".to_owned());
     }
 
     #[test]
@@ -1131,9 +1131,9 @@ mod tests {
         ]);
         Vec::<bool>::try_from(kv.get_item("nested/*")?)?.expect_val(vec![true]);
         Vec::<bool>::try_from(kv.get_item("nested/*/*")?)?.expect_val(vec![false]);
-        get_joined_vec(&kv, "array/one/*")?.expect_val("t1,t2,t3,t4".to_string());
-        get_joined_vec(&kv, "array/one/**")?.expect_val("t1,t2,t3,t4".to_string());
-        get_joined_vec(&kv, "array/*/*")?.expect_val("t1,t2,t3,t4,r1,r2,r3,r4".to_string());
+        get_joined_vec(&kv, "array/one/*")?.expect_val("t1,t2,t3,t4".to_owned());
+        get_joined_vec(&kv, "array/one/**")?.expect_val("t1,t2,t3,t4".to_owned());
+        get_joined_vec(&kv, "array/*/*")?.expect_val("t1,t2,t3,t4,r1,r2,r3,r4".to_owned());
     }
 
     #[test]
@@ -1142,16 +1142,16 @@ mod tests {
         let kv = kv()?;
         Vec::<Vec<String>>::try_from(kv.get_item("array/*/**")?)?.expect_val(vec![
             vec![
-                "t1".to_string(),
-                "t2".to_string(),
-                "t3".to_string(),
-                "t4".to_string(),
+                "t1".to_owned(),
+                "t2".to_owned(),
+                "t3".to_owned(),
+                "t4".to_owned(),
             ],
             vec![
-                "r1".to_string(),
-                "r2".to_string(),
-                "r3".to_string(),
-                "r4".to_string(),
+                "r1".to_owned(),
+                "r2".to_owned(),
+                "r3".to_owned(),
+                "r4".to_owned(),
             ],
         ]);
     }

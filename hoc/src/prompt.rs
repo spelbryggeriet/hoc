@@ -87,28 +87,29 @@ where
         let pause_lock = log::pause_rendering(pause_height)?;
 
         let default_clone = self.default.clone();
-        let validator =
-            move |s: &str| {
-                let s = s.trim();
-                if s.is_empty() {
-                    return if let Some(default) = &default_clone {
-                        match T::from_str(default) {
-                            Ok(_) => Ok(Validation::Valid),
-                            Err(_) => Err(Box::new(InvalidDefaultError(default.to_string()))
-                                as CustomUserError),
-                        }
-                    } else {
-                        Ok(Validation::Invalid(ErrorMessage::Custom(
-                            "input must not be empty".to_string(),
-                        )))
-                    };
-                }
+        let validator = move |s: &str| {
+            let s = s.trim();
+            if s.is_empty() {
+                return if let Some(default) = &default_clone {
+                    match T::from_str(default) {
+                        Ok(_) => Ok(Validation::Valid),
+                        Err(_) => Err(
+                            Box::new(InvalidDefaultError(default.to_owned().into_owned()))
+                                as CustomUserError,
+                        ),
+                    }
+                } else {
+                    Ok(Validation::Invalid(ErrorMessage::Custom(
+                        "input must not be empty".to_owned(),
+                    )))
+                };
+            }
 
-                match T::from_str(s) {
-                    Ok(_) => Ok(Validation::Valid),
-                    Err(err) => Ok(Validation::Invalid(ErrorMessage::Custom(err.to_string()))),
-                }
-            };
+            match T::from_str(s) {
+                Ok(_) => Ok(Validation::Valid),
+                Err(err) => Ok(Validation::Invalid(ErrorMessage::Custom(err.to_string()))),
+            }
+        };
 
         let render_config =
             RenderConfig::default().with_global_indentation(pause_lock.indentation() as u16);
@@ -171,7 +172,7 @@ where
             let s = s.trim();
             if s.is_empty() {
                 return Ok(Validation::Invalid(ErrorMessage::Custom(
-                    "input must not be empty".to_string(),
+                    "input must not be empty".to_owned(),
                 )));
             }
 

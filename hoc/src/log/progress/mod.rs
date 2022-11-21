@@ -67,12 +67,12 @@ impl Progress {
 
         if let Some(progress_log) = progress_log {
             for line in message.lines() {
-                progress_log.push_simple_log(SimpleLog::new(line.to_string()).with_level(level));
+                progress_log.push_simple_log(SimpleLog::new(line.to_owned()).with_level(level));
             }
         } else {
             for line in message.lines() {
                 logs.push_back(Log::Simple(
-                    SimpleLog::new(line.to_string()).with_level(level),
+                    SimpleLog::new(line.to_owned()).with_level(level),
                 ));
             }
         }

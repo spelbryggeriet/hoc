@@ -37,7 +37,7 @@ impl Logger {
             info if "INFO".starts_with(info) => Level::Info,
             debug if "DEBUG".starts_with(debug) => Level::Debug,
             trace if "TRACE".starts_with(trace) => Level::Trace,
-            _ => throw!(Error::UnknownLevel(level_str.to_string())),
+            _ => throw!(Error::UnknownLevel(level_str.into_owned())),
         };
 
         let logger = Self {
@@ -72,7 +72,7 @@ impl Log for Logger {
             LoggerMeta {
                 timestamp: Utc::now(),
                 level: record.level(),
-                module: record.module_path().map(str::to_string),
+                module: record.module_path().map(str::to_owned),
             },
             args_str,
         ));
