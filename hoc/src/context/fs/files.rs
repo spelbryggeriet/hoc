@@ -6,11 +6,11 @@ use tokio::fs::{self, File, OpenOptions};
 
 use crate::{
     context::{
-        self,
         key::{self, Key, KeyOwned},
         Error,
     },
     prelude::*,
+    util::Opt,
 };
 
 #[derive(Serialize, Deserialize)]
@@ -55,10 +55,13 @@ impl Files {
             error!("File for key {key} is already created");
 
             had_previous_file = true;
-            should_overwrite = context::util::overwrite_prompt()?;
+            let opt = select!("How do you want to resolve the key conflict?")
+                .with_options([Opt::Skip, Opt::Overwrite])
+                .get()?;
 
+            should_overwrite = opt == Opt::Overwrite;
             if !should_overwrite {
-                warn!("Create file: {key} (skipping)");
+                warn!("Creating file: {key} (skipping)");
                 return (
                     had_previous_file,
                     (file_options.open(path).await?, path.clone()),
@@ -83,10 +86,13 @@ impl Files {
                 error!("File at path {path:?} already exists");
 
                 file_options.create_new(false);
-                should_overwrite = context::util::overwrite_prompt()?;
+                let opt = select!("How do you want to resolve the file path conflict?")
+                    .with_options([Opt::Skip, Opt::Overwrite])
+                    .get()?;
 
+                should_overwrite = opt == Opt::Overwrite;
                 if !should_overwrite {
-                    warn!("Create file: {key} (skipping)");
+                    warn!("Creating file: {key} (skipping)");
                     return (had_previous_file, (file_options.open(&path).await?, path));
                 } else {
                     file_options.truncate(true).open(&path).await?
@@ -96,9 +102,9 @@ impl Files {
         };
 
         if !should_overwrite {
-            debug!("Create file: {key}");
+            debug!("Creating file: {key}");
         } else {
-            warn!("Create file: {key} (overwriting)");
+            warn!("Creating file: {key} (overwriting)");
         }
 
         self.map.insert(key, path.clone());
@@ -113,22 +119,13 @@ impl Files {
     {
         let key = key.into();
 
-        debug!("Get file for key: {key}");
+        debug!("Getting file for key: {key}");
 
         let mut file_options = BlockingFile::options();
         file_options.write(true).read(true);
 
         if let Some(path) = self.map.get(&*key) {
-            let file = match file_options.open(path) {
-                Ok(file) => file,
-                Err(err) if err.kind() == io::ErrorKind::NotFound => {
-                    error!("File at path {path:?} not found");
-
-                    return select!("How do you want to resolve the file path conflict?").get()?;
-                }
-                Err(err) => throw!(err),
-            };
-
+            let file = file_options.open(path)?;
             return (File::from_std(file), PathBuf::from(path));
         }
 
@@ -150,13 +147,11 @@ impl Files {
             None if !force => {
                 error!("Key {key} does not exist.");
 
-                let skipping = select!("How do you want to resolve the key conflict?")
-                    .with_option("Skip", || true)
+                select!("How do you want to resolve the key conflict?")
+                    .with_option(Opt::Skip)
                     .get()?;
 
-                if skipping {
-                    warn!("Remove file: {key} (skipping)");
-                }
+                warn!("Remove file: {key} (skipping)");
             }
             None => (),
         }
@@ -164,7 +159,7 @@ impl Files {
 }
 
 pub mod ledger {
-    use std::{mem, path::PathBuf};
+    use std::{borrow::Cow, path::PathBuf};
 
     use async_trait::async_trait;
     use tokio::fs;
@@ -193,13 +188,16 @@ pub mod ledger {
 
     #[async_trait]
     impl Transaction for Create {
-        fn description(&self) -> &'static str {
-            "Create file"
+        fn description(&self) -> Cow<'static, str> {
+            "Create file".into()
         }
 
-        async fn revert(&mut self) -> anyhow::Result<()> {
-            let key = mem::replace(&mut self.key, KeyOwned::new());
-            let current_file = mem::take(&mut self.current_file);
+        fn detail(&self) -> Cow<'static, str> {
+            format!("File to revert: {:?}", self.current_file).into()
+        }
+
+        async fn revert(mut self: Box<Self>) -> anyhow::Result<()> {
+            let current_file = self.current_file;
             match self.previous_file.take() {
                 Some(previous_file) => {
                     debug!("Move temporary file: {previous_file:?} => {current_file:?}");
@@ -209,7 +207,7 @@ pub mod ledger {
                     context::get_context()
                         .files_mut()
                         .await
-                        .remove_file(&key, true)
+                        .remove_file(&self.key, true)
                         .await?;
                 }
             }

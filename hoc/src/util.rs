@@ -130,14 +130,14 @@ impl<T> Display for Secret<T> {
 impl<T> FromStr for Secret<T>
 where
     T: FromStr,
-    T::Err: std::error::Error + Send + Sync + 'static,
+    T::Err: Into<anyhow::Error>,
 {
     type Err = anyhow::Error;
 
     #[throws(Self::Err)]
     fn from_str(path: &str) -> Self {
         let secret = fs::read_to_string(path)?;
-        Secret(T::from_str(&secret)?)
+        Secret(T::from_str(&secret).map_err(Into::into)?)
     }
 }
 
@@ -149,5 +149,26 @@ impl TryFrom<Item> for IpAddr {
         item.convert::<String>()?
             .parse()
             .map_err(anyhow::Error::from)?
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Opt<'a> {
+    Overwrite,
+    Rerun,
+    Retry,
+    Skip,
+    Custom(&'a str),
+}
+
+impl Display for Opt<'_> {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        match self {
+            Self::Overwrite => write!(f, "Overwrite"),
+            Self::Rerun => write!(f, "Rerun"),
+            Self::Retry => write!(f, "Retry"),
+            Self::Skip => write!(f, "Skip"),
+            Self::Custom(s) => write!(f, "{s}"),
+        }
     }
 }

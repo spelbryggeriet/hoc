@@ -1,6 +1,6 @@
 use std::{
     borrow::Cow,
-    fmt::{self, Debug, Display, Formatter},
+    fmt::{Debug, Display},
     marker::PhantomData,
     str::FromStr,
 };
@@ -207,12 +207,12 @@ where
     }
 }
 
-pub struct SelectBuilder<'a, T> {
+pub struct SelectBuilder<T> {
     message: Cow<'static, str>,
-    options: Vec<SelectBuilderOption<'a, T>>,
+    options: Vec<T>,
 }
 
-impl<'a, T> SelectBuilder<'a, T> {
+impl<T> SelectBuilder<T> {
     pub fn new(message: impl Into<Cow<'static, str>>) -> Self {
         Self {
             message: message.into(),
@@ -220,14 +220,22 @@ impl<'a, T> SelectBuilder<'a, T> {
         }
     }
 
-    pub fn with_option(mut self, title: &'static str, on_select: impl FnOnce() -> T + 'a) -> Self {
-        self.options.push(SelectBuilderOption {
-            title,
-            on_select: Box::new(on_select),
-        });
+    pub fn with_option(mut self, option: T) -> Self {
+        self.options.push(option);
         self
     }
 
+    pub fn with_options<I: IntoIterator<Item = T>>(mut self, options: I) -> Self {
+        self.options.extend(options);
+        self
+    }
+
+    pub fn option_count(&self) -> usize {
+        self.options.len()
+    }
+}
+
+impl<T: Display> SelectBuilder<T> {
     #[throws(Error)]
     pub fn get(self) -> T {
         let num_options = self.options.len();
@@ -242,21 +250,9 @@ impl<'a, T> SelectBuilder<'a, T> {
         postpad(num_options as u16);
 
         let option = option?;
-        pause_lock.finish_with_message(Level::Info, format!("{} {}", self.message, option.title));
+        pause_lock.finish_with_message(Level::Info, format!("{} {}", self.message, option));
 
-        (option.on_select)()
-    }
-}
-
-struct SelectBuilderOption<'a, T> {
-    title: &'static str,
-    on_select: Box<dyn FnOnce() -> T + 'a>,
-}
-
-impl<T> Display for SelectBuilderOption<'_, T> {
-    #[throws(fmt::Error)]
-    fn fmt(&self, f: &mut Formatter) {
-        write!(f, "{}", self.title)?;
+        option
     }
 }
 

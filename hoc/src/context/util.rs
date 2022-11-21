@@ -5,23 +5,8 @@ use tokio::{fs::File, io::AsyncSeekExt};
 use crate::{
     context::{self, key::Key, CachedFileFn},
     prelude::*,
-    prompt,
+    util::Opt,
 };
-
-#[throws(prompt::Error)]
-pub fn overwrite_prompt() -> bool {
-    select!("How do you want to resolve the file path conflict?")
-        .with_option("Skip", || false)
-        .with_option("Overwrite", || true)
-        .get()?
-}
-
-#[throws(prompt::Error)]
-pub fn retry_prompt() -> bool {
-    select!("How do you want to resolve the error?")
-        .with_option("Retry", || true)
-        .get()?
-}
 
 #[throws(context::Error)]
 pub async fn cache_loop<C>(key: &Key, file: &mut File, path: &Path, on_cache: C)
@@ -35,7 +20,10 @@ where
         if let Err(err) = on_cache(file, &path, retrying).await {
             let custom_err = err.into();
             error!("{custom_err}");
-            retrying = context::util::retry_prompt()?;
+            select!("How do you want to resolve the error?")
+                .with_option(Opt::Retry)
+                .get()?;
+            retrying = true;
         } else {
             break;
         };

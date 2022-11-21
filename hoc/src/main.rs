@@ -51,12 +51,12 @@ impl App {
             Err(err) => {
                 error!("{err}");
 
-                let rollback = select!("Do you want to roll back the changes?")
-                    .with_option("Yes", || true)
-                    .with_option("No", || false)
+                let yes = "Yes";
+                let opt = select!("Do you want to roll back the changes?")
+                    .with_options([yes, "No"])
                     .get()?;
 
-                if rollback {
+                if opt == yes {
                     progress!("Rolling back changes");
 
                     let mut ledger = Ledger::get_or_init().lock().await;

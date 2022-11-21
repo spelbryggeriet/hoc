@@ -13,13 +13,11 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::{
-    context::{
-        self,
-        key::{self, Key, KeyComponent, KeyOwned},
-    },
+    context::key::{self, Key, KeyComponent, KeyOwned},
     log,
     prelude::*,
     prompt,
+    util::Opt,
 };
 
 #[derive(Serialize, Deserialize)]
@@ -45,7 +43,7 @@ impl Kv {
         // If key does not contain any wildcards, then it is a "leaf", i.e. we can fetch the value
         // directly.
         if !key.contains_wildcard() {
-            debug!("Get item: {key}");
+            debug!("Getting item: {key}");
 
             return self
                 .map
@@ -235,15 +233,18 @@ impl Kv {
 
                     error!("Key {key} is already set with a different value");
 
-                    should_overwrite = context::util::overwrite_prompt()?;
+                    let opt = select!("How do you want to resolve the key conflict?")
+                        .with_options([Opt::Skip, Opt::Overwrite])
+                        .get()?;
 
+                    should_overwrite = opt == Opt::Overwrite;
                     if !should_overwrite {
-                        warn!("Put value: {key} => {value} (skipping)");
+                        warn!("Putting value: {key} => {value} (skipping)");
                         return Some(None);
                     }
                 }
                 Some(_) if !force => {
-                    debug!("Put value: {key} => {value} (no change)");
+                    debug!("Putting value: {key} => {value} (no change)");
                     return Some(None);
                 }
                 _ => (),
@@ -251,7 +252,7 @@ impl Kv {
         }
 
         if !should_overwrite {
-            debug!("Put value: {key} => {value}");
+            debug!("Putting value: {key} => {value}");
         } else {
             if log_enabled!(Level::Trace) {
                 trace!(
@@ -261,7 +262,7 @@ impl Kv {
             }
             log!(
                 if force { Level::Debug } else { Level::Warn },
-                "Put value: {key} => {value} (overwriting)"
+                "Putting value: {key} => {value} (overwriting)"
             );
         }
 
@@ -310,13 +311,11 @@ impl Kv {
             None if !force => {
                 error!("Key {key} does not exist");
 
-                let skipping = select!("How do you want to resolve the key conflict?")
-                    .with_option("Skip", || true)
+                select!("How do you want to resolve the key conflict?")
+                    .with_option(Opt::Skip)
                     .get()?;
 
-                if skipping {
-                    warn!("Skipping to drop value for key {key}");
-                }
+                warn!("Skipping to drop value for key {key}");
 
                 None
             }
@@ -751,7 +750,6 @@ pub trait IteratorExt: Iterator + Sized {
     where
         K: AsRef<Key> + ?Sized,
         V: Into<ValueRef<'a>>,
-        Self: Iterator<Item = Item>,
     {
         FilterKeyValue {
             inner: self,
@@ -763,7 +761,6 @@ pub trait IteratorExt: Iterator + Sized {
     fn try_get_key<'a, K>(self, key: &'a K) -> TryGetKey<'a, Self>
     where
         K: AsRef<Key> + ?Sized,
-        Self: Iterator<Item = Item>,
     {
         TryGetKey {
             inner: self,
@@ -771,11 +768,7 @@ pub trait IteratorExt: Iterator + Sized {
         }
     }
 
-    fn and_convert<T>(self) -> AndConvert<Self, T>
-    where
-        T: TryFrom<Item, Error = Error>,
-        Self: Iterator<Item = Result<Item, Error>>,
-    {
+    fn and_convert<T>(self) -> AndConvert<Self, T> {
         AndConvert {
             inner: self,
             _marker: Default::default(),
@@ -923,7 +916,7 @@ pub enum Error {
 }
 
 pub mod ledger {
-    use std::mem;
+    use std::borrow::Cow;
 
     use async_trait::async_trait;
 
@@ -932,13 +925,15 @@ pub mod ledger {
 
     pub struct Put {
         key: KeyOwned,
+        current_value: Value,
         previous_value: Option<Value>,
     }
 
     impl Put {
-        pub fn new(key: KeyOwned, previous_value: Option<Value>) -> Self {
+        pub fn new(key: KeyOwned, current_value: Value, previous_value: Option<Value>) -> Self {
             Self {
                 key,
+                current_value,
                 previous_value,
             }
         }
@@ -946,19 +941,22 @@ pub mod ledger {
 
     #[async_trait]
     impl Transaction for Put {
-        fn description(&self) -> &'static str {
-            "Put value"
+        fn description(&self) -> Cow<'static, str> {
+            "Put value".into()
         }
 
-        async fn revert(&mut self) -> anyhow::Result<()> {
+        fn detail(&self) -> Cow<'static, str> {
+            format!("Value to revert: {}", self.current_value).into()
+        }
+
+        async fn revert(mut self: Box<Self>) -> anyhow::Result<()> {
             let mut kv = context::get_context().kv_mut().await;
-            let key = mem::replace(&mut self.key, KeyOwned::new());
             match self.previous_value.take() {
                 Some(previous_value) => {
-                    kv.put_value(key, previous_value, true)?;
+                    kv.put_value(self.key, previous_value, true)?;
                 }
                 None => {
-                    kv.drop_value(&key, true)?;
+                    kv.drop_value(&self.key, true)?;
                 }
             }
             Ok(())

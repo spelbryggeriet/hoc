@@ -6,6 +6,7 @@ use std::{
     path::Path,
 };
 
+use anyhow::Error;
 use tokio::{
     fs::File,
     io::{self, AsyncWriteExt},
@@ -16,7 +17,7 @@ use crate::{
     cidr::Cidr,
     context::{key, kv},
     prelude::*,
-    util,
+    util::{self, Opt},
 };
 
 const UBUNTU_VERSION: UbuntuVersion = UbuntuVersion {
@@ -25,23 +26,24 @@ const UBUNTU_VERSION: UbuntuVersion = UbuntuVersion {
     patch: 5,
 };
 
-#[throws(anyhow::Error)]
+#[throws(Error)]
 pub async fn run() {
     let (_os_image_file, _os_image_file_path) =
         context_file!("images/os").cached(get_os_image).await?;
 
     let node_name = generate_node_name().await?;
     assign_ip_address(&node_name).await?;
+    flash_image().await?;
 }
 
-#[throws(anyhow::Error)]
+#[throws(Error)]
 async fn get_os_image(file: &mut File, path: &Path, retrying: bool) {
     download_os_image(file, retrying).await?;
     validate_os_image(path).await?;
     decompress_xz_file(file, path).await?;
 }
 
-#[throws(anyhow::Error)]
+#[throws(Error)]
 async fn download_os_image(file: &mut File, prompt_url: bool) {
     progress!("Downloading OS image");
 
@@ -63,7 +65,7 @@ fn ubuntu_image_url<T: Display>(version: T) -> String {
     format!("https://cdimage.ubuntu.com/releases/{version}/release/ubuntu-{version}-preinstalled-server-arm64+raspi.img.xz")
 }
 
-#[throws(anyhow::Error)]
+#[throws(Error)]
 async fn validate_os_image(os_image_file_path: &Path) {
     progress!("Validating file type");
 
@@ -73,12 +75,12 @@ async fn validate_os_image(os_image_file_path: &Path) {
     if !output.stdout.contains("xz compressed data") {
         error!("Unsupported file type");
 
-        let inspect_file = select!("Do you want to inspect the file?")
-            .with_option("Yes", || true)
-            .with_option("No", || false)
+        let yes = "Yes";
+        let opt = select!("Do you want to inspect the file?")
+            .with_options([yes, "No"])
             .get()?;
 
-        if inspect_file {
+        if opt == yes {
             run!("cat {}", os_image_file_path.to_string_lossy()).await?;
         }
 
@@ -86,7 +88,7 @@ async fn validate_os_image(os_image_file_path: &Path) {
     }
 }
 
-#[throws(anyhow::Error)]
+#[throws(Error)]
 async fn decompress_xz_file(os_image_file: &mut File, os_image_path: &Path) {
     let decompress_progress = progress_with_handle!("Decompressing image");
 
@@ -105,7 +107,7 @@ async fn decompress_xz_file(os_image_file: &mut File, os_image_path: &Path) {
     os_image_file.write_all(&image_data).await?;
 }
 
-#[throws(anyhow::Error)]
+#[throws(Error)]
 async fn generate_node_name() -> String {
     progress!("Generating node name");
 
@@ -125,7 +127,7 @@ async fn generate_node_name() -> String {
     node_name
 }
 
-#[throws(anyhow::Error)]
+#[throws(Error)]
 async fn assign_ip_address(node_name: &str) {
     progress!("Assigning IP address");
 
@@ -158,6 +160,52 @@ async fn assign_ip_address(node_name: &str) {
     }
 }
 
+#[throws(Error)]
+async fn flash_image() {
+    progress!("Flashing image");
+
+    let disk = choose_sd_card().await?;
+    unmount_sd_card(disk).await?;
+
+    bail!("Testing");
+}
+
+#[throws(Error)]
+async fn choose_sd_card() -> DiskInfo {
+    progress!("Choosing SD card");
+
+    loop {
+        let disks = macos::get_attached_disks().await?;
+        let select = select!("Which disk is your SD card?").with_options(disks);
+        if select.option_count() > 0 {
+            break select.get()?;
+        }
+
+        error!("No mounted disk detected");
+
+        select!("How do you want to proceed?")
+            .with_option(Opt::Retry)
+            .get()?;
+    }
+}
+
+#[throws(Error)]
+async fn unmount_sd_card(disk: DiskInfo) {
+    progress!("Unmounting SD card");
+
+    run!("diskutil unmountDisk {id}", id = disk.id)
+        .revertible(revert_cmd!("diskutil mountDisk {id}", id: String = disk.id))
+        .await?;
+}
+
+fn unnamed_if_empty<S: AsRef<str> + ?Sized>(name: &S) -> String {
+    if name.as_ref().trim().is_empty() {
+        "<unnamed>".to_owned()
+    } else {
+        format!(r#""{}""#, name.as_ref())
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct UbuntuVersion {
     major: u32,
@@ -175,5 +223,131 @@ impl Display for UbuntuVersion {
             minor = self.minor,
             patch = self.patch,
         )?;
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct DiskInfo {
+    pub id: String,
+    pub part_type: String,
+    pub name: String,
+    pub size: usize,
+    pub partitions: Vec<DiskPartitionInfo>,
+}
+
+#[derive(Debug, Clone)]
+pub struct DiskPartitionInfo {
+    pub id: String,
+    pub size: usize,
+    pub name: String,
+}
+
+impl DiskInfo {
+    pub fn description(&self) -> String {
+        let mut desc = format!("{}: ", self.id);
+        desc += &unnamed_if_empty(&self.name);
+        if !self.partitions.is_empty() {
+            desc += &format!(
+                " ({} partition{}: {})",
+                self.partitions.len(),
+                if self.partitions.len() == 1 { "" } else { "s" },
+                self.partitions
+                    .iter()
+                    .map(|p| unnamed_if_empty(&p.name))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+        }
+        desc + &format!(", {:.2} GB", self.size as f64 / 1e9)
+    }
+}
+
+impl Display for DiskInfo {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        self.description().fmt(f)
+    }
+}
+
+impl DiskPartitionInfo {
+    fn description(&self) -> String {
+        format!(
+            "{}: {} ({:.2} GB)",
+            self.id,
+            unnamed_if_empty(&self.name),
+            self.size as f64 / 1e9,
+        )
+    }
+}
+
+impl Display for DiskPartitionInfo {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        self.description().fmt(f)
+    }
+}
+
+mod macos {
+    use serde::Deserialize;
+
+    use super::*;
+
+    #[throws(Error)]
+    pub async fn get_attached_disks() -> impl Iterator<Item = DiskInfo> {
+        let output = run!("diskutil list -plist external physical")
+            .hide_output()
+            .await?;
+        let diskutil_output: DiskutilOutput = plist::from_bytes(output.stdout.as_bytes())?;
+        diskutil_output
+            .all_disks_and_partitions
+            .into_iter()
+            .map(Into::into)
+    }
+
+    #[derive(Deserialize)]
+    #[serde(rename_all = "PascalCase")]
+    struct DiskutilOutput {
+        all_disks_and_partitions: Vec<DiskutilDisk>,
+    }
+
+    #[derive(Debug, Clone, Deserialize)]
+    #[serde(rename_all = "PascalCase")]
+    pub struct DiskutilDisk {
+        pub device_identifier: String,
+        #[serde(default = "String::new")]
+        pub volume_name: String,
+        pub size: usize,
+        pub content: String,
+        #[serde(default = "Vec::new")]
+        pub partitions: Vec<DiskutilPartition>,
+    }
+
+    #[derive(Debug, Clone, Deserialize)]
+    #[serde(rename_all = "PascalCase")]
+    pub struct DiskutilPartition {
+        pub device_identifier: String,
+        #[serde(default = "String::new")]
+        pub volume_name: String,
+        pub size: usize,
+    }
+
+    impl From<DiskutilDisk> for DiskInfo {
+        fn from(disk: DiskutilDisk) -> Self {
+            Self {
+                id: disk.device_identifier,
+                name: disk.volume_name,
+                size: disk.size,
+                part_type: disk.content,
+                partitions: disk.partitions.into_iter().map(Into::into).collect(),
+            }
+        }
+    }
+
+    impl From<DiskutilPartition> for DiskPartitionInfo {
+        fn from(partition: DiskutilPartition) -> Self {
+            Self {
+                id: partition.device_identifier,
+                name: partition.volume_name,
+                size: partition.size,
+            }
+        }
     }
 }

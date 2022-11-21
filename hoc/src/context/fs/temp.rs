@@ -49,9 +49,9 @@ impl Temp {
             path.push(util::random_string(Self::RAND_CHARS, 10));
 
             if attempt == 1 {
-                debug!("Create temporary file: {path:?}");
+                debug!("Creating temporary file: {path:?}");
             } else {
-                warn!("Create temporary file: {path:?} (attempt {attempt})");
+                warn!("Creating temporary file: {path:?} (attempt {attempt})");
             }
 
             match file_options

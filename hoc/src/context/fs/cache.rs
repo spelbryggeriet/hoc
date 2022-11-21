@@ -15,6 +15,7 @@ use crate::{
         CachedFileFn, Error,
     },
     prelude::*,
+    util::Opt,
 };
 
 #[derive(Serialize, Deserialize)]
@@ -60,7 +61,7 @@ impl Cache {
             match file_options.open(path).await {
                 Ok(file) => {
                     had_previous_file = true;
-                    debug!("Get cached file: {key}");
+                    debug!("Getting cached file: {key}");
                     return (had_previous_file, (file, path.clone()));
                 }
                 Err(err) if err.kind() == io::ErrorKind::NotFound => (),
@@ -86,10 +87,13 @@ impl Cache {
 
                 had_previous_file = true;
                 file_options.create_new(false);
-                should_overwrite = context::util::overwrite_prompt()?;
+                let opt = select!("How do you want to resolve the file path conflict?")
+                    .with_options([Opt::Skip, Opt::Overwrite])
+                    .get()?;
 
+                should_overwrite = opt == Opt::Overwrite;
                 if !should_overwrite {
-                    debug!("Create cached file: {key} (skipping)");
+                    debug!("Creating cached file: {key} (skipping)");
                     let file = file_options.open(&path).await?;
                     self.map.insert(key, path.clone());
                     return (had_previous_file, (file, path));
@@ -104,9 +108,9 @@ impl Cache {
         context::util::cache_loop(&key, &mut file, &path, on_cache).await?;
 
         if !should_overwrite {
-            debug!("Create cached file: {key}");
+            debug!("Creating cached file: {key}");
         } else {
-            warn!("Create cached file: {key} (overwriting)");
+            warn!("Creating cached file: {key} (overwriting)");
         }
 
         self.map.insert(key, path.clone());
@@ -155,9 +159,9 @@ impl Cache {
         context::util::cache_loop(&key, &mut file, &path, on_cache).await?;
 
         if !had_previous_file {
-            debug!("Create cached file: {key}");
+            debug!("Creating cached file: {key}");
         } else {
-            debug!("Create cached file: {key} (overwriting)");
+            debug!("Creating cached file: {key} (overwriting)");
         }
 
         self.map.insert(key, path.clone());
@@ -184,13 +188,11 @@ impl Cache {
             None if !force => {
                 error!("Key {key} does not exist.");
 
-                let skipping = select!("How do you want to resolve the key conflict?")
-                    .with_option("Skip", || true)
+                select!("How do you want to resolve the key conflict?")
+                    .with_option(Opt::Skip)
                     .get()?;
 
-                if skipping {
-                    warn!("Remove cached file: {key} (skipping)");
-                }
+                warn!("Remove cached file: {key} (skipping)");
             }
             None => debug!("Remove cached file: {key} (skipping)"),
         }
@@ -198,7 +200,7 @@ impl Cache {
 }
 
 pub mod ledger {
-    use std::{mem, path::PathBuf};
+    use std::{borrow::Cow, path::PathBuf};
 
     use async_trait::async_trait;
     use tokio::fs;
@@ -227,13 +229,16 @@ pub mod ledger {
 
     #[async_trait]
     impl Transaction for Create {
-        fn description(&self) -> &'static str {
-            "Create cached file"
+        fn description(&self) -> Cow<'static, str> {
+            "Create cached file".into()
         }
 
-        async fn revert(&mut self) -> anyhow::Result<()> {
-            let key = mem::replace(&mut self.key, KeyOwned::new());
-            let current_file = mem::take(&mut self.current_file);
+        fn detail(&self) -> Cow<'static, str> {
+            format!("File to revert: {:?}", self.current_file).into()
+        }
+
+        async fn revert(mut self: Box<Self>) -> anyhow::Result<()> {
+            let current_file = self.current_file;
             match self.previous_file.take() {
                 Some(previous_file) => {
                     debug!("Move temporary file: {previous_file:?} => {current_file:?}");
@@ -243,7 +248,7 @@ pub mod ledger {
                     context::get_context()
                         .cache_mut()
                         .await
-                        .remove_file(&key, true)
+                        .remove_file(&self.key, true)
                         .await?;
                 }
             }
