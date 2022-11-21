@@ -165,8 +165,6 @@ async fn flash_image() {
 
     let disk = choose_sd_card().await?;
     unmount_sd_card(disk).await?;
-
-    bail!("Testing");
 }
 
 #[throws(Error)]

@@ -83,7 +83,8 @@ where
     pub fn get(self) -> T {
         let prompt = format!("{}:", self.message);
 
-        let pause_lock = log::pause_rendering(2)?;
+        let pause_height = 2 + self.help_message.map_or(0, |_| 1);
+        let pause_lock = log::pause_rendering(pause_height)?;
 
         let default_clone = self.default.clone();
         let validator =

@@ -42,25 +42,24 @@ pub struct RunBuilder<C> {
 }
 
 pub struct Raw(Cow<'static, str>);
-pub struct Managed<M>(M);
+pub struct Transactional<T>(T);
 
 impl RunBuilder<Raw> {
-    pub fn new(raw: impl Into<Cow<'static, str>>) -> Self {
+    pub fn raw(raw: Cow<'static, str>) -> Self {
         Self {
-            cmd: Raw(raw.into()),
+            cmd: Raw(raw),
             hide_stdout: false,
             hide_stderr: false,
         }
     }
+}
 
-    pub fn revertible<M: ManagedCmd>(
-        self,
-        from_raw: impl FnOnce(Cow<'static, str>) -> M,
-    ) -> RunBuilder<Managed<M>> {
-        RunBuilder {
-            cmd: Managed(from_raw(self.cmd.0)),
-            hide_stdout: self.hide_stdout,
-            hide_stderr: self.hide_stderr,
+impl<T: TransactionalCmd> RunBuilder<Transactional<T>> {
+    pub fn _transactional(transactional: T) -> Self {
+        Self {
+            cmd: Transactional(transactional),
+            hide_stdout: false,
+            hide_stderr: false,
         }
     }
 }
@@ -76,40 +75,34 @@ impl<C> RunBuilder<C> {
 impl RunBuilder<Raw> {
     #[throws(Error)]
     pub async fn run(self) -> Output {
-        async fn noop(_cmd: &mut Raw, _output: &Output) {}
+        async fn noop(_cmd: &Raw) {}
 
         #[throws(Error)]
-        async fn try_noop(_cmd: &mut Raw, _output: &Output) {}
+        async fn try_noop(_cmd: &Raw) {}
 
         let mut noop = Some(noop);
         let mut try_noop = Some(try_noop);
         noop.take();
         try_noop.take();
 
-        self.run_loop(
-            |cmd| cmd.0.to_owned().into_owned(),
-            false,
-            noop,
-            try_noop,
-            noop,
-        )
-        .await?
+        self.run_loop(|cmd| Cow::Borrowed(&cmd.0), false, noop, try_noop, noop)
+            .await?
     }
 }
 
-impl<M: ManagedCmd> RunBuilder<Managed<M>> {
+impl<T: TransactionalCmd> RunBuilder<Transactional<T>> {
     #[throws(Error)]
     pub async fn run(self) -> Output {
-        async fn add_transaction_to_ledger<M: ManagedCmd>(cmd: &mut Managed<M>, output: &Output) {
-            let transaction = cmd.0.get_transaction(output);
+        async fn add_transaction_to_ledger<T: TransactionalCmd>(cmd: &Transactional<T>) {
+            let transaction = cmd.0.get_transaction();
             Ledger::get_or_init().lock().await.add(transaction);
         }
 
         #[throws(Error)]
-        async fn revert_transaction<M: ManagedCmd>(cmd: &mut Managed<M>, output: &Output) {
-            let transaction = cmd.0.get_transaction(output);
+        async fn revert_transaction<T: TransactionalCmd>(cmd: &Transactional<T>) {
+            let transaction = cmd.0.get_transaction();
 
-            let revert_cmd = cmd.0.revert_cmd(output);
+            let revert_cmd = cmd.0.revert_cmd();
             info!("Revert command available: {revert_cmd}");
             let opt = select!("Do you want to revert the failed command?")
                 .with_options([Opt::Yes, Opt::No])
@@ -120,7 +113,7 @@ impl<M: ManagedCmd> RunBuilder<Managed<M>> {
         }
 
         self.run_loop(
-            |cmd| cmd.0.as_raw().into_owned(),
+            |cmd| cmd.0.forward_cmd(),
             true,
             Some(add_transaction_to_ledger),
             Some(revert_transaction),
@@ -133,9 +126,9 @@ impl<M: ManagedCmd> RunBuilder<Managed<M>> {
 impl<C> RunBuilder<C> {
     #[throws(Error)]
     async fn run_loop<O, R, A>(
-        mut self,
-        get_raw_cmd: impl FnOnce(&C) -> String,
-        mut is_managed: bool,
+        self,
+        get_raw_cmd: impl FnOnce(&C) -> Cow<str>,
+        mut is_transactional: bool,
         mut on_ok: Option<O>,
         mut on_revert: Option<R>,
         mut on_abort: Option<A>,
@@ -155,16 +148,16 @@ impl<C> RunBuilder<C> {
             match self.exec(&cmd, retrying).await {
                 Ok(output) => {
                     if let Some(on_ok) = on_ok {
-                        on_ok(&mut self.cmd, &output).await;
+                        on_ok(&self.cmd).await;
                     }
                     break output;
                 }
                 Err(Error::Failed(output)) => {
                     error!("The process failed with exit code {}", output.code);
 
-                    if is_managed {
+                    if is_transactional {
                         if let Some(on_revert) = &on_revert {
-                            on_revert(&mut self.cmd, &output).await?;
+                            on_revert(&self.cmd).await?;
                         }
                     }
 
@@ -176,7 +169,7 @@ impl<C> RunBuilder<C> {
                         Ok(opt) => opt,
                         Err(err) => {
                             if let Some(on_abort) = on_abort {
-                                on_abort(&mut self.cmd, &output).await;
+                                on_abort(&self.cmd).await;
                             }
                             throw!(err);
                         }
@@ -185,16 +178,16 @@ impl<C> RunBuilder<C> {
                     if opt == modify_command {
                         let mut prompt = prompt!("New command").with_initial_input(&cmd);
 
-                        if is_managed {
+                        if is_transactional {
                             prompt = prompt.with_help_message(
                                 "Modifying the command will make it non-revertible",
                             );
                         }
 
-                        let new_cmd = prompt.get()?;
+                        let new_cmd = Cow::Owned(prompt.get()?);
                         if new_cmd != cmd {
                             cmd = new_cmd;
-                            is_managed = false;
+                            is_transactional = false;
                             on_ok.take();
                             on_revert.take();
                             on_abort.take();
@@ -281,7 +274,7 @@ impl IntoFuture for RunBuilder<Raw> {
     }
 }
 
-impl<M: ManagedCmd> IntoFuture for RunBuilder<Managed<M>> {
+impl<T: TransactionalCmd> IntoFuture for RunBuilder<Transactional<T>> {
     type IntoFuture = RunBuilderFuture;
     type Output = <RunBuilderFuture as Future>::Output;
 
@@ -290,13 +283,13 @@ impl<M: ManagedCmd> IntoFuture for RunBuilder<Managed<M>> {
     }
 }
 
-pub trait RunLoopEventFn<'a, C: 'a, O>: Fn(&'a mut C, &'a Output) -> Self::Fut {
+pub trait RunLoopEventFn<'a, C: 'a, O>: Fn(&'a C) -> Self::Fut {
     type Fut: Future<Output = O>;
 }
 
 impl<'a, C: 'a, O, F, Fut> RunLoopEventFn<'a, C, O> for F
 where
-    F: Fn(&'a mut C, &'a Output) -> Fut,
+    F: Fn(&'a C) -> Fut,
     Fut: Future<Output = O>,
 {
     type Fut = Fut;
@@ -319,12 +312,12 @@ impl Output {
     }
 }
 
-pub trait ManagedCmd: Send + Sync + 'static {
+pub trait TransactionalCmd: Send + Sync + 'static {
     type Transaction: Transaction;
 
-    fn get_transaction(&self, output: &Output) -> Self::Transaction;
-    fn as_raw(&self) -> Cow<str>;
-    fn revert_cmd<'a>(&'a self, output: &'a Output) -> Cow<'a, str>;
+    fn get_transaction(&self) -> Self::Transaction;
+    fn forward_cmd(&self) -> Cow<str>;
+    fn revert_cmd(&self) -> Cow<str>;
 }
 
 #[derive(Debug, Error)]

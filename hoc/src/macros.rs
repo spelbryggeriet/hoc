@@ -99,57 +99,50 @@ macro_rules! _temp_file {
 }
 
 macro_rules! run {
-    ($($args:tt)*) => {{
-        let cmd = $crate::util::from_arguments_to_str_cow(format_args!($($args)*));
-        $crate::runner::RunBuilder::new(cmd)
+    ($fmt:literal $($args:tt)*) => {{
+        let cmd = $crate::util::from_arguments_to_str_cow(format_args!($fmt $($args)*));
+        $crate::runner::RunBuilder::raw(cmd)
     }};
+
+    ($transactional_cmd:expr) => {{
+        $crate::runner::RunBuilder::transactional($transactional_cmd)
+    }}
 }
 
-macro_rules! revert_cmd {
-    (|$output:ident, $($id:ident: $type:ty = $init:expr,)*| $body:expr $(,)?) => {{
+macro_rules! _revertible_cmd {
+    ($forward_cmd:literal <=> $revert_cmd:literal) => {{
         use ::std::borrow::Cow;
 
         use ::async_trait::async_trait;
 
-        use $crate::{
-            ledger::Transaction,
-            runner::{ManagedCmd, Output},
-        };
+        use $crate::{ledger::Transaction, runner::TransactionalCmd};
 
-        struct RevertibleCmd<F>(
-            Cow<'static, str>,
-            RevertibleCmdArguments,
-            F,
-        );
+        struct RevertibleCmd {
+            forward_cmd: Cow<'static, str>,
+            revert_cmd: Cow<'static, str>,
+        }
 
-        impl<F> ManagedCmd for RevertibleCmd<F>
-        where
-            F: for<'a> Fn(&'a Output $(, &'a $type)*) -> Cow<'a, str> + Send + Sync + 'static
-        {
+        impl TransactionalCmd for RevertibleCmd {
             type Transaction = RevertibleCmdTransaction;
 
-            fn get_transaction(&self, output: &Output) -> Self::Transaction {
+            fn get_transaction(&self) -> Self::Transaction {
                 RevertibleCmdTransaction {
-                    original_cmd: self.as_raw().into_owned(),
-                    revert_cmd: self.revert_cmd(output).into_owned(),
+                    forward_cmd: self.forward_cmd().into_owned(),
+                    revert_cmd: self.revert_cmd().into_owned(),
                 }
             }
 
-            fn as_raw(&self) -> Cow<str> {
-                Cow::Borrowed(&self.0)
+            fn forward_cmd(&self) -> Cow<str> {
+                Cow::Borrowed(&self.forward_cmd)
             }
 
-            fn revert_cmd<'a>(&'a self, $output: &'a Output) -> Cow<'a, str> {
-                $(
-                let $id = &self.1.$id;
-                )*
-
-                self.2($output $(, $id)*)
+            fn revert_cmd(&self) -> Cow<str> {
+                Cow::Borrowed(&self.revert_cmd)
             }
         }
 
         struct RevertibleCmdTransaction {
-            original_cmd: String,
+            forward_cmd: String,
             revert_cmd: String,
         }
 
@@ -160,7 +153,7 @@ macro_rules! revert_cmd {
             }
 
             fn detail(&self) -> Cow<'static, str> {
-                format!("Command to revert: {}", self.original_cmd).into()
+                format!("Command to revert: {}", self.forward_cmd).into()
             }
 
             async fn revert(self: Box<Self>) -> anyhow::Result<()> {
@@ -169,24 +162,11 @@ macro_rules! revert_cmd {
             }
         }
 
-        struct RevertibleCmdArguments {$(
-            $id: $type,
-        )*}
-
-        fn generate_cmd<'a>($output: &'a Output $(, $id: &'a $type)*) -> Cow<'a, str> {
-            ($body).into()
+        let forward_cmd = $crate::util::from_arguments_to_str_cow(format_args!($forward_cmd));
+        let revert_cmd = $crate::util::from_arguments_to_str_cow(format_args!($revert_cmd));
+        RevertibleCmd {
+            forward_cmd,
+            revert_cmd,
         }
-
-        |raw| RevertibleCmd(
-            raw,
-            RevertibleCmdArguments {
-                $($id: $init,)*
-            },
-            generate_cmd,
-        )
-    }};
-
-    ($($fmt:tt)*) => {{
-        revert_cmd!(|_output, cmd: String = format!($($fmt)*),| cmd)
     }};
 }
