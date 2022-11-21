@@ -75,12 +75,11 @@ async fn validate_os_image(os_image_file_path: &Path) {
     if !output.stdout.contains("xz compressed data") {
         error!("Unsupported file type");
 
-        let yes = "Yes";
         let opt = select!("Do you want to inspect the file?")
-            .with_options([yes, "No"])
+            .with_options([Opt::Yes, Opt::No])
             .get()?;
 
-        if opt == yes {
+        if opt == Opt::Yes {
             run!("cat {}", os_image_file_path.to_string_lossy()).await?;
         }
 
@@ -189,13 +188,15 @@ async fn choose_sd_card() -> DiskInfo {
     }
 }
 
-#[throws(Error)]
-async fn unmount_sd_card(disk: DiskInfo) {
+async fn unmount_sd_card(disk: DiskInfo) -> Result<(), Error> {
     progress!("Unmounting SD card");
 
-    run!("diskutil unmountDisk {id}", id = disk.id)
-        .revertible(revert_cmd!("diskutil mountDisk {id}", id: String = disk.id))
+    let id = disk.id;
+    run!("diskutil unmountDisk {id}")
+        .revertible(revert_cmd!("diskutil mountDisk {id}"))
         .await?;
+
+    Ok(())
 }
 
 fn unnamed_if_empty<S: AsRef<str> + ?Sized>(name: &S) -> String {

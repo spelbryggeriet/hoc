@@ -1,11 +1,10 @@
 use std::borrow::Cow;
 
 use async_trait::async_trait;
-use futures::{stream, Stream};
 use once_cell::sync::OnceCell;
 use tokio::sync::Mutex;
 
-use crate::prelude::*;
+use crate::{prelude::*, util::Opt};
 
 #[async_trait]
 pub trait Transaction: Send + 'static {
@@ -13,13 +12,11 @@ pub trait Transaction: Send + 'static {
     fn detail(&self) -> Cow<'static, str>;
 
     /// Reverts the transaction.
-    ///
-    /// Running this twice is undefined behavior.
     async fn revert(self: Box<Self>) -> anyhow::Result<()>;
 }
 
 pub struct Ledger {
-    actors: Vec<Box<dyn Transaction>>,
+    transactions: Vec<Box<dyn Transaction>>,
 }
 
 impl Ledger {
@@ -29,25 +26,42 @@ impl Ledger {
     }
 
     fn new() -> Self {
-        Self { actors: Vec::new() }
+        Self {
+            transactions: Vec::new(),
+        }
     }
 
-    pub fn add(&mut self, actor: impl Transaction) {
-        self.actors.push(Box::new(actor));
+    pub fn add(&mut self, transaction: impl Transaction) {
+        debug!("Adding transaction: {}", transaction.description());
+        self.transactions.push(Box::new(transaction));
     }
 
-    pub fn rollback(&mut self) -> impl Stream<Item = ()> + '_ {
-        stream::unfold(self.actors.drain(..).rev(), |mut iter| async {
-            let elem = iter.next()?;
+    #[throws(anyhow::Error)]
+    pub async fn rollback(&mut self) {
+        if self.transactions.is_empty() {
+            return;
+        }
 
-            progress!("{}", elem.description());
-            info!("{}", elem.detail());
+        progress!("Rolling back changes");
 
-            match elem.revert().await {
-                Ok(()) => (),
-                Err(err) => error!("{err}"),
+        let mut always_yes = false;
+        while let Some(transaction) = self.transactions.pop() {
+            progress!("[Transaction] {}", transaction.description());
+            info!("{}", transaction.detail());
+
+            if !always_yes {
+                let yes_to_all = Opt::Custom("Yes to all");
+                match select!("Do you want to roll back the transaction?")
+                    .with_options([Opt::Yes, yes_to_all, Opt::No])
+                    .get()?
+                {
+                    Opt::Yes => (),
+                    Opt::No => break,
+                    opt => always_yes = opt == yes_to_all,
+                };
             }
-            Some(((), iter))
-        })
+
+            transaction.revert().await?;
+        }
     }
 }

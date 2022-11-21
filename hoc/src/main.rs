@@ -1,12 +1,9 @@
 use std::{env, process::ExitCode};
 
 use clap::Parser;
-use futures::StreamExt;
 use scopeguard::defer;
-use tokio::pin;
 
-use self::{command::Command, ledger::Ledger};
-use prelude::*;
+use self::{command::Command, ledger::Ledger, prelude::*};
 
 #[macro_use]
 mod macros;
@@ -50,20 +47,7 @@ impl App {
             Ok(()) => (),
             Err(err) => {
                 error!("{err}");
-
-                let yes = "Yes";
-                let opt = select!("Do you want to roll back the changes?")
-                    .with_options([yes, "No"])
-                    .get()?;
-
-                if opt == yes {
-                    progress!("Rolling back changes");
-
-                    let mut ledger = Ledger::get_or_init().lock().await;
-                    let stream = ledger.rollback();
-                    pin!(stream);
-                    while let Some(()) = stream.next().await {}
-                }
+                Ledger::get_or_init().lock().await.rollback().await?;
             }
         }
     }

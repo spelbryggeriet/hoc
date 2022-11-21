@@ -154,6 +154,8 @@ impl TryFrom<Item> for IpAddr {
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Opt<'a> {
+    Yes,
+    No,
     Overwrite,
     Rerun,
     Retry,
@@ -164,6 +166,8 @@ pub enum Opt<'a> {
 impl Display for Opt<'_> {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
         match self {
+            Self::Yes => write!(f, "Yes"),
+            Self::No => write!(f, "No"),
             Self::Overwrite => write!(f, "Overwrite"),
             Self::Rerun => write!(f, "Rerun"),
             Self::Retry => write!(f, "Retry"),

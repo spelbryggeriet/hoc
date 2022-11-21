@@ -25,68 +25,59 @@ pub struct PromptBuilder<'a, T, S> {
     message: Cow<'static, str>,
     default: Option<Cow<'static, str>>,
     initial_input: Option<&'a str>,
+    help_message: Option<&'a str>,
     _output_type: PhantomData<T>,
     _state: PhantomData<S>,
 }
 
-pub trait NonSecret {}
-
-pub enum Normal {}
-impl NonSecret for Normal {}
-
-pub enum WithDefault {}
-impl NonSecret for WithDefault {}
-
+pub enum NonSecret {}
 pub enum AsSecret {}
 
-impl<'a, T, S> PromptBuilder<'a, T, S> {
-    fn convert<U>(self) -> PromptBuilder<'a, T, U> {
-        PromptBuilder {
-            message: self.message,
-            default: self.default,
-            initial_input: self.initial_input,
-            _output_type: self._output_type,
-            _state: Default::default(),
-        }
-    }
-}
-impl<'a, T> PromptBuilder<'a, T, Normal> {
+impl<'a, T> PromptBuilder<'a, T, NonSecret> {
     pub fn new(message: impl Into<Cow<'static, str>>) -> Self {
         Self {
             message: message.into(),
             default: None,
             initial_input: None,
+            help_message: None,
             _output_type: Default::default(),
             _state: Default::default(),
         }
     }
 
-    pub fn with_default(
-        mut self,
-        default: impl Into<Cow<'static, str>>,
-    ) -> PromptBuilder<'a, T, WithDefault> {
-        self.default.replace(default.into());
-        self.convert()
-    }
-
-    pub fn with_initial_input(
-        mut self,
-        initial_input: &'a str,
-    ) -> PromptBuilder<'a, T, WithDefault> {
-        self.initial_input.replace(initial_input);
-        self.convert()
-    }
-
     pub fn as_secret(self) -> PromptBuilder<'a, T, AsSecret> {
-        self.convert()
+        PromptBuilder {
+            message: self.message,
+            default: self.default,
+            initial_input: self.initial_input,
+            help_message: self.help_message,
+            _output_type: self._output_type,
+            _state: Default::default(),
+        }
     }
 }
 
-impl<'a, T, S> PromptBuilder<'a, T, S>
+impl<'a, T, S> PromptBuilder<'a, T, S> {
+    pub fn with_default(mut self, default: impl Into<Cow<'static, str>>) -> Self {
+        self.default.replace(default.into());
+        self
+    }
+
+    pub fn with_initial_input(mut self, initial_input: &'a str) -> Self {
+        self.initial_input.replace(initial_input);
+        self
+    }
+
+    pub fn with_help_message(mut self, help_message: &'a str) -> Self {
+        self.help_message.replace(help_message);
+        self
+    }
+}
+
+impl<'a, T> PromptBuilder<'a, T, NonSecret>
 where
     T: FromStr,
     T::Err: Display,
-    S: NonSecret,
 {
     #[throws(Error)]
     pub fn get(self) -> T {
@@ -131,6 +122,10 @@ where
 
         if let Some(initial_input) = self.initial_input {
             text = text.with_initial_value(initial_input);
+        }
+
+        if let Some(help_message) = self.help_message {
+            text = text.with_help_message(help_message);
         }
 
         let res = text.prompt();

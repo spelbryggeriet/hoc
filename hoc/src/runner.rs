@@ -1,6 +1,5 @@
 use std::{
     borrow::Cow,
-    fmt::Display,
     future::{Future, IntoFuture},
     pin::Pin,
     process::Stdio,
@@ -54,12 +53,12 @@ impl RunBuilder<Raw> {
         }
     }
 
-    pub fn revertible<I: IntoManagedCmd>(
+    pub fn revertible<M: ManagedCmd>(
         self,
-        managed_cmd: I,
-    ) -> RunBuilder<Managed<I::ManagedCmd>> {
+        from_raw: impl FnOnce(Cow<'static, str>) -> M,
+    ) -> RunBuilder<Managed<M>> {
         RunBuilder {
-            cmd: Managed(managed_cmd.into_managed_cmd(self.cmd.0)),
+            cmd: Managed(from_raw(self.cmd.0)),
             hide_stdout: self.hide_stdout,
             hide_stderr: self.hide_stderr,
         }
@@ -100,7 +99,7 @@ impl RunBuilder<Raw> {
 
 impl<M: ManagedCmd> RunBuilder<Managed<M>> {
     #[throws(Error)]
-    async fn run(self) -> Output {
+    pub async fn run(self) -> Output {
         async fn add_transaction_to_ledger<M: ManagedCmd>(cmd: &mut Managed<M>, output: &Output) {
             let transaction = cmd.0.get_transaction(output);
             Ledger::get_or_init().lock().await.add(transaction);
@@ -109,7 +108,15 @@ impl<M: ManagedCmd> RunBuilder<Managed<M>> {
         #[throws(Error)]
         async fn revert_transaction<M: ManagedCmd>(cmd: &mut Managed<M>, output: &Output) {
             let transaction = cmd.0.get_transaction(output);
-            Box::new(transaction).revert().await?;
+
+            let revert_cmd = cmd.0.revert_cmd(output);
+            info!("Revert command available: {revert_cmd}");
+            let opt = select!("Do you want to revert the failed command?")
+                .with_options([Opt::Yes, Opt::No])
+                .get()?;
+            if opt == Opt::Yes {
+                Box::new(transaction).revert().await?;
+            }
         }
 
         self.run_loop(
@@ -155,17 +162,17 @@ impl<C> RunBuilder<C> {
                 Err(Error::Failed(output)) => {
                     error!("The process failed with exit code {}", output.code);
 
-                    let modify_command = Opt::Custom("Modify command");
-                    let revert_and_rerun = Opt::Custom("Revert and rerun");
-                    let mut select = select!("How do you want to resolve the command error?")
-                        .with_option(modify_command)
-                        .with_option(Opt::Rerun);
-
                     if is_managed {
-                        select = select.with_option(revert_and_rerun);
+                        if let Some(on_revert) = &on_revert {
+                            on_revert(&mut self.cmd, &output).await?;
+                        }
                     }
 
-                    let opt = match select.get() {
+                    let modify_command = Opt::Custom("Modify command");
+                    let select = select!("How do you want to resolve the command error?")
+                        .with_option(modify_command)
+                        .with_option(Opt::Rerun);
+                    let mut opt = match select.get() {
                         Ok(opt) => opt,
                         Err(err) => {
                             if let Some(on_abort) = on_abort {
@@ -175,31 +182,35 @@ impl<C> RunBuilder<C> {
                         }
                     };
 
-                    run_progress.take();
+                    if opt == modify_command {
+                        let mut prompt = prompt!("New command").with_initial_input(&cmd);
 
-                    let new_progress = if opt == Opt::Rerun {
-                        progress_with_handle!("Re-running command: {cmd}")
-                    } else if opt == modify_command {
-                        cmd = prompt!("New command").with_initial_input(&cmd).get()?;
-                        is_managed = false;
-                        on_ok.take();
-                        on_revert.take();
-                        on_abort.take();
-
-                        progress_with_handle!("Running modified command: {cmd}")
-                    } else if opt == revert_and_rerun {
-                        if let Some(on_revert) = &on_revert {
-                            run_progress.replace(progress_with_handle!("Reverting command: {cmd}"));
-                            on_revert(&mut self.cmd, &output).await?;
+                        if is_managed {
+                            prompt = prompt.with_help_message(
+                                "Modifying the command will make it non-revertible",
+                            );
                         }
 
-                        run_progress.take();
+                        let new_cmd = prompt.get()?;
+                        if new_cmd != cmd {
+                            cmd = new_cmd;
+                            is_managed = false;
+                            on_ok.take();
+                            on_revert.take();
+                            on_abort.take();
+                        } else {
+                            opt = Opt::Rerun;
+                        }
+                    }
+
+                    run_progress.take();
+                    let new_progress = if opt == Opt::Rerun {
                         progress_with_handle!("Re-running command: {cmd}")
                     } else {
-                        unreachable!();
+                        progress_with_handle!("Running modified command: {cmd}")
                     };
-
                     run_progress.replace(new_progress);
+
                     retrying = true;
                 }
                 Err(err) => throw!(err),
@@ -259,7 +270,7 @@ impl<C> RunBuilder<C> {
     }
 }
 
-type RunBuilderFuture = Pin<Box<dyn Future<Output = Result<Output, Error>> + Send + 'static>>;
+type RunBuilderFuture = Pin<Box<dyn Future<Output = Result<Output, Error>> + Send>>;
 
 impl IntoFuture for RunBuilder<Raw> {
     type IntoFuture = RunBuilderFuture;
@@ -308,29 +319,12 @@ impl Output {
     }
 }
 
-pub trait ManagedCmd: Display + Send + Sync + 'static {
+pub trait ManagedCmd: Send + Sync + 'static {
     type Transaction: Transaction;
 
     fn get_transaction(&self, output: &Output) -> Self::Transaction;
     fn as_raw(&self) -> Cow<str>;
-}
-
-pub trait IntoManagedCmd {
-    type ManagedCmd: ManagedCmd;
-
-    fn into_managed_cmd(self, raw: Cow<'static, str>) -> Self::ManagedCmd;
-}
-
-impl<M, F> IntoManagedCmd for F
-where
-    M: ManagedCmd,
-    F: FnOnce(Cow<'static, str>) -> M,
-{
-    type ManagedCmd = M;
-
-    fn into_managed_cmd(self, raw: Cow<'static, str>) -> Self::ManagedCmd {
-        self(raw)
-    }
+    fn revert_cmd<'a>(&'a self, output: &'a Output) -> Cow<'a, str>;
 }
 
 #[derive(Debug, Error)]

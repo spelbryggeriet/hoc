@@ -106,42 +106,52 @@ macro_rules! run {
 }
 
 macro_rules! revert_cmd {
-    ($fmt:literal $(, $id:ident: $type:ty = $init:expr)* $(,)?) => {{
-        use ::std::{
-            borrow::Cow,
-            fmt::{self, Display, Formatter},
-        };
+    (|$output:ident, $($id:ident: $type:ty = $init:expr,)*| $body:expr $(,)?) => {{
+        use ::std::borrow::Cow;
 
         use ::async_trait::async_trait;
 
         use $crate::{
-            prelude::*,
             ledger::Transaction,
             runner::{ManagedCmd, Output},
         };
 
-        struct RevertibleCmd(Cow<'static, str>, RevertibleCmdArguments);
+        struct RevertibleCmd<F>(
+            Cow<'static, str>,
+            RevertibleCmdArguments,
+            F,
+        );
 
-        impl ManagedCmd for RevertibleCmd {
+        impl<F> ManagedCmd for RevertibleCmd<F>
+        where
+            F: for<'a> Fn(&'a Output $(, &'a $type)*) -> Cow<'a, str> + Send + Sync + 'static
+        {
             type Transaction = RevertibleCmdTransaction;
 
-            fn get_transaction(&self, _output: &Output) -> Self::Transaction {
-                RevertibleCmdTransaction(self.1.clone())
+            fn get_transaction(&self, output: &Output) -> Self::Transaction {
+                RevertibleCmdTransaction {
+                    original_cmd: self.as_raw().into_owned(),
+                    revert_cmd: self.revert_cmd(output).into_owned(),
+                }
             }
 
             fn as_raw(&self) -> Cow<str> {
                 Cow::Borrowed(&self.0)
             }
-        }
 
-        impl Display for RevertibleCmd {
-            #[throws(fmt::Error)]
-            fn fmt(&self, f: &mut Formatter) {
-                self.0.fmt(f)?;
+            fn revert_cmd<'a>(&'a self, $output: &'a Output) -> Cow<'a, str> {
+                $(
+                let $id = &self.1.$id;
+                )*
+
+                self.2($output $(, $id)*)
             }
         }
 
-        struct RevertibleCmdTransaction(RevertibleCmdArguments);
+        struct RevertibleCmdTransaction {
+            original_cmd: String,
+            revert_cmd: String,
+        }
 
         #[async_trait]
         impl Transaction for RevertibleCmdTransaction {
@@ -150,33 +160,33 @@ macro_rules! revert_cmd {
             }
 
             fn detail(&self) -> Cow<'static, str> {
-                format!("Command to revert: {}", self.0).into()
+                format!("Command to revert: {}", self.original_cmd).into()
             }
 
             async fn revert(self: Box<Self>) -> anyhow::Result<()> {
-                run!("{}", self.0).await?;
+                run!("{}", self.revert_cmd).await?;
                 Ok(())
             }
         }
 
-        #[derive(Clone)]
         struct RevertibleCmdArguments {$(
             $id: $type,
         )*}
 
-        impl Display for RevertibleCmdArguments {
-            #[throws(fmt::Error)]
-            fn fmt(&self, f: &mut Formatter) {
-                $(
-                let $id = &self.$id;
-                )*
-
-                write!(f, $fmt)?;
-            }
+        fn generate_cmd<'a>($output: &'a Output $(, $id: &'a $type)*) -> Cow<'a, str> {
+            ($body).into()
         }
 
-        |raw| RevertibleCmd(raw, RevertibleCmdArguments {
-            $($id: $init),*
-        })
+        |raw| RevertibleCmd(
+            raw,
+            RevertibleCmdArguments {
+                $($id: $init,)*
+            },
+            generate_cmd,
+        )
+    }};
+
+    ($($fmt:tt)*) => {{
+        revert_cmd!(|_output, cmd: String = format!($($fmt)*),| cmd)
     }};
 }
