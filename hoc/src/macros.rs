@@ -98,75 +98,35 @@ macro_rules! _temp_file {
     };
 }
 
-macro_rules! run {
-    ($fmt:literal $($args:tt)*) => {{
-        let cmd = $crate::util::from_arguments_to_str_cow(format_args!($fmt $($args)*));
-        $crate::runner::RunBuilder::raw(cmd)
-    }};
+macro_rules! cmd {
+    ($($sudo:ident)? $fmt:literal $($args:tt)*) => {{
+        let is_sudo = $(if __is_sudo!($sudo) {
+            true
+        } else)? {
+            false
+        };
 
-    ($transactional_cmd:expr) => {{
-        $crate::runner::RunBuilder::transactional($transactional_cmd)
-    }}
+        let cmd = $crate::util::from_arguments_to_str_cow(format_args!($fmt $($args)*));
+        let mut builder = $crate::runner::CmdBuilder::new(cmd);
+
+        if is_sudo {
+            builder = builder.sudo();
+        }
+
+        builder
+    }};
 }
 
-macro_rules! _revertible_cmd {
-    ($forward_cmd:literal <=> $revert_cmd:literal) => {{
-        use ::std::borrow::Cow;
+macro_rules! __is_sudo {
+    (sudo) => {
+        true
+    };
 
-        use ::async_trait::async_trait;
-
-        use $crate::{ledger::Transaction, runner::TransactionalCmd};
-
-        struct RevertibleCmd {
-            forward_cmd: Cow<'static, str>,
-            revert_cmd: Cow<'static, str>,
-        }
-
-        impl TransactionalCmd for RevertibleCmd {
-            type Transaction = RevertibleCmdTransaction;
-
-            fn get_transaction(&self) -> Self::Transaction {
-                RevertibleCmdTransaction {
-                    forward_cmd: self.forward_cmd().into_owned(),
-                    revert_cmd: self.revert_cmd().into_owned(),
-                }
-            }
-
-            fn forward_cmd(&self) -> Cow<str> {
-                Cow::Borrowed(&self.forward_cmd)
-            }
-
-            fn revert_cmd(&self) -> Cow<str> {
-                Cow::Borrowed(&self.revert_cmd)
-            }
-        }
-
-        struct RevertibleCmdTransaction {
-            forward_cmd: String,
-            revert_cmd: String,
-        }
-
-        #[async_trait]
-        impl Transaction for RevertibleCmdTransaction {
-            fn description(&self) -> Cow<'static, str> {
-                "Run command".into()
-            }
-
-            fn detail(&self) -> Cow<'static, str> {
-                format!("Command to revert: {}", self.forward_cmd).into()
-            }
-
-            async fn revert(self: Box<Self>) -> anyhow::Result<()> {
-                run!("{}", self.revert_cmd).await?;
-                Ok(())
-            }
-        }
-
-        let forward_cmd = $crate::util::from_arguments_to_str_cow(format_args!($forward_cmd));
-        let revert_cmd = $crate::util::from_arguments_to_str_cow(format_args!($revert_cmd));
-        RevertibleCmd {
-            forward_cmd,
-            revert_cmd,
-        }
+    ($token:tt) => {{
+        compile_error!(concat!(
+            "Expected `sudo` token, found `",
+            stringify!($token),
+            "`"
+        ));
     }};
 }

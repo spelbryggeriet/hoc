@@ -28,12 +28,11 @@ const UBUNTU_VERSION: UbuntuVersion = UbuntuVersion {
 
 #[throws(Error)]
 pub async fn run() {
-    let (_os_image_file, _os_image_file_path) =
-        context_file!("images/os").cached(get_os_image).await?;
+    let (_os_image_file, os_image_path) = context_file!("images/os").cached(get_os_image).await?;
 
     let node_name = generate_node_name().await?;
     assign_ip_address(&node_name).await?;
-    flash_image().await?;
+    flash_image(&os_image_path).await?;
 }
 
 #[throws(Error)]
@@ -69,7 +68,7 @@ fn ubuntu_image_url<T: Display>(version: T) -> String {
 async fn validate_os_image(os_image_file_path: &Path) {
     progress!("Validating file type");
 
-    let mut output = run!("file -E {}", os_image_file_path.to_string_lossy()).await?;
+    let mut output = cmd!("file -E {}", os_image_file_path.to_string_lossy()).await?;
     output.stdout = output.stdout.to_lowercase();
 
     if !output.stdout.contains("xz compressed data") {
@@ -80,7 +79,7 @@ async fn validate_os_image(os_image_file_path: &Path) {
             .get()?;
 
         if opt == Opt::Yes {
-            run!("cat {}", os_image_file_path.to_string_lossy()).await?;
+            cmd!("cat {}", os_image_file_path.to_string_lossy()).await?;
         }
 
         bail!("Validation failed");
@@ -160,11 +159,12 @@ async fn assign_ip_address(node_name: &str) {
 }
 
 #[throws(Error)]
-async fn flash_image() {
+async fn flash_image(os_image_path: &Path) {
     progress!("Flashing image");
 
     let disk = choose_sd_card().await?;
-    unmount_sd_card(disk).await?;
+    unmount_sd_card(&disk).await?;
+    flash_sd_card(&disk, os_image_path).await?;
 }
 
 #[throws(Error)]
@@ -186,13 +186,25 @@ async fn choose_sd_card() -> DiskInfo {
     }
 }
 
-async fn unmount_sd_card(disk: DiskInfo) -> Result<(), Error> {
+#[throws(Error)]
+async fn unmount_sd_card(disk: &DiskInfo) {
     progress!("Unmounting SD card");
 
-    let id = disk.id;
-    run!("diskutil unmountDisk {id}").await?;
+    let id = &disk.id;
+    cmd!("diskutil unmountDisk {id}").await?;
+}
 
-    Ok(())
+#[throws(Error)]
+async fn flash_sd_card(disk: &DiskInfo, os_image_path: &Path) {
+    let opt = select!("Do you want to flash target disk {:?}?", disk.description())
+        .with_options([Opt::Yes, Opt::No])
+        .get()?;
+    if opt == Opt::No {
+        return;
+    }
+
+    let id = &disk.id;
+    cmd!(sudo "dd bs=1m if={os_image_path:?} of=/dev/r{id}").await?;
 }
 
 fn unnamed_if_empty<S: AsRef<str> + ?Sized>(name: &S) -> String {
@@ -289,7 +301,7 @@ mod macos {
 
     #[throws(Error)]
     pub async fn get_attached_disks() -> impl Iterator<Item = DiskInfo> {
-        let output = run!("diskutil list -plist external physical")
+        let output = cmd!("diskutil list -plist external physical")
             .hide_output()
             .await?;
         let diskutil_output: DiskutilOutput = plist::from_bytes(output.stdout.as_bytes())?;

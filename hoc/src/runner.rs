@@ -5,6 +5,7 @@ use std::{
     process::Stdio,
 };
 
+use async_trait::async_trait;
 use thiserror::Error;
 use tokio::{
     io::{self, AsyncBufReadExt, AsyncRead, BufReader},
@@ -35,110 +36,157 @@ async fn read_lines(reader: impl AsyncRead + Unpin, print_line: impl Fn(&str)) -
     out
 }
 
-pub struct RunBuilder<C> {
+#[derive(Clone)]
+pub struct CmdBuilder<C> {
     cmd: C,
+    sudo: bool,
     hide_stdout: bool,
     hide_stderr: bool,
 }
 
-pub struct Raw(Cow<'static, str>);
-pub struct Transactional<T>(T);
+#[derive(Clone)]
+pub struct Regular(Cow<'static, str>);
 
-impl RunBuilder<Raw> {
-    pub fn raw(raw: Cow<'static, str>) -> Self {
+#[derive(Clone)]
+pub struct Revertible {
+    raw_forward_cmd: Cow<'static, str>,
+    revert_cmd: CmdBuilder<Regular>,
+}
+
+impl CmdBuilder<Regular> {
+    pub fn new(cmd: Cow<'static, str>) -> Self {
         Self {
-            cmd: Raw(raw),
+            cmd: Regular(cmd),
+            sudo: false,
             hide_stdout: false,
             hide_stderr: false,
         }
     }
-}
 
-impl<T: TransactionalCmd> RunBuilder<Transactional<T>> {
-    pub fn _transactional(transactional: T) -> Self {
-        Self {
-            cmd: Transactional(transactional),
+    pub fn _revertible(self, revert_cmd: Self) -> CmdBuilder<Revertible> {
+        CmdBuilder {
+            cmd: Revertible {
+                raw_forward_cmd: self.cmd.0,
+                revert_cmd,
+            },
+            sudo: false,
             hide_stdout: false,
             hide_stderr: false,
         }
     }
-}
 
-impl<C> RunBuilder<C> {
-    pub fn hide_output(mut self) -> Self {
-        self.hide_stdout = true;
-        self.hide_stderr = true;
-        self
-    }
-}
+    async fn noop(&self) {}
 
-impl RunBuilder<Raw> {
     #[throws(Error)]
-    pub async fn run(self) -> Output {
-        async fn noop(_cmd: &Raw) {}
+    async fn try_noop(&self) {}
 
-        #[throws(Error)]
-        async fn try_noop(_cmd: &Raw) {}
-
-        let mut noop = Some(noop);
-        let mut try_noop = Some(try_noop);
+    pub async fn run(self) -> Result<Output, Error> {
+        let mut noop = Some(Self::noop);
+        let mut try_noop = Some(Self::try_noop);
         noop.take();
         try_noop.take();
 
         self.run_loop(|cmd| Cow::Borrowed(&cmd.0), false, noop, try_noop, noop)
-            .await?
+            .await
     }
 }
 
-impl<T: TransactionalCmd> RunBuilder<Transactional<T>> {
-    #[throws(Error)]
-    pub async fn run(self) -> Output {
-        async fn add_transaction_to_ledger<T: TransactionalCmd>(cmd: &Transactional<T>) {
-            let transaction = cmd.0.get_transaction();
-            Ledger::get_or_init().lock().await.add(transaction);
+impl CmdBuilder<Revertible> {
+    fn get_transaction(&self) -> impl Transaction {
+        struct RevertibleTransaction {
+            forward_cmd: Cow<'static, str>,
+            revert_cmd: CmdBuilder<Regular>,
         }
 
-        #[throws(Error)]
-        async fn revert_transaction<T: TransactionalCmd>(cmd: &Transactional<T>) {
-            let transaction = cmd.0.get_transaction();
+        #[async_trait]
+        impl Transaction for RevertibleTransaction {
+            fn description(&self) -> Cow<'static, str> {
+                "Run command".into()
+            }
 
-            let revert_cmd = cmd.0.revert_cmd();
-            info!("Revert command available: {revert_cmd}");
-            let opt = select!("Do you want to revert the failed command?")
-                .with_options([Opt::Yes, Opt::No])
-                .get()?;
-            if opt == Opt::Yes {
-                Box::new(transaction).revert().await?;
+            fn detail(&self) -> Cow<'static, str> {
+                format!("Command to revert: {}", self.forward_cmd).into()
+            }
+
+            async fn revert(self: Box<Self>) -> anyhow::Result<()> {
+                self.revert_cmd.await?;
+                Ok(())
             }
         }
 
+        RevertibleTransaction {
+            forward_cmd: self.cmd.raw_forward_cmd.to_owned(),
+            revert_cmd: self.cmd.revert_cmd.clone(),
+        }
+    }
+
+    async fn add_transaction_to_ledger(&self) {
+        let transaction = self.get_transaction();
+        Ledger::get_or_init().lock().await.add(transaction);
+    }
+
+    #[throws(Error)]
+    async fn revert_transaction(&self) {
+        let transaction = self.get_transaction();
+
+        let revert_cmd = &self.cmd.revert_cmd.cmd.0;
+        info!("Revert command available: {revert_cmd}");
+        let opt = select!("Do you want to revert the failed command?")
+            .with_options([Opt::Yes, Opt::No])
+            .get()?;
+        if opt == Opt::Yes {
+            Box::new(transaction).revert().await?;
+        }
+    }
+
+    #[throws(Error)]
+    pub async fn run(self) -> Output {
         self.run_loop(
-            |cmd| cmd.0.forward_cmd(),
+            |cmd| Cow::Borrowed(&cmd.raw_forward_cmd),
             true,
-            Some(add_transaction_to_ledger),
-            Some(revert_transaction),
-            Some(add_transaction_to_ledger),
+            Some(Self::add_transaction_to_ledger),
+            Some(Self::revert_transaction),
+            Some(Self::add_transaction_to_ledger),
         )
         .await?
     }
 }
 
-impl<C> RunBuilder<C> {
+impl<C> CmdBuilder<C> {
+    pub fn hide_output(mut self) -> Self {
+        self.hide_stdout = true;
+        self.hide_stderr = true;
+        self
+    }
+
+    pub fn sudo(mut self) -> Self {
+        self.sudo = true;
+        self
+    }
+}
+
+impl CmdBuilder<Revertible> {}
+
+impl<C> CmdBuilder<C> {
     #[throws(Error)]
     async fn run_loop<O, R, A>(
         self,
-        get_raw_cmd: impl FnOnce(&C) -> Cow<str>,
-        mut is_transactional: bool,
+        get_raw_forward_cmd: impl FnOnce(&C) -> Cow<str>,
+        mut is_revertible: bool,
         mut on_ok: Option<O>,
         mut on_revert: Option<R>,
         mut on_abort: Option<A>,
     ) -> Output
     where
-        O: for<'a> RunLoopEventFn<'a, C, ()>,
-        R: for<'a> RunLoopEventFn<'a, C, Result<(), Error>>,
-        A: for<'a> RunLoopEventFn<'a, C, ()>,
+        O: for<'a> RunLoopEventFn<'a, Self, ()>,
+        R: for<'a> RunLoopEventFn<'a, Self, Result<(), Error>>,
+        A: for<'a> RunLoopEventFn<'a, Self, ()>,
     {
-        let mut cmd = get_raw_cmd(&self.cmd);
+        let mut cmd = get_raw_forward_cmd(&self.cmd);
+        if self.sudo {
+            cmd = Cow::Owned(format!("sudo {cmd}"));
+        }
+
         let mut run_progress = Some(progress_with_handle!("Running command: {cmd}"));
 
         let mut retrying = false;
@@ -148,16 +196,16 @@ impl<C> RunBuilder<C> {
             match self.exec(&cmd, retrying).await {
                 Ok(output) => {
                     if let Some(on_ok) = on_ok {
-                        on_ok(&self.cmd).await;
+                        on_ok(&self).await;
                     }
                     break output;
                 }
                 Err(Error::Failed(output)) => {
                     error!("The process failed with exit code {}", output.code);
 
-                    if is_transactional {
+                    if is_revertible {
                         if let Some(on_revert) = &on_revert {
-                            on_revert(&self.cmd).await?;
+                            on_revert(&self).await?;
                         }
                     }
 
@@ -169,7 +217,7 @@ impl<C> RunBuilder<C> {
                         Ok(opt) => opt,
                         Err(err) => {
                             if let Some(on_abort) = on_abort {
-                                on_abort(&self.cmd).await;
+                                on_abort(&self).await;
                             }
                             throw!(err);
                         }
@@ -178,7 +226,7 @@ impl<C> RunBuilder<C> {
                     if opt == modify_command {
                         let mut prompt = prompt!("New command").with_initial_input(&cmd);
 
-                        if is_transactional {
+                        if is_revertible {
                             prompt = prompt.with_help_message(
                                 "Modifying the command will make it non-revertible",
                             );
@@ -187,7 +235,7 @@ impl<C> RunBuilder<C> {
                         let new_cmd = Cow::Owned(prompt.get()?);
                         if new_cmd != cmd {
                             cmd = new_cmd;
-                            is_transactional = false;
+                            is_revertible = false;
                             on_ok.take();
                             on_revert.take();
                             on_abort.take();
@@ -265,7 +313,7 @@ impl<C> RunBuilder<C> {
 
 type RunBuilderFuture = Pin<Box<dyn Future<Output = Result<Output, Error>> + Send>>;
 
-impl IntoFuture for RunBuilder<Raw> {
+impl IntoFuture for CmdBuilder<Regular> {
     type IntoFuture = RunBuilderFuture;
     type Output = <RunBuilderFuture as Future>::Output;
 
@@ -274,7 +322,7 @@ impl IntoFuture for RunBuilder<Raw> {
     }
 }
 
-impl<T: TransactionalCmd> IntoFuture for RunBuilder<Transactional<T>> {
+impl IntoFuture for CmdBuilder<Revertible> {
     type IntoFuture = RunBuilderFuture;
     type Output = <RunBuilderFuture as Future>::Output;
 
@@ -310,14 +358,6 @@ impl Output {
             stderr: String::new(),
         }
     }
-}
-
-pub trait TransactionalCmd: Send + Sync + 'static {
-    type Transaction: Transaction;
-
-    fn get_transaction(&self) -> Self::Transaction;
-    fn forward_cmd(&self) -> Cow<str>;
-    fn revert_cmd(&self) -> Cow<str>;
 }
 
 #[derive(Debug, Error)]
