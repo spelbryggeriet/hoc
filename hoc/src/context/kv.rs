@@ -4,6 +4,7 @@ use std::{
     fmt::{self, Debug, Display, Formatter},
     io, iter,
     marker::PhantomData,
+    ops::Deref,
     vec,
 };
 
@@ -23,7 +24,7 @@ use crate::{
 #[derive(Serialize, Deserialize)]
 pub struct Kv {
     #[serde(flatten)]
-    map: IndexMap<KeyOwned, Value>,
+    map: IndexMap<KeyOwned, ValueType>,
 }
 
 impl Kv {
@@ -48,7 +49,7 @@ impl Kv {
             return self
                 .map
                 .get(&*key)
-                .map(|value| Item::Value(value.clone()))
+                .map(|value| Item::Value(value.deref().clone()))
                 .ok_or_else(|| key::Error::KeyDoesNotExist(key.to_owned()))?;
         }
 
@@ -214,24 +215,44 @@ impl Kv {
     /// Returns `None` if no previous value was present, `Some(None)` if a value is already present
     /// but not replaced, or `Some(Some(value))` if a previous value has been replaced.
     #[throws(Error)]
-    pub fn put_value<'key, K, V>(&mut self, key: K, value: V, force: bool) -> Option<Option<Value>>
+    pub fn put_value<'key, K, V>(
+        &mut self,
+        key: K,
+        value: V,
+        options: PutOptions,
+    ) -> Option<Option<Value>>
     where
         K: Into<KeyOwned>,
         V: Into<Value>,
     {
         let key = key.into();
-        let value = value.into();
+        let value = if !options.temporary {
+            ValueType::Persistent(value.into())
+        } else {
+            ValueType::Temporary(value.into())
+        };
+        let desc = if !options.temporary {
+            "persistent value"
+        } else {
+            "temporary value"
+        };
 
         let mut should_overwrite = false;
         'get: {
             match self.map.get(&*key) {
-                Some(existing) if *existing != value => {
-                    if force {
+                Some(existing) if **existing != *value => {
+                    if options.force {
                         should_overwrite = true;
                         break 'get;
                     }
 
-                    error!("Key {key} is already set with a different value");
+                    if existing.is_temporary() && value.is_persistent() {
+                        error!("Key {key} is already set with a different value and is marked as temporary");
+                    } else if existing.is_persistent() && value.is_temporary() {
+                        error!("Key {key} is already set with a different value and is marked as persistent");
+                    } else {
+                        error!("Key {key} is already set with a different value");
+                    }
 
                     let opt = select!("How do you want to resolve the key conflict?")
                         .with_options([Opt::Skip, Opt::Overwrite])
@@ -239,20 +260,41 @@ impl Kv {
 
                     should_overwrite = opt == Opt::Overwrite;
                     if !should_overwrite {
-                        warn!("Putting value: {key} => {value} (skipping)");
+                        warn!("Putting {desc}: {key} => {} (skipping)", *value);
                         return Some(None);
                     }
                 }
-                Some(_) if !force => {
-                    debug!("Putting value: {key} => {value} (no change)");
-                    return Some(None);
+                Some(existing) => {
+                    if options.force {
+                        should_overwrite = true;
+                        break 'get;
+                    }
+
+                    if existing.is_temporary() && value.is_persistent() {
+                        error!("Key {key} is marked as temporary");
+                    } else if existing.is_persistent() && value.is_temporary() {
+                        error!("Key {key} is marked as persistent");
+                    } else {
+                        debug!("Putting {desc}: {key} => {} (no change)", *value);
+                        return Some(None);
+                    }
+
+                    let opt = select!("How do you want to resolve the key conflict?")
+                        .with_options([Opt::Skip, Opt::Overwrite])
+                        .get()?;
+
+                    should_overwrite = opt == Opt::Overwrite;
+                    if !should_overwrite {
+                        warn!("Putting {desc}: {key} => {} (skipping)", *value);
+                        return Some(None);
+                    }
                 }
-                _ => (),
+                None => (),
             }
         }
 
         if !should_overwrite {
-            debug!("Putting value: {key} => {value}");
+            debug!("Putting {desc}: {key} => {}", *value);
         } else {
             if log_enabled!(Level::Trace) {
                 trace!(
@@ -261,16 +303,24 @@ impl Kv {
                 );
             }
             log!(
-                if force { Level::Debug } else { Level::Warn },
-                "Putting value: {key} => {value} (overwriting)"
+                if options.force {
+                    Level::Debug
+                } else {
+                    Level::Warn
+                },
+                "Putting {desc}: {key} => {} (overwriting)",
+                *value,
             );
         }
 
-        self.map.insert(key.to_owned(), value).map(Some)
+        self.map
+            .insert(key.to_owned(), value)
+            .map(ValueType::into_inner)
+            .map(Some)
     }
 
     #[throws(Error)]
-    pub fn _put_array<K, V, I>(&mut self, key_prefix: K, array: I, force: bool)
+    pub fn _put_array<K, V, I>(&mut self, key_prefix: K, array: I, options: PutOptions)
     where
         K: Into<KeyOwned>,
         V: Into<Value>,
@@ -278,12 +328,12 @@ impl Kv {
     {
         let key_prefix = key_prefix.into();
         for (index, value) in array.into_iter().enumerate() {
-            self.put_value(key_prefix.join(&index.to_string()), value, force)?;
+            self.put_value(key_prefix.join(&index.to_string()), value, options)?;
         }
     }
 
     #[throws(Error)]
-    pub fn _put_map<'key, K, V, Q, I>(&mut self, key_prefix: K, map: I, force: bool)
+    pub fn _put_map<'key, K, V, Q, I>(&mut self, key_prefix: K, map: I, options: PutOptions)
     where
         K: Into<KeyOwned>,
         V: Into<Value>,
@@ -293,7 +343,7 @@ impl Kv {
         let key_prefix = key_prefix.into();
         for (key, value) in map.into_iter() {
             let map_key = key_prefix.join(key);
-            self.put_value(map_key, value, force)?;
+            self.put_value(map_key, value, options)?;
         }
     }
 
@@ -307,7 +357,7 @@ impl Kv {
         debug!("Drop value: {key}");
 
         match self.map.remove(key.as_ref()) {
-            Some(existing) => Some(existing),
+            Some(existing) => Some(existing.into_inner()),
             None if !force => {
                 error!("Key {key} does not exist");
 
@@ -338,10 +388,10 @@ impl Kv {
     }
 }
 
-impl From<Infallible> for Error {
-    fn from(x: Infallible) -> Self {
-        x.into()
-    }
+#[derive(Default, Clone, Copy)]
+pub struct PutOptions {
+    pub force: bool,
+    pub temporary: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -524,6 +574,45 @@ impl_try_from_item!(Value::SignedInteger for i64);
 impl_try_from_item!(Value::FloatingPointNumber for f32);
 impl_try_from_item!(Value::FloatingPointNumber for f64);
 impl_try_from_item!(Value::String for String);
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(untagged)]
+enum ValueType {
+    Persistent(Value),
+
+    #[serde(skip)]
+    Temporary(Value),
+}
+
+impl ValueType {
+    fn is_persistent(&self) -> bool {
+        matches!(self, ValueType::Persistent(_))
+    }
+
+    fn is_temporary(&self) -> bool {
+        matches!(self, ValueType::Temporary(_))
+    }
+}
+
+impl ValueType {
+    fn into_inner(self) -> Value {
+        match self {
+            Self::Persistent(value) => value,
+            Self::Temporary(value) => value,
+        }
+    }
+}
+
+impl Deref for ValueType {
+    type Target = Value;
+
+    fn deref(&self) -> &Self::Target {
+        match &self {
+            Self::Persistent(value) => value,
+            Self::Temporary(value) => value,
+        }
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(untagged)]
@@ -915,12 +1004,18 @@ pub enum Error {
     Custom(#[from] anyhow::Error),
 }
 
+impl From<Infallible> for Error {
+    fn from(x: Infallible) -> Self {
+        x.into()
+    }
+}
+
 pub mod ledger {
     use std::borrow::Cow;
 
     use async_trait::async_trait;
 
-    use super::{KeyOwned, Value};
+    use super::{KeyOwned, PutOptions, Value};
     use crate::{context, ledger::Transaction};
 
     pub struct Put {
@@ -953,7 +1048,14 @@ pub mod ledger {
             let mut kv = context::get_context().kv_mut().await;
             match self.previous_value.take() {
                 Some(previous_value) => {
-                    kv.put_value(self.key, previous_value, true)?;
+                    kv.put_value(
+                        self.key,
+                        previous_value,
+                        PutOptions {
+                            force: true,
+                            ..Default::default()
+                        },
+                    )?;
                 }
                 None => {
                     kv.drop_value(&self.key, true)?;
@@ -1059,46 +1161,56 @@ mod tests {
             "i64" => i64::MIN,
         };
         let two = ["t1", "t2", "t3", "t4", "r1", "r2", "r3", "r4"];
-        kv.put_value("unsigned", 1u32, true)?;
-        kv.put_value("signed", -1, true)?;
-        kv.put_value("float", 1.0, true)?;
-        kv.put_value("u64", u64::MAX, true)?;
-        kv.put_value("bool", false, true)?;
-        kv.put_value("string", "hello", true)?;
-        kv.put_value("nested/one", true, true)?;
-        kv.put_value("nested/two/adam", false, true)?;
-        kv.put_value("nested/two/betsy/alpha/token", ttokens[0], true)?;
-        kv.put_value("nested/two/betsy/beta/token", ttokens[1], true)?;
-        kv.put_value("nested/two/betsy/delta/token", ttokens[2], true)?;
-        kv.put_value("nested/two/betsy/gamma/token", ttokens[3], true)?;
-        kv._put_array("array/one", ttokens, true)?;
-        kv._put_array("array/two", rtokens.clone(), true)?;
-        kv._put_map("map/one/adam/alpha", alpha, true)?;
-        kv._put_array("map/one/adam/beta", rtokens, true)?;
-        kv._put_map("map/one/betsy/alpha", alpha2, true)?;
-        kv._put_map("map/one/betsy/alpha/extra", extra, true)?;
-        kv._put_array("map/two", two, true)?;
+        let options = PutOptions {
+            force: true,
+            temporary: true,
+        };
+        kv.put_value("unsigned", 1u32, options)?;
+        kv.put_value("signed", -1, options)?;
+        kv.put_value("float", 1.0, options)?;
+        kv.put_value("u64", u64::MAX, options)?;
+        kv.put_value("bool", false, options)?;
+        kv.put_value("string", "hello", options)?;
+        kv.put_value("nested/one", true, options)?;
+        kv.put_value("nested/two/adam", false, options)?;
+        kv.put_value("nested/two/betsy/alpha/token", ttokens[0], options)?;
+        kv.put_value("nested/two/betsy/beta/token", ttokens[1], options)?;
+        kv.put_value("nested/two/betsy/delta/token", ttokens[2], options)?;
+        kv.put_value("nested/two/betsy/gamma/token", ttokens[3], options)?;
+        kv._put_array("array/one", ttokens, options)?;
+        kv._put_array("array/two", rtokens.clone(), options)?;
+        kv._put_map("map/one/adam/alpha", alpha, options)?;
+        kv._put_array("map/one/adam/beta", rtokens, options)?;
+        kv._put_map("map/one/betsy/alpha", alpha2, options)?;
+        kv._put_map("map/one/betsy/alpha/extra", extra, options)?;
+        kv._put_array("map/two", two, options)?;
         kv
     }
 
     #[throws(Error)]
     fn get_joined_vec<K: AsRef<Key> + ?Sized>(kv: &Kv, key: &K) -> String {
-        Vec::<String>::try_from(kv.get_item(key)?)?.join(",")
+        kv.get_item(key)?.convert::<Vec<String>>()?.join(",")
     }
 
     #[test]
     #[throws(Error)]
     fn get_single_leaf() {
         let kv = kv()?;
-        u32::try_from(kv.get_item("unsigned")?)?.expect_val(1);
-        i32::try_from(kv.get_item("signed")?)?.expect_val(-1);
-        f32::try_from(kv.get_item("float")?)?.expect_val(1.0);
-        u64::try_from(kv.get_item("u64")?)?.expect_val(u64::MAX);
-        bool::try_from(kv.get_item("bool")?)?.expect_val(false);
-        String::try_from(kv.get_item("string")?)?.expect_val("hello".to_owned());
-        bool::try_from(kv.get_item("nested/one")?)?.expect_val(true);
-        bool::try_from(kv.get_item("nested/*")?)?.expect_val(true);
-        bool::try_from(kv.get_item("nested/two/adam")?)?.expect_val(false);
+        kv.get_item("unsigned")?.convert::<u32>()?.expect_val(1);
+        kv.get_item("signed")?.convert::<i32>()?.expect_val(-1);
+        kv.get_item("float")?.convert::<f32>()?.expect_val(1.0);
+        kv.get_item("u64")?.convert::<u64>()?.expect_val(u64::MAX);
+        kv.get_item("bool")?.convert::<bool>()?.expect_val(false);
+        kv.get_item("string")?
+            .convert::<String>()?
+            .expect_val("hello".to_owned());
+        kv.get_item("nested/one")?
+            .convert::<bool>()?
+            .expect_val(true);
+        kv.get_item("nested/*")?.convert::<bool>()?.expect_val(true);
+        kv.get_item("nested/two/adam")?
+            .convert::<bool>()?
+            .expect_val(false);
     }
 
     #[test]
@@ -1121,7 +1233,7 @@ mod tests {
         use Value::*;
 
         let kv = kv()?;
-        Vec::<Value>::try_from(kv.get_item("*")?)?.expect_val(vec![
+        kv.get_item("*")?.convert::<Vec<_>>()?.expect_val(vec![
             UnsignedInteger(1),
             SignedInteger(-1),
             FloatingPointNumber(1.0),
@@ -1129,8 +1241,12 @@ mod tests {
             Bool(false),
             String("hello".into()),
         ]);
-        Vec::<bool>::try_from(kv.get_item("nested/*")?)?.expect_val(vec![true]);
-        Vec::<bool>::try_from(kv.get_item("nested/*/*")?)?.expect_val(vec![false]);
+        kv.get_item("nested/*")?
+            .convert::<Vec<_>>()?
+            .expect_val(vec![true]);
+        kv.get_item("nested/*/*")?
+            .convert::<Vec<_>>()?
+            .expect_val(vec![false]);
         get_joined_vec(&kv, "array/one/*")?.expect_val("t1,t2,t3,t4".to_owned());
         get_joined_vec(&kv, "array/one/**")?.expect_val("t1,t2,t3,t4".to_owned());
         get_joined_vec(&kv, "array/*/*")?.expect_val("t1,t2,t3,t4,r1,r2,r3,r4".to_owned());
@@ -1140,20 +1256,22 @@ mod tests {
     #[throws(Error)]
     fn get_multiple_arrays() {
         let kv = kv()?;
-        Vec::<Vec<String>>::try_from(kv.get_item("array/*/**")?)?.expect_val(vec![
-            vec![
-                "t1".to_owned(),
-                "t2".to_owned(),
-                "t3".to_owned(),
-                "t4".to_owned(),
-            ],
-            vec![
-                "r1".to_owned(),
-                "r2".to_owned(),
-                "r3".to_owned(),
-                "r4".to_owned(),
-            ],
-        ]);
+        kv.get_item("array/*/**")?
+            .convert::<Vec<_>>()?
+            .expect_val(vec![
+                vec![
+                    "t1".to_owned(),
+                    "t2".to_owned(),
+                    "t3".to_owned(),
+                    "t4".to_owned(),
+                ],
+                vec![
+                    "r1".to_owned(),
+                    "r2".to_owned(),
+                    "r3".to_owned(),
+                    "r4".to_owned(),
+                ],
+            ]);
     }
 
     #[test]
@@ -1218,32 +1336,43 @@ mod tests {
             },
             "map" map=> map.clone(),
         };
-        IndexMap::<String, Item>::try_from(kv.get_item("map/one/adam/alpha/**")?)?
+        kv.get_item("map/one/adam/alpha/**")?
+            .convert::<IndexMap<_, _>>()?
             .expect_val(alpha);
-        IndexMap::<String, Item>::try_from(kv.get_item("map/one/adam/**")?)?.expect_val(adam);
-        IndexMap::<String, Item>::try_from(kv.get_item("map/one/**")?)?.expect_val(one);
-        IndexMap::<String, Item>::try_from(kv.get_item("map/**")?)?.expect_val(map);
-        IndexMap::<String, Item>::try_from(kv.get_item("**")?)?.expect_val(root);
+        kv.get_item("map/one/adam/**")?
+            .convert::<IndexMap<_, _>>()?
+            .expect_val(adam);
+        kv.get_item("map/one/**")?
+            .convert::<IndexMap<_, _>>()?
+            .expect_val(one);
+        kv.get_item("map/**")?
+            .convert::<IndexMap<_, _>>()?
+            .expect_val(map);
+        kv.get_item("**")?
+            .convert::<IndexMap<_, _>>()?
+            .expect_val(root);
     }
 
     #[test]
     #[throws(Error)]
     fn get_multiple_maps() {
         let kv = kv()?;
-        Vec::<IndexMap<String, Item>>::try_from(kv.get_item("map/**/alpha/**")?)?.expect_val(vec![
-            item_map! {
-                "string" => "hello",
-                "int" => 1u32,
-            },
-            item_map! {
-                "string" => "hello",
-                "int" => 2u32,
-                "extra" map=> item_map! {
-                    "bool" => false,
-                    "i64" => i64::MIN,
+        kv.get_item("map/**/alpha/**")?
+            .convert::<Vec<_>>()?
+            .expect_val(vec![
+                item_map! {
+                    "string" => "hello",
+                    "int" => 1u32,
                 },
-            },
-        ]);
+                item_map! {
+                    "string" => "hello",
+                    "int" => 2u32,
+                    "extra" map=> item_map! {
+                        "bool" => false,
+                        "i64" => i64::MIN,
+                    },
+                },
+            ]);
     }
 
     #[test]
@@ -1251,7 +1380,11 @@ mod tests {
     #[throws(Error)]
     fn get_array_no_zero_index() {
         let mut kv = kv()?;
-        kv.put_value("invalid_array/1", false, true)?;
-        Vec::<bool>::try_from(kv.get_item("invalid_array/**")?)?;
+        let options = PutOptions {
+            force: true,
+            temporary: true,
+        };
+        kv.put_value("invalid_array/1", false, options)?;
+        kv.get_item("invalid_array/**")?.convert::<Vec<bool>>()?;
     }
 }

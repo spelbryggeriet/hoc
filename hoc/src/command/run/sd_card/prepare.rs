@@ -28,7 +28,7 @@ const UBUNTU_VERSION: UbuntuVersion = UbuntuVersion {
 
 #[throws(Error)]
 pub async fn run() {
-    let (_os_image_file, os_image_path) = context_file!("images/os").cached(get_os_image).await?;
+    let (_os_image_file, os_image_path) = files!("images/os").cached(get_os_image).await?;
 
     let node_name = generate_node_name().await?;
     assign_ip_address(&node_name).await?;
@@ -109,7 +109,7 @@ async fn decompress_xz_file(os_image_file: &mut File, os_image_path: &Path) {
 async fn generate_node_name() -> String {
     progress!("Generating node name");
 
-    let num_nodes = match get!("nodes/**").await {
+    let num_nodes = match kv!("nodes/**").await {
         Ok(item) => item
             .into_iter()
             .filter_key_value("initialized", true)
@@ -119,7 +119,7 @@ async fn generate_node_name() -> String {
     };
 
     let node_name = format!("node-{}", util::numeral(num_nodes as u64 + 1));
-    put!(false => "nodes/{node_name}/initialized").await?;
+    kv!("nodes/{node_name}/initialized").put(false).await?;
     info!("Node name: {node_name}");
 
     node_name
@@ -129,8 +129,8 @@ async fn generate_node_name() -> String {
 async fn assign_ip_address(node_name: &str) {
     progress!("Assigning IP address");
 
-    let start_address: IpAddr = get!("network/start_address").await?.convert()?;
-    let used_addresses: Vec<IpAddr> = match get!("nodes/**").await {
+    let start_address: IpAddr = kv!("network/start_address").await?.convert()?;
+    let used_addresses: Vec<IpAddr> = match kv!("nodes/**").await {
         Ok(item) => item
             .into_iter()
             .filter_key_value("initialized", true)
@@ -140,7 +140,7 @@ async fn assign_ip_address(node_name: &str) {
         Err(kv::Error::Key(key::Error::KeyDoesNotExist(_))) => Vec::new(),
         Err(err) => throw!(err),
     };
-    let prefix_len: u32 = get!("network/prefix_len").await?.convert()?;
+    let prefix_len: u32 = kv!("network/prefix_len").await?.convert()?;
 
     let addresses = Cidr {
         ip_addr: start_address,
@@ -151,7 +151,9 @@ async fn assign_ip_address(node_name: &str) {
             .step(step)
             .context("No more IP addresses available")?;
         if !used_addresses.contains(&next_address) {
-            put!(next_address.to_string() => "nodes/{node_name}/network/address").await?;
+            kv!("nodes/{node_name}/network/address")
+                .put(next_address.to_string())
+                .await?;
             info!("Assigned IP Address: {next_address}");
             break;
         }

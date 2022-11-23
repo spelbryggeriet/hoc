@@ -1,9 +1,14 @@
 use std::{
+    borrow::Cow,
     fmt::{self, Formatter},
     fs::File as BlockingFile,
+    future::Future,
+    future::IntoFuture,
     io,
+    marker::PhantomData,
     os::unix::fs::PermissionsExt,
     path::PathBuf,
+    pin::Pin,
 };
 
 use once_cell::sync::OnceCell;
@@ -18,9 +23,10 @@ use tokio::{
 
 use self::{
     fs::{cache::Cache, files::Files, temp::Temp, CachedFileFn},
-    kv::Kv,
+    key::Key,
+    kv::{Item, Kv, PutOptions},
 };
-use crate::{prelude::*, prompt};
+use crate::{ledger::Ledger, prelude::*, prompt};
 
 pub mod fs;
 pub mod key;
@@ -262,6 +268,73 @@ impl<'de> Deserialize<'de> for Context {
         }
 
         deserializer.deserialize_map(ContextVisitor)
+    }
+}
+
+pub struct KvBuilder<'a, O> {
+    key: Cow<'a, Key>,
+    temporary: bool,
+    _operation: PhantomData<O>,
+}
+
+pub enum All {}
+pub enum _Put {}
+
+impl<'a> KvBuilder<'a, All> {
+    pub fn new(key: Cow<'a, Key>) -> Self {
+        Self {
+            key,
+            temporary: false,
+            _operation: Default::default(),
+        }
+    }
+
+    pub fn _temporary(self) -> KvBuilder<'a, _Put> {
+        KvBuilder {
+            key: self.key,
+            temporary: true,
+            _operation: Default::default(),
+        }
+    }
+
+    #[throws(kv::Error)]
+    pub async fn get(self) -> Item {
+        get_context().kv().await.get_item(&self.key)?
+    }
+}
+
+impl<'a, O> KvBuilder<'a, O> {
+    #[throws(kv::Error)]
+    pub async fn put<V: Into<kv::Value>>(self, value: V) {
+        let value = value.into();
+
+        let previous_value = get_context().kv_mut().await.put_value(
+            &self.key,
+            value.clone(),
+            PutOptions {
+                force: false,
+                temporary: self.temporary,
+            },
+        )?;
+
+        if previous_value != Some(None) {
+            Ledger::get_or_init().lock().await.add(kv::ledger::Put::new(
+                self.key.into_owned(),
+                value,
+                previous_value.flatten(),
+            ));
+        }
+    }
+}
+
+type KvBuilderFuture<'a> = Pin<Box<dyn Future<Output = Result<Item, kv::Error>> + 'a>>;
+
+impl<'a> IntoFuture for KvBuilder<'a, All> {
+    type IntoFuture = KvBuilderFuture<'a>;
+    type Output = <KvBuilderFuture<'a> as Future>::Output;
+
+    fn into_future(self) -> Self::IntoFuture {
+        Box::pin(self.get())
     }
 }
 

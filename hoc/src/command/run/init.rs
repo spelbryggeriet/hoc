@@ -22,16 +22,20 @@ pub async fn run(
 async fn store_network_info(node_addresses: Cidr, gateway: IpAddr) {
     progress!("Storing network information");
 
-    put!(node_addresses.ip_addr.to_string() => "network/start_address").await?;
-    put!(node_addresses.prefix_len => "network/prefix_len").await?;
-    put!(gateway.to_string() => "network/gateway").await?;
+    kv!("network/start_address")
+        .put(node_addresses.ip_addr.to_string())
+        .await?;
+    kv!("network/prefix_len")
+        .put(node_addresses.prefix_len)
+        .await?;
+    kv!("network/gateway").put(gateway.to_string()).await?;
 }
 
 #[throws(anyhow::Error)]
 async fn store_admin_user(admin_username: String) {
     progress!("Storing administrator user");
 
-    put!(admin_username => "admin/username").await?;
+    kv!("admin/username").put(admin_username).await?;
 }
 
 #[throws(anyhow::Error)]
@@ -65,6 +69,6 @@ async fn store_ssh_keys(pub_key: &str, priv_key: &str) {
 
 #[throws(anyhow::Error)]
 async fn create_file_with_content(key: &'static str, content: &str) {
-    let (mut file, _) = context_file!("{key}").create().await?;
+    let (mut file, _) = files!("{key}").create().await?;
     file.write_all(content.as_bytes()).await?;
 }
