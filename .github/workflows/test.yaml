@@ -1,0 +1,49 @@
+name: Test
+
+on:
+  push:
+    branches: [ develop ]
+    paths-ignore:
+    - 'README.md'
+    - 'CHANGELOG.md'
+    - 'scripts/**'
+    - '.gitignore'
+    - '.github/**'
+    - '!.github/workflows/rust.yml'
+  pull_request:
+    branches: [ develop ]
+    paths-ignore:
+    - 'README.md'
+    - 'CHANGELOG.md'
+    - 'scripts/**'
+    - '.gitignore'
+    - '.github/**'
+    - '!.github/workflows/rust.yml'
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_VERSION: 1.65.0
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v3
+    - name: Install Rust
+      uses: actions-rs/toolchain@v1
+      with:
+        toolchain: ${{ env.RUST_VERSION }}
+        default: true
+        components: clippy
+    - name: Cache Rust
+      uses: Swatinem/rust-cache@v2
+    - name: Lint
+      uses: actions-rs/cargo@v1
+      with:
+        command: clippy
+        args: --verbose -- -D warnings
+    - name: Run tests
+      uses: actions-rs/cargo@v1
+      with:
+        command: test
+        args: --verbose

@@ -1,0 +1,153 @@
+name: Create Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      bumpVersion:
+        description: "Bump version"
+        required: true
+        default: patch
+        type: choice
+        options:
+        - patch
+        - minor
+        - major
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_VERSION: 1.65.0
+
+jobs:
+  bump-version:
+    runs-on: ubuntu-latest
+    outputs:
+      new-version: ${{ steps.bv.outputs.new-version }}
+    steps:
+      - uses: actions/checkout@v3
+      - name: Check branch
+        run: |
+          if [[ ! `git branch --show-current` = 'develop' ]] ; then
+            echo "Releases can only be created from the \`develop\` branch" >&2
+            exit 1
+          fi
+      - name: Fetch master
+        run: |
+          git fetch origin master:master
+      - name: Bump version
+        id: bv
+        run: |
+          new_version=`scripts/bumb_version.py ${{ inputs.bumpVersion }}`
+          echo "new-version=$new_version" >> $GITHUB_OUTPUT
+      - name: Commit
+        run: |
+          git \
+            -c author.name=${{ github.actor }} \
+            -c author.email=${{ github.actor }}@users.noreply.github.com \
+            -c committer.name=Github \
+            -c committer.email=noreply@github.com \
+            commit -a -m "Prepare release v${NEW_VERSION}"
+        env:
+          NEW_VERSION: ${{ steps.bv.outputs.new-version }}
+      - name: Push
+        run: |
+          git push
+
+  build:
+    needs: bump-version
+    runs-on: macos-latest
+    outputs:
+      artifact-name: ${{ steps.zza.outputs.artifact-name }}
+    steps:
+    - uses: actions/checkout@v3
+      with:
+        ref: develop
+    - name: Install Rust
+      uses: actions-rs/toolchain@v1
+      with:
+        toolchain: ${{ env.RUST_VERSION }}
+        default: true
+    - name: Cache Rust
+      uses: Swatinem/rust-cache@v2
+    - name: Build
+      uses: actions-rs/cargo@v1
+      with:
+        command: build
+        args: --release --verbose
+    - name: Zip artifact
+      id: za
+      run: |
+          artifact_name="hoc_v${NEW_VERSION//./_}_macos"
+          cd target/release
+          zip -r ../../${artifact_name}.zip hoc
+          echo "artifact-name=$artifact_name" >> $GITHUB_OUTPUT
+    - name: Upload artifact
+      uses: actions/upload-artifact@v2
+      with:
+        name: ${{ env.ARTIFACT_NAME }}
+        path: ${{ env.ARTIFACT_NAME }}.zip
+      env:
+        ARTIFACT_NAME: ${{ steps.za.outputs.artifact-name }}
+      
+  create-release:
+    needs: [bump-version, build]
+    env:
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      REPO: ${{ github.repository }}
+      NEW_VERSION: ${{ needs.bump-version.outputs.new-version }}
+      ARTIFACT_NAME: ${{ needs.build.outputs.artifact-name }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Create pull request
+        id: cpr
+        uses: octokit/request-action@v2.x
+        with:
+          route: POST /repos/${{ env.REPO }}/pulls
+          title: Release v${{ env.NEW_VERSION }}
+          body: Bump to version v${{ env.NEW_VERSION }}.
+          base: master
+          head: develop
+      - name: Merge pull request
+        uses: octokit/request-action@v2.x
+        with:
+          route: PUT /repos/${{ env.REPO }}/pulls/${{ env.PULL_NUMBER }}/merge
+          merge_method: rebase
+        env:
+          PULL_NUMBER: ${{ fromJson(steps.cpr.outputs.data).number }}
+      - name: Get changelog body
+        id: gcb
+        run: |
+          changelog_body=`scripts/changelog_body.py $NEW_VERSION`
+          echo "changelog-body=${changelog_body}" >> $GITHUB_OUTPUT
+      - name: Create release draft
+        id: crd
+        uses: octokit/request-action@v2.x
+        with:
+          route: POST /repos/${{ env.REPO }}/releases
+          tag_name: v${{ env.NEW_VERSION }}
+          target_commitish: master
+          name: v${{ env.NEW_VERSION }}
+          body: ${{ steps.gcb.outputs.changelog-body }}
+          draft: true
+      - name: Download artifact
+        uses: actions/download-artifact@v3
+        with:
+          name: ${{ env.ARTIFACT_NAME }}
+          path: artifact
+      - name: Upload artifact
+        run: |
+          curl \
+            -X POST \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+            -H "Content-Type: application/zip" \
+            --data-binary @artifact/hoc \
+            https://uploads.github.com/repos/${REPO}/releases/${RELEASE_ID}/assets?name=${ARTIFACT_NAME}.zip
+        env:
+          RELEASE_ID: ${{ fromJson(steps.crd.outputs.data).id }}
+      - name: Publish release
+        uses: octokit/request-action@v2.x
+        with:
+          route: PATCH /repos/${{ env.REPO }}/releases/${{ env.RELEASE_ID }}
+          draft: false
+        env:
+          RELEASE_ID: ${{ fromJson(steps.crd.outputs.data).id }}
