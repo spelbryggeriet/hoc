@@ -42,7 +42,7 @@ commands_summary! {
 /// To get started, you first have to run the `init` command to setup cluster parameters, secret
 /// keys, local network address allocation, etc.
 ///
-/// To add a node to the cluster, you must first prepare and SD card with the node software, which
+/// To add a node to the cluster, you must first prepare an SD card with the node software, which
 /// can be done using the `sd-card prepare` command. Once that is done, the `node deploy` command
 /// can be used to add the node to the cluster.
 #[derive(clap::Subcommand)]
@@ -88,7 +88,9 @@ pub struct InitCommand {
         help = help::init::gateway(),
         long,
         default_missing_value = default::init::gateway(),
-        default_value_if("defaults", None, Some(default::init::gateway())),
+        num_args = 0..=1,
+        require_equals = true,
+        default_value_if("defaults", "true", Some(default::init::gateway())),
     )]
     gateway: Option<IpAddr>,
 
@@ -97,7 +99,9 @@ pub struct InitCommand {
         long_help = long_help::init::node_addresses(),
         long,
         default_missing_value = default::init::node_addresses(),
-        default_value_if("defaults", None, Some(default::init::node_addresses())),
+        num_args = 0..=1,
+        require_equals = true,
+        default_value_if("defaults", "true", Some(default::init::node_addresses())),
     )]
     node_addresses: Option<Cidr>,
 
