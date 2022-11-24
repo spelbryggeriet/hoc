@@ -60,7 +60,7 @@ impl App {
 #[throws(anyhow::Error)]
 #[tokio::main]
 async fn main() -> ExitCode {
-    let app = App::from_args();
+    let app = App::parse();
 
     log::init()?;
 
