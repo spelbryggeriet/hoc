@@ -1,0 +1,34 @@
+name: Build
+
+on:
+  pull_request:
+    branches: [ develop ]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_VERSION: 1.65.0
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+        - os: macos-latest
+          artifact-name: hoc_macos
+        - os: ubuntu-latest
+          artifact-name: hoc_linux
+    runs-on: ${{ matrix.os }}
+    steps:
+    - uses: actions/checkout@v3
+    - name: Install Rust
+      uses: actions-rs/toolchain@v1
+      with:
+        toolchain: ${{ env.RUST_VERSION }}
+        default: true
+        components: clippy
+    - name: Cache Rust
+      uses: Swatinem/rust-cache@v2
+    - name: Lint
+      run: cargo clippy --verbose -- -D warnings
+    - name: Run tests
+      run: RUSTFLAGS="-D warnings" cargo test --verbose
