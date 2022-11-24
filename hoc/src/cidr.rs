@@ -93,9 +93,8 @@ impl FromStr for Cidr {
 
     #[throws(Self::Err)]
     fn from_str(s: &str) -> Self {
-        let (ip_addr_str, prefix_len_str) = s
-            .split_once("/")
-            .ok_or_else(|| CidrParseError::MissingSlash)?;
+        let (ip_addr_str, prefix_len_str) =
+            s.split_once('/').ok_or(CidrParseError::MissingSlash)?;
         let ip_addr: std::net::IpAddr = ip_addr_str.parse()?;
         let prefix_len: u32 = prefix_len_str.parse()?;
 

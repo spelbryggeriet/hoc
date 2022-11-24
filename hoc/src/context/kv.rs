@@ -35,7 +35,7 @@ impl Kv {
     }
 
     #[throws(Error)]
-    pub fn get_item<'key, K>(&self, key: &K) -> Item
+    pub fn get_item<K>(&self, key: &K) -> Item
     where
         K: AsRef<Key> + ?Sized,
     {
@@ -48,7 +48,7 @@ impl Kv {
 
             return self
                 .map
-                .get(&*key)
+                .get(key)
                 .map(|value| Item::Value(value.deref().clone()))
                 .ok_or_else(|| key::Error::KeyDoesNotExist(key.to_owned()))?;
         }
@@ -83,7 +83,7 @@ impl Kv {
         // suffixes). Nested keys need to capture the suffix in order to do further traversing.
         let regex = if is_nested {
             if prefix_expr.is_empty() {
-                Regex::new(&format!("^(?P<suffix>.*)$")).unwrap()
+                Regex::new("^(?P<suffix>.*)$").unwrap()
             } else {
                 Regex::new(&format!("^(?P<prefix>{prefix_expr})/(?P<suffix>.*)$")).unwrap()
             }
@@ -156,7 +156,9 @@ impl Kv {
             if let Ok(indices) = indices {
                 let mut validated = vec![false; indices.len()];
                 for index in indices.iter() {
-                    validated.get_mut(*index).map(|v| *v = true);
+                    if let Some(v) = validated.get_mut(*index) {
+                        *v = true;
+                    }
                 }
 
                 if validated.into_iter().all(|v| v) {
@@ -201,12 +203,10 @@ impl Kv {
             result.push(Item::Map(map));
         }
 
-        if result.len() == 1 {
-            result.remove(0)
-        } else if result.len() > 1 {
-            Item::Array(result)
-        } else {
-            throw!(key::Error::KeyDoesNotExist(key.to_owned()))
+        match result.len() {
+            0 => throw!(key::Error::KeyDoesNotExist(key.to_owned())),
+            1 => result.remove(0),
+            _ => Item::Array(result),
         }
     }
 
@@ -215,7 +215,7 @@ impl Kv {
     /// Returns `None` if no previous value was present, `Some(None)` if a value is already present
     /// but not replaced, or `Some(Some(value))` if a previous value has been replaced.
     #[throws(Error)]
-    pub fn put_value<'key, K, V>(
+    pub fn put_value<K, V>(
         &mut self,
         key: K,
         value: V,
@@ -266,7 +266,9 @@ impl Kv {
 
                     should_overwrite = opt == Opt::Overwrite;
                     if !should_overwrite {
-                        original_value.map(|v| warn!("Putting {desc}: {key} => {v} (skipping)"));
+                        if let Some(v) = original_value {
+                            warn!("Putting {desc}: {key} => {v} (skipping)");
+                        }
                         return Some(None);
                     }
                 }
@@ -281,7 +283,9 @@ impl Kv {
                     } else if existing.is_persistent() && value.is_temporary() {
                         error!("Key {key} is marked as persistent");
                     } else {
-                        original_value.map(|v| debug!("Putting {desc}: {key} => {v} (no change)"));
+                        if let Some(v) = original_value {
+                            debug!("Putting {desc}: {key} => {v} (no change)");
+                        }
                         return Some(None);
                     }
 
@@ -291,7 +295,9 @@ impl Kv {
 
                     should_overwrite = opt == Opt::Overwrite;
                     if !should_overwrite {
-                        original_value.map(|v| warn!("Putting {desc}: {key} => {v} (skipping)"));
+                        if let Some(v) = original_value {
+                            warn!("Putting {desc}: {key} => {v} (skipping)");
+                        }
                         return Some(None);
                     }
                 }
@@ -300,7 +306,9 @@ impl Kv {
         }
 
         if !should_overwrite {
-            original_value.map(|v| debug!("Putting {desc}: {key} => {v}"));
+            if let Some(v) = original_value {
+                debug!("Putting {desc}: {key} => {v}");
+            }
         } else {
             if log_enabled!(Level::Trace) {
                 trace!(
@@ -308,7 +316,7 @@ impl Kv {
                     serde_json::to_string(&self.get_item(&*key)?)?
                 );
             }
-            original_value.map(|v| {
+            if let Some(v) = original_value {
                 log!(
                     if options.force {
                         Level::Debug
@@ -316,8 +324,8 @@ impl Kv {
                         Level::Warn
                     },
                     "Putting {desc}: {key} => {v} (overwriting)",
-                )
-            });
+                );
+            }
         }
 
         self.map
@@ -463,7 +471,7 @@ impl Item {
                     current = array.get(index)?;
                 }
                 Self::Map(map) => {
-                    current = map.get(&*component.as_str())?;
+                    current = map.get(component.as_str())?;
                 }
             }
         }
@@ -484,10 +492,10 @@ impl Item {
                 Self::Value(_) => throw!(),
                 Self::Array(array) => {
                     let index = component.as_str().parse::<usize>().ok()?;
-                    current = array.into_iter().skip(index).next()?;
+                    current = array.into_iter().nth(index)?;
                 }
                 Self::Map(mut map) => {
-                    current = map.remove(&*component.as_str())?;
+                    current = map.remove(component.as_str())?;
                 }
             }
         }
@@ -859,7 +867,7 @@ pub trait IteratorExt: Iterator + Sized {
         }
     }
 
-    fn try_get_key<'a, K>(self, key: &'a K) -> TryGetKey<'a, Self>
+    fn try_get_key<K>(self, key: &K) -> TryGetKey<Self>
     where
         K: AsRef<Key> + ?Sized,
     {
@@ -1072,6 +1080,7 @@ mod tests {
         ($array:ident => @impl $(,)?) => {};
 
         ($($input:tt)*) => {{
+            #![allow(clippy::vec_init_then_push)]
             let mut array = Vec::<Item>::new();
             item_array!(array => @impl $($input)*,);
             array
@@ -1134,7 +1143,7 @@ mod tests {
         kv.put_value("nested/two/betsy/delta/token", ttokens[2], options)?;
         kv.put_value("nested/two/betsy/gamma/token", ttokens[3], options)?;
         kv._put_array("array/one", ttokens, options)?;
-        kv._put_array("array/two", rtokens.clone(), options)?;
+        kv._put_array("array/two", rtokens, options)?;
         kv._put_map("map/one/adam/alpha", alpha, options)?;
         kv._put_array("map/one/adam/beta", rtokens, options)?;
         kv._put_map("map/one/betsy/alpha", alpha2, options)?;

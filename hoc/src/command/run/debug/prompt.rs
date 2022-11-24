@@ -34,7 +34,7 @@ impl PromptRunner {
         let _: String = self.run(|i| prompt!("Prompt {i}").get())?;
         let _: String = self.run(|i| prompt!("Prompt {i}").with_default("default").get())?;
         let _: String = self.run(|i| prompt!("Prompt {i}").with_initial_input("initial").get())?;
-        let _: Secret<String> = self.run(|i| prompt!("Prompt {i}").as_secret().get())?;
+        let _: Secret<String> = self.run(|i| prompt!("Prompt {i}").secret().get())?;
         self.run(|i| select!("Prompt {i}?").with_option("Option 1").get())?;
         self.run(|i| {
             select!("Prompt {i}?")

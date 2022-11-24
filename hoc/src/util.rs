@@ -29,7 +29,7 @@ pub fn from_arguments_to_key_cow(arguments: Arguments) -> Cow<'static, Key> {
     if let Some(s) = arguments.as_str() {
         Cow::Borrowed(Key::new(s))
     } else {
-        Cow::Owned(KeyOwned::new().join(&arguments.to_string()))
+        Cow::Owned(KeyOwned::default().join(&arguments.to_string()))
     }
 }
 
@@ -87,7 +87,7 @@ pub fn numeral(n: u64) -> Cow<'static, str> {
                 list.push("million".into());
             }
             list.reverse();
-            list.join("-".into()).into()
+            list.join("-").into()
         }
     }
 }

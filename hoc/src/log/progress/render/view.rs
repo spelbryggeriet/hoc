@@ -26,7 +26,7 @@ fn render_view(
     content: &dyn Content,
     color: Option<Color>,
     cursor: &mut Position,
-    lines: &mut Vec<(Line, Vec<ColorSpan>)>,
+    lines: &mut [(Line, Vec<ColorSpan>)],
 ) {
     let (line, current_color_spans) = &mut lines[cursor.row];
     let current_char_count = line.content.chars().count();
@@ -115,14 +115,11 @@ fn render_view(
                     // instead.
                     false
                 }
-            } else if current_color_span.start > start_column && current_color_span.end < end_column
-            {
-                // The current color span is strictly within the bounds of the new one, so it
-                // is effectively overwritten.
-                false
             } else {
-                // The two spans do not overlap so we do nothing.
-                true
+                // Either the current color is strictly within the bounds of the new one, or the
+                // spans do not overlap at all. If they do overlap, then the current span is
+                // effectively overwritten, and will not be retained.
+                !(current_color_span.start > start_column && current_color_span.end < end_column)
             }
         });
 

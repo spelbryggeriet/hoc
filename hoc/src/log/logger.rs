@@ -116,16 +116,16 @@ impl Log for Logger {
                         longest_mod_name = module.len();
                     }
 
-                    write!(
+                    writeln!(
                         file,
-                        "[{time:<27} {level:<7} {module:<longest_mod_name$}] {message}\n",
+                        "[{time:<27} {level:<7} {module:<longest_mod_name$}] {message}",
                         level = meta.level,
                         time = format!("{:?}", meta.timestamp),
                     )
                 } else {
-                    write!(
+                    writeln!(
                         file,
-                        "[{time:<27} {level:<7}{empty_mod:mod_len$}] {message}\n",
+                        "[{time:<27} {level:<7}{empty_mod:mod_len$}] {message}",
                         empty_mod = "",
                         level = meta.level,
                         mod_len = if longest_mod_name > 0 {
