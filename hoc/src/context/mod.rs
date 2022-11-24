@@ -217,7 +217,7 @@ impl<'de> Deserialize<'de> for Context {
                     "kv" => Ok(Field::Kv),
                     "files" => Ok(Field::Files),
                     "cache" => Ok(Field::Cache),
-                    key => return Err(serde::de::Error::custom(format!("unexpected key: {key}"))),
+                    key => Err(serde::de::Error::custom(format!("unexpected key: {key}"))),
                 }
             }
         }
@@ -256,9 +256,11 @@ impl<'de> Deserialize<'de> for Context {
                     }
                 }
 
-                let kv: Kv = kv.ok_or(serde::de::Error::custom("missing key: kv"))?;
-                let files: Files = files.ok_or(serde::de::Error::custom("missing key: files"))?;
-                let cache: Cache = cache.ok_or(serde::de::Error::custom("missing key: cache"))?;
+                let kv: Kv = kv.ok_or_else(|| serde::de::Error::custom("missing key: kv"))?;
+                let files: Files =
+                    files.ok_or_else(|| serde::de::Error::custom("missing key: files"))?;
+                let cache: Cache =
+                    cache.ok_or_else(|| serde::de::Error::custom("missing key: cache"))?;
 
                 Context {
                     kv: RwLock::new(kv),

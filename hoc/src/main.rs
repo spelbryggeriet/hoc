@@ -42,7 +42,6 @@ impl App {
                 Handle::current().block_on(async {
                     if let Err(err) = context::get_context().persist().await {
                         error!("{err}");
-                        return;
                     }
                 });
             });
@@ -68,7 +67,6 @@ async fn main() -> ExitCode {
     defer! {
         if let Err(err) = log::cleanup() {
             eprintln!("{err}");
-            return;
         }
     }
 

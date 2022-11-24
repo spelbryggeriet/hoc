@@ -104,18 +104,10 @@ impl<'a> From<&'a String> for &'a Key {
     }
 }
 
-#[derive(Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct KeyOwned {
     inner: String,
-}
-
-impl KeyOwned {
-    pub fn new() -> Self {
-        Self {
-            inner: String::new(),
-        }
-    }
 }
 
 impl Borrow<Key> for KeyOwned {
@@ -135,7 +127,7 @@ impl Deref for KeyOwned {
 impl Display for KeyOwned {
     #[throws(fmt::Error)]
     fn fmt(&self, f: &mut Formatter) {
-        Key::fmt(&*self, f)?;
+        Key::fmt(self, f)?;
     }
 }
 
@@ -166,7 +158,7 @@ impl<'a> From<Cow<'a, Key>> for KeyOwned {
 
 impl<'a> FromIterator<KeyComponent<'a>> for KeyOwned {
     fn from_iter<T: IntoIterator<Item = KeyComponent<'a>>>(iter: T) -> Self {
-        let mut key = KeyOwned::new();
+        let mut key = KeyOwned::default();
         for component in iter.into_iter() {
             key = key.join(&component);
         }

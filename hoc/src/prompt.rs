@@ -49,7 +49,7 @@ impl<'a, T> PromptBuilder<'a, T, NonSecret> {
         }
     }
 
-    pub fn as_secret(self) -> PromptBuilder<'a, T, AsSecret> {
+    pub fn secret(self) -> PromptBuilder<'a, T, AsSecret> {
         self.convert()
     }
 }
@@ -113,10 +113,8 @@ where
                 return if let Some(default) = &default_clone {
                     match T::from_str(default) {
                         Ok(_) => Ok(Validation::Valid),
-                        Err(_) => Err(
-                            Box::new(InvalidDefaultError(default.to_owned().into_owned()))
-                                as CustomUserError,
-                        ),
+                        Err(_) => Err(Box::new(InvalidDefaultError(default.clone().into_owned()))
+                            as CustomUserError),
                     }
                 } else {
                     Ok(Validation::Invalid(ErrorMessage::Custom(

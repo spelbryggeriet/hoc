@@ -10,14 +10,7 @@ env:
 
 jobs:
   build:
-    strategy:
-      matrix:
-        include:
-        - os: macos-latest
-          artifact-name: hoc_macos
-        - os: ubuntu-latest
-          artifact-name: hoc_linux
-    runs-on: ${{ matrix.os }}
+    runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v3
     - name: Install Rust
@@ -31,4 +24,4 @@ jobs:
     - name: Lint
       run: cargo clippy --verbose -- -D warnings
     - name: Run tests
-      run: RUSTFLAGS="-D warnings" cargo test --verbose
+      run: cargo test --verbose

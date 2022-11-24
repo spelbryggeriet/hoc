@@ -29,7 +29,7 @@ async fn read_lines(reader: impl AsyncRead + Unpin, print_line: impl Fn(&str)) -
     while let Some(line) = lines.next_line().await? {
         print_line(&line);
         if !out.is_empty() {
-            out.push_str("\n");
+            out.push('\n');
         }
         out.push_str(&line);
     }
@@ -116,7 +116,7 @@ impl CmdBuilder<Revertible> {
         }
 
         RevertibleTransaction {
-            forward_cmd: self.cmd.raw_forward_cmd.to_owned(),
+            forward_cmd: self.cmd.raw_forward_cmd.clone(),
             revert_cmd: self.cmd.revert_cmd.clone(),
         }
     }

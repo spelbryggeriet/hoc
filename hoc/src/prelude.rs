@@ -4,4 +4,4 @@ pub use log_facade::{debug, error, info, log, log_enabled, trace, warn, Level};
 
 pub use crate::{context::kv::IteratorExt, util::Secret};
 
-pub const EXPECT_THREAD_NOT_POSIONED: &'static str = "thread should not be poisoned";
+pub const EXPECT_THREAD_NOT_POSIONED: &str = "thread should not be poisoned";
