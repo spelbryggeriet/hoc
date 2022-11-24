@@ -42,6 +42,9 @@ fn last_running_subprogress_mut<'a>(
     .last()
 }
 
+type LevelMessage = (Level, String);
+type Shared<T> = Arc<Mutex<T>>;
+
 pub struct Progress {
     logs: Mutex<VecDeque<Log>>,
 }
@@ -95,10 +98,7 @@ impl Progress {
         drop_handle
     }
 
-    fn push_pause_log(
-        &self,
-        height: usize,
-    ) -> (Arc<Mutex<bool>>, Arc<Mutex<Option<(Level, String)>>>) {
+    fn push_pause_log(&self, height: usize) -> (Shared<bool>, Shared<Option<LevelMessage>>) {
         let pause_log = PauseLog::new(height);
         let is_finished_mutex = Arc::clone(&pause_log.is_finished);
         let message_mutex = Arc::clone(&pause_log.message);
@@ -181,7 +181,7 @@ pub struct ProgressLog {
     message: String,
     start_time: Instant,
     logs: Vec<Log>,
-    run_time: Arc<Mutex<Option<Duration>>>,
+    run_time: Shared<Option<Duration>>,
 }
 
 impl ProgressLog {
@@ -220,8 +220,8 @@ impl ProgressLog {
 #[derive(Debug)]
 struct PauseLog {
     height: usize,
-    is_finished: Arc<Mutex<bool>>,
-    message: Arc<Mutex<Option<(Level, String)>>>,
+    is_finished: Shared<bool>,
+    message: Shared<Option<LevelMessage>>,
 }
 
 impl PauseLog {
@@ -258,11 +258,11 @@ mod drop_handle {
     #[must_use]
     pub struct DropHandle {
         start_time: Instant,
-        run_time: Arc<Mutex<Option<Duration>>>,
+        run_time: Shared<Option<Duration>>,
     }
 
     impl DropHandle {
-        fn new(start_time: Instant, run_time: Arc<Mutex<Option<Duration>>>) -> Self {
+        fn new(start_time: Instant, run_time: Shared<Option<Duration>>) -> Self {
             Self {
                 start_time,
                 run_time,

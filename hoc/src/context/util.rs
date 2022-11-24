@@ -17,7 +17,7 @@ where
 
     let mut retrying = false;
     loop {
-        if let Err(err) = on_cache(file, &path, retrying).await {
+        if let Err(err) = on_cache(file, path, retrying).await {
             let custom_err = err.into();
             error!("{custom_err}");
             select!("How do you want to resolve the error?")

@@ -28,7 +28,7 @@ macro_rules! get_secret_arg {
             info!("{__message}: {__inner}");
             __inner
         } else {
-            let __value = prompt!("{__message}").as_secret().get()?;
+            let __value = prompt!("{__message}").secret().get()?;
             __value
         };
 

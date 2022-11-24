@@ -23,18 +23,16 @@ pub fn run() {
                 }
                 *ttl
             });
+        } else if rand::Rng::gen_ratio(&mut rng, 1, 2) {
+            trace!("Trace {d}-{i}");
+        } else if rand::Rng::gen_ratio(&mut rng, 1, 2) {
+            debug!("Debug {d}-{i}");
+        } else if rand::Rng::gen_ratio(&mut rng, 9, 10) {
+            info!("Info {d}-{i}");
+        } else if rand::Rng::gen_ratio(&mut rng, 1, 2) {
+            warn!("Warning {d}-{i}");
         } else {
-            if rand::Rng::gen_ratio(&mut rng, 1, 2) {
-                trace!("Trace {d}-{i}");
-            } else if rand::Rng::gen_ratio(&mut rng, 1, 2) {
-                debug!("Debug {d}-{i}");
-            } else if rand::Rng::gen_ratio(&mut rng, 9, 10) {
-                info!("Info {d}-{i}");
-            } else if rand::Rng::gen_ratio(&mut rng, 1, 2) {
-                warn!("Warning {d}-{i}");
-            } else {
-                error!("Error {d}-{i}");
-            }
+            error!("Error {d}-{i}");
         }
 
         progresses.retain_mut(|(_, ttl)| {

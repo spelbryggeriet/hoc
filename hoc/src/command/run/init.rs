@@ -46,7 +46,7 @@ fn generate_ssh_keys(admin_username: String, admin_password: Secret<&str>) -> (S
     *key_pair.comment_mut() = admin_username;
 
     let pub_key = key_pair.serialize_publickey()?;
-    let priv_key = key_pair.serialize_openssh(Some(&*admin_password), Cipher::Aes256_Ctr)?;
+    let priv_key = key_pair.serialize_openssh(Some(*admin_password), Cipher::Aes256_Ctr)?;
 
     let randomart = key_pair.fingerprint_randomart(FingerprintHash::SHA256)?;
     info!("Fingerprint randomart:\n{randomart}");
