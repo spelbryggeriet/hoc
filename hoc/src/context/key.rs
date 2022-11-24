@@ -229,18 +229,9 @@ impl<'a> KeyComponent<'a> {
 
 #[derive(Debug, Error)]
 pub enum Error {
-    #[error(r#"Key already exists: "{0}""#)]
+    #[error("Key already exists: {0}")]
     KeyAlreadyExists(KeyOwned),
 
-    #[error(r#"Key does not exist: "{0}""#)]
+    #[error("Key does not exist: {0}")]
     KeyDoesNotExist(KeyOwned),
-
-    #[error(r#"Unexpected leading `/` in key: "{0}"#)]
-    LeadingForwardSlash(KeyOwned),
-
-    #[error(r#"Unexpected `.` in key: "{0}"#)]
-    SingleDotComponent(String),
-
-    #[error(r#"Unexpected `..` in key: "{0}""#)]
-    DoubleDotComponent(String),
 }

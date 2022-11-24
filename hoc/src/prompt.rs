@@ -26,6 +26,8 @@ pub struct PromptBuilder<'a, T, S> {
     default: Option<Cow<'static, str>>,
     initial_input: Option<&'a str>,
     help_message: Option<&'a str>,
+    verification: bool,
+    hidden: bool,
     _output_type: PhantomData<T>,
     _state: PhantomData<S>,
 }
@@ -40,24 +42,32 @@ impl<'a, T> PromptBuilder<'a, T, NonSecret> {
             default: None,
             initial_input: None,
             help_message: None,
+            verification: true,
+            hidden: false,
             _output_type: Default::default(),
             _state: Default::default(),
         }
     }
 
     pub fn as_secret(self) -> PromptBuilder<'a, T, AsSecret> {
+        self.convert()
+    }
+}
+
+impl<'a, T, S> PromptBuilder<'a, T, S> {
+    fn convert<U>(self) -> PromptBuilder<'a, T, U> {
         PromptBuilder {
             message: self.message,
             default: self.default,
             initial_input: self.initial_input,
             help_message: self.help_message,
+            verification: self.verification,
+            hidden: self.hidden,
             _output_type: self._output_type,
             _state: Default::default(),
         }
     }
-}
 
-impl<'a, T, S> PromptBuilder<'a, T, S> {
     pub fn with_default(mut self, default: impl Into<Cow<'static, str>>) -> Self {
         self.default.replace(default.into());
         self
@@ -71,6 +81,16 @@ impl<'a, T, S> PromptBuilder<'a, T, S> {
     pub fn with_help_message(mut self, help_message: &'a str) -> Self {
         self.help_message.replace(help_message);
         self
+    }
+
+    pub fn without_verification(mut self) -> PromptBuilder<'a, T, AsSecret> {
+        self.verification = false;
+        self.convert()
+    }
+
+    pub fn hidden(mut self) -> PromptBuilder<'a, T, AsSecret> {
+        self.hidden = true;
+        self.convert()
     }
 }
 
@@ -164,7 +184,9 @@ where
 {
     #[throws(Error)]
     pub fn get(self) -> Secret<T> {
-        let pause_lock = log::pause_rendering(4)?;
+        let extra_pause_height = self.verification as usize + !self.hidden as usize;
+        let pause_height = 2 + extra_pause_height;
+        let pause_lock = log::pause_rendering(pause_height)?;
 
         let prompt = format!("{}:", self.message);
         let prompt_confirm = format!("{} (confirm):", self.message);
@@ -186,16 +208,25 @@ where
             .with_global_indentation(pause_lock.indentation() as u16)
             .with_help_message(StyleSheet::default().with_fg(Color::DarkBlue));
 
-        let text = Password::new(&prompt)
+        let mut text = Password::new(&prompt)
             .with_render_config(render_config)
             .with_custom_confirmation_message(&prompt_confirm)
-            .with_display_mode(PasswordDisplayMode::Masked)
-            .with_display_toggle_enabled()
-            .with_help_message("Ctrl-R to reveal/hide")
             .with_validator(validator);
 
+        if !self.verification {
+            text = text.without_confirmation();
+        }
+
+        text = if self.hidden {
+            text.with_display_mode(PasswordDisplayMode::Hidden)
+        } else {
+            text.with_display_mode(PasswordDisplayMode::Masked)
+                .with_help_message("Ctrl-R to reveal/hide")
+                .with_display_toggle_enabled()
+        };
+
         let res = text.prompt();
-        postpad(2);
+        postpad(extra_pause_height as u16);
 
         let secret = Secret::new(T::from_str(res?.trim()).unwrap_or_else(|_| unreachable!()));
         pause_lock.finish_with_message(Level::Info, format!("{}: {secret}", self.message));

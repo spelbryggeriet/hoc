@@ -1,6 +1,6 @@
 use std::{
     borrow::Cow,
-    fmt::{self, Formatter},
+    fmt::{self, Display, Formatter},
     fs::File as BlockingFile,
     future::Future,
     future::IntoFuture,
@@ -24,7 +24,7 @@ use tokio::{
 use self::{
     fs::{cache::Cache, files::Files, temp::Temp, CachedFileFn},
     key::Key,
-    kv::{Item, Kv, PutOptions},
+    kv::{Item, Kv, PutOptions, Value},
 };
 use crate::{ledger::Ledger, prelude::*, prompt};
 
@@ -153,8 +153,11 @@ impl Context {
     }
 
     #[throws(anyhow::Error)]
-    pub fn persist(&self) {
+    pub async fn persist(&self) {
         progress!("Persisting context");
+
+        debug!("Dropping temporary values");
+        self.kv.write().await.drop_temporary_values();
 
         debug!("Opening context file for writing");
         let file = BlockingFile::options()
@@ -167,7 +170,7 @@ impl Context {
 
         debug!("Cleaning temporary files");
         let temp = self.temp.write();
-        task::block_in_place(|| Handle::current().block_on(async { temp.await.clean().await }))?;
+        temp.await.clean().await?;
     }
 }
 
@@ -278,7 +281,7 @@ pub struct KvBuilder<'a, O> {
 }
 
 pub enum All {}
-pub enum _Put {}
+pub enum Put {}
 
 impl<'a> KvBuilder<'a, All> {
     pub fn new(key: Cow<'a, Key>) -> Self {
@@ -289,7 +292,7 @@ impl<'a> KvBuilder<'a, All> {
         }
     }
 
-    pub fn _temporary(self) -> KvBuilder<'a, _Put> {
+    pub fn temporary(self) -> KvBuilder<'a, Put> {
         KvBuilder {
             key: self.key,
             temporary: true,
@@ -305,9 +308,10 @@ impl<'a> KvBuilder<'a, All> {
 
 impl<'a, O> KvBuilder<'a, O> {
     #[throws(kv::Error)]
-    pub async fn put<V: Into<kv::Value>>(self, value: V) {
-        let value = value.into();
-
+    pub async fn put<V>(self, value: V)
+    where
+        V: Into<Value> + Clone + Display + Send + 'static,
+    {
         let previous_value = get_context().kv_mut().await.put_value(
             &self.key,
             value.clone(),
@@ -317,17 +321,17 @@ impl<'a, O> KvBuilder<'a, O> {
             },
         )?;
 
-        if previous_value != Some(None) {
-            Ledger::get_or_init().lock().await.add(kv::ledger::Put::new(
+        if !self.temporary && previous_value != Some(None) {
+            Ledger::get_or_init().lock().await.add(ledger::Put::new(
                 self.key.into_owned(),
                 value,
-                previous_value.flatten(),
+                previous_value.flatten().map(Secret::new),
             ));
         }
     }
 }
 
-type KvBuilderFuture<'a> = Pin<Box<dyn Future<Output = Result<Item, kv::Error>> + 'a>>;
+type KvBuilderFuture<'a> = Pin<Box<dyn Future<Output = Result<Item, kv::Error>> + Send + 'a>>;
 
 impl<'a> IntoFuture for KvBuilder<'a, All> {
     type IntoFuture = KvBuilderFuture<'a>;
@@ -351,4 +355,67 @@ pub enum Error {
 
     #[error(transparent)]
     _Custom(#[from] anyhow::Error),
+}
+
+pub mod ledger {
+    use std::{borrow::Cow, fmt::Display};
+
+    use async_trait::async_trait;
+
+    use crate::{
+        context::{
+            self,
+            key::KeyOwned,
+            kv::{PutOptions, Value},
+        },
+        ledger::Transaction,
+        util::Secret,
+    };
+
+    pub struct Put<V> {
+        key: KeyOwned,
+        current_value: V,
+        previous_value: Option<Secret<Value>>,
+    }
+
+    impl<V> Put<V> {
+        pub fn new(key: KeyOwned, current_value: V, previous_value: Option<Secret<Value>>) -> Self {
+            Self {
+                key,
+                current_value,
+                previous_value,
+            }
+        }
+    }
+
+    #[async_trait]
+    impl<V: Into<Value> + Display + Send + 'static> Transaction for Put<V> {
+        fn description(&self) -> Cow<'static, str> {
+            "Put value".into()
+        }
+
+        fn detail(&self) -> Cow<'static, str> {
+            format!("Value to revert: {}", self.current_value).into()
+        }
+
+        async fn revert(mut self: Box<Self>) -> anyhow::Result<()> {
+            let mut kv = context::get_context().kv_mut().await;
+            match self.previous_value.take() {
+                Some(previous_value) => {
+                    kv.put_value(
+                        self.key,
+                        previous_value,
+                        PutOptions {
+                            force: true,
+                            ..Default::default()
+                        },
+                    )?;
+                }
+                None => {
+                    kv.drop_value(&self.key, true)?;
+                }
+            }
+            Ok(())
+        }
+    }
 }

@@ -1,7 +1,7 @@
 use std::{
     fmt::{self, Display, Formatter},
     fs::File as BlockingFile,
-    io::{Cursor, Read},
+    io::{Cursor, Read, SeekFrom},
     net::IpAddr,
     path::Path,
 };
@@ -9,7 +9,7 @@ use std::{
 use anyhow::Error;
 use tokio::{
     fs::File,
-    io::{self, AsyncWriteExt},
+    io::{self, AsyncSeekExt, AsyncWriteExt},
 };
 use xz2::read::XzDecoder;
 
@@ -58,6 +58,9 @@ async fn download_os_image(file: &mut File, prompt_url: bool) {
 
     let mut os_image_reader = Cursor::new(reqwest::get(os_image_url).await?.bytes().await?);
     io::copy(&mut os_image_reader, file).await?;
+
+    // Reset file.
+    file.seek(SeekFrom::Start(0)).await?;
 }
 
 fn ubuntu_image_url<T: Display>(version: T) -> String {
@@ -84,6 +87,8 @@ async fn validate_os_image(os_image_file_path: &Path) {
 
         bail!("Validation failed");
     }
+
+    info!("File is valid XZ compressed data");
 }
 
 #[throws(Error)]
@@ -101,7 +106,10 @@ async fn decompress_xz_file(os_image_file: &mut File, os_image_path: &Path) {
 
     progress!("Saving decompressed image to file");
 
+    // Truncate any existing data.
     os_image_file.set_len(0).await?;
+
+    // Write to file.
     os_image_file.write_all(&image_data).await?;
 }
 

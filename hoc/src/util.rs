@@ -12,7 +12,7 @@ use rand::seq::SliceRandom;
 use crate::{
     context::{
         key::{Key, KeyOwned},
-        kv::{self, Item},
+        kv::{self, Item, Value},
     },
     prelude::*,
 };
@@ -98,11 +98,16 @@ pub fn random_string(source: &str, len: usize) -> String {
     sample.choose_multiple(&mut rng, len).collect()
 }
 
+#[derive(Clone)]
 pub struct Secret<T>(T);
 
 impl<T> Secret<T> {
     pub fn new(inner: T) -> Self {
         Self(inner)
+    }
+
+    pub fn into_non_secret(self) -> T {
+        self.0
     }
 }
 
@@ -138,6 +143,15 @@ where
     fn from_str(path: &str) -> Self {
         let secret = fs::read_to_string(path)?;
         Secret(T::from_str(&secret).map_err(Into::into)?)
+    }
+}
+
+impl<T> From<Secret<T>> for Value
+where
+    Self: From<T>,
+{
+    fn from(secret: Secret<T>) -> Self {
+        Self::from(secret.0)
     }
 }
 

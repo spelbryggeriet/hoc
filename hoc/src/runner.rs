@@ -8,12 +8,13 @@ use std::{
 use async_trait::async_trait;
 use thiserror::Error;
 use tokio::{
-    io::{self, AsyncBufReadExt, AsyncRead, BufReader},
+    io::{self, AsyncBufReadExt, AsyncRead, AsyncWriteExt, BufReader},
     join,
     process::Command,
 };
 
 use crate::{
+    context::kv::{self, Item, Value},
     ledger::{Ledger, Transaction},
     prelude::*,
     prompt,
@@ -182,21 +183,43 @@ impl<C> CmdBuilder<C> {
         R: for<'a> RunLoopEventFn<'a, Self, Result<(), Error>>,
         A: for<'a> RunLoopEventFn<'a, Self, ()>,
     {
+        let sudo_str = if self.sudo { "sudo " } else { "" };
+        let runnable_sudo_str = if self.sudo { "sudo -kSp '' " } else { "" };
+
         let mut cmd = get_raw_forward_cmd(&self.cmd);
-        if self.sudo {
-            cmd = Cow::Owned(format!("sudo {cmd}"));
-        }
+        let mut runnable_cmd = format!("{runnable_sudo_str}{cmd}");
 
-        let mut run_progress = Some(progress_with_handle!("Running command: {cmd}"));
+        let mut pipe_input = Vec::new();
 
+        let mut progress_desc = "Running command";
         let mut retrying = false;
         return loop {
-            info!("Host: this computer");
+            let mut password_to_cache = None;
+            if self.sudo {
+                if let Ok(Item::Value(Value::String(password))) = kv!("admin/password").await {
+                    pipe_input.push(Cow::Owned(password));
+                } else {
+                    let password: Secret<String> = prompt!("[sudo] Password")
+                        .without_verification()
+                        .hidden()
+                        .get()?;
+                    password_to_cache.replace(password.clone());
+                    pipe_input.push(Cow::Owned(password.into_non_secret()));
+                }
+            }
 
-            match self.exec(&cmd, retrying).await {
+            let handle = progress_with_handle!("{progress_desc}: {sudo_str}{cmd}");
+            info!("Host: this computer");
+            let res = self.exec(&runnable_cmd, &mut pipe_input, retrying).await;
+            handle.finish();
+
+            match res {
                 Ok(output) => {
                     if let Some(on_ok) = on_ok {
                         on_ok(&self).await;
+                    }
+                    if let Some(password) = password_to_cache {
+                        kv!("admin/password").temporary().put(password).await?;
                     }
                     break output;
                 }
@@ -235,6 +258,7 @@ impl<C> CmdBuilder<C> {
                         let new_cmd = Cow::Owned(prompt.get()?);
                         if new_cmd != cmd {
                             cmd = new_cmd;
+                            runnable_cmd = format!("{runnable_sudo_str}{cmd}");
                             is_revertible = false;
                             on_ok.take();
                             on_revert.take();
@@ -244,13 +268,11 @@ impl<C> CmdBuilder<C> {
                         }
                     }
 
-                    run_progress.take();
-                    let new_progress = if opt == Opt::Rerun {
-                        progress_with_handle!("Re-running command: {cmd}")
+                    progress_desc = if opt == Opt::Rerun {
+                        "Re-running command"
                     } else {
-                        progress_with_handle!("Running modified command: {cmd}")
+                        "Running modified command"
                     };
-                    run_progress.replace(new_progress);
 
                     retrying = true;
                 }
@@ -260,7 +282,12 @@ impl<C> CmdBuilder<C> {
     }
 
     #[throws(Error)]
-    pub async fn exec(&self, raw_cmd: &str, override_show_output: bool) -> Output {
+    pub async fn exec(
+        &self,
+        raw_cmd: &str,
+        pipe_input: &mut Vec<Cow<'_, str>>,
+        override_show_output: bool,
+    ) -> Output {
         let mut cmd = Command::new("sh");
         cmd.args(["-c", raw_cmd])
             .stdin(Stdio::piped())
@@ -276,6 +303,14 @@ impl<C> CmdBuilder<C> {
                 info!("Standard output hidden");
             } else if self.hide_stderr {
                 info!("Standard error hidden");
+            }
+        }
+
+        if !pipe_input.is_empty() {
+            let mut stdin = child.stdin.take().expect("stdin should not be taken");
+            for input in pipe_input.drain(..) {
+                stdin.write_all(input.as_bytes()).await?;
+                stdin.write_all(b"\n").await?;
             }
         }
 
@@ -311,11 +346,11 @@ impl<C> CmdBuilder<C> {
     }
 }
 
-type RunBuilderFuture = Pin<Box<dyn Future<Output = Result<Output, Error>> + Send>>;
+type CmdBuilderFuture = Pin<Box<dyn Future<Output = Result<Output, Error>> + Send>>;
 
 impl IntoFuture for CmdBuilder<Regular> {
-    type IntoFuture = RunBuilderFuture;
-    type Output = <RunBuilderFuture as Future>::Output;
+    type IntoFuture = CmdBuilderFuture;
+    type Output = <CmdBuilderFuture as Future>::Output;
 
     fn into_future(self) -> Self::IntoFuture {
         Box::pin(self.run())
@@ -323,8 +358,8 @@ impl IntoFuture for CmdBuilder<Regular> {
 }
 
 impl IntoFuture for CmdBuilder<Revertible> {
-    type IntoFuture = RunBuilderFuture;
-    type Output = <RunBuilderFuture as Future>::Output;
+    type IntoFuture = CmdBuilderFuture;
+    type Output = <CmdBuilderFuture as Future>::Output;
 
     fn into_future(self) -> Self::IntoFuture {
         Box::pin(self.run())
@@ -370,6 +405,9 @@ pub enum Error {
 
     #[error(transparent)]
     Prompt(#[from] prompt::Error),
+
+    #[error(transparent)]
+    Kv(#[from] kv::Error),
 
     #[error(transparent)]
     Io(#[from] io::Error),

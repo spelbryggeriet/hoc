@@ -2,6 +2,7 @@ use std::{env, process::ExitCode};
 
 use clap::Parser;
 use scopeguard::defer;
+use tokio::{runtime::Handle, task};
 
 use self::{command::Command, ledger::Ledger, prelude::*};
 
@@ -37,10 +38,14 @@ impl App {
         .await?;
 
         defer! {
-            if let Err(err) = context::get_context().persist() {
-                error!("{err}");
-                return;
-            }
+            task::block_in_place(|| {
+                Handle::current().block_on(async {
+                    if let Err(err) = context::get_context().persist().await {
+                        error!("{err}");
+                        return;
+                    }
+                });
+            });
         }
 
         match self.command.run().await {

@@ -223,9 +223,15 @@ impl Kv {
     ) -> Option<Option<Value>>
     where
         K: Into<KeyOwned>,
-        V: Into<Value>,
+        V: Into<Value> + Clone + Display,
     {
         let key = key.into();
+        let original_value = if log_enabled!(Level::Trace) {
+            Some(value.clone())
+        } else {
+            None
+        };
+        let original_value = original_value.as_ref();
         let value = if !options.temporary {
             ValueType::Persistent(value.into())
         } else {
@@ -260,7 +266,7 @@ impl Kv {
 
                     should_overwrite = opt == Opt::Overwrite;
                     if !should_overwrite {
-                        warn!("Putting {desc}: {key} => {} (skipping)", *value);
+                        original_value.map(|v| warn!("Putting {desc}: {key} => {v} (skipping)"));
                         return Some(None);
                     }
                 }
@@ -275,7 +281,7 @@ impl Kv {
                     } else if existing.is_persistent() && value.is_temporary() {
                         error!("Key {key} is marked as persistent");
                     } else {
-                        debug!("Putting {desc}: {key} => {} (no change)", *value);
+                        original_value.map(|v| debug!("Putting {desc}: {key} => {v} (no change)"));
                         return Some(None);
                     }
 
@@ -285,7 +291,7 @@ impl Kv {
 
                     should_overwrite = opt == Opt::Overwrite;
                     if !should_overwrite {
-                        warn!("Putting {desc}: {key} => {} (skipping)", *value);
+                        original_value.map(|v| warn!("Putting {desc}: {key} => {v} (skipping)"));
                         return Some(None);
                     }
                 }
@@ -294,7 +300,7 @@ impl Kv {
         }
 
         if !should_overwrite {
-            debug!("Putting {desc}: {key} => {}", *value);
+            original_value.map(|v| debug!("Putting {desc}: {key} => {v}"));
         } else {
             if log_enabled!(Level::Trace) {
                 trace!(
@@ -302,15 +308,16 @@ impl Kv {
                     serde_json::to_string(&self.get_item(&*key)?)?
                 );
             }
-            log!(
-                if options.force {
-                    Level::Debug
-                } else {
-                    Level::Warn
-                },
-                "Putting {desc}: {key} => {} (overwriting)",
-                *value,
-            );
+            original_value.map(|v| {
+                log!(
+                    if options.force {
+                        Level::Debug
+                    } else {
+                        Level::Warn
+                    },
+                    "Putting {desc}: {key} => {v} (overwriting)",
+                )
+            });
         }
 
         self.map
@@ -323,7 +330,7 @@ impl Kv {
     pub fn _put_array<K, V, I>(&mut self, key_prefix: K, array: I, options: PutOptions)
     where
         K: Into<KeyOwned>,
-        V: Into<Value>,
+        V: Into<Value> + Clone + Display,
         I: IntoIterator<Item = V>,
     {
         let key_prefix = key_prefix.into();
@@ -336,7 +343,7 @@ impl Kv {
     pub fn _put_map<'key, K, V, Q, I>(&mut self, key_prefix: K, map: I, options: PutOptions)
     where
         K: Into<KeyOwned>,
-        V: Into<Value>,
+        V: Into<Value> + Clone + Display,
         Q: AsRef<Key> + ?Sized + 'key,
         I: IntoIterator<Item = (&'key Q, V)>,
     {
@@ -371,6 +378,11 @@ impl Kv {
             }
             _ => None,
         }
+    }
+
+    pub fn drop_temporary_values(&mut self) {
+        self.map
+            .retain(|_, value| matches!(value, ValueType::Persistent(_)));
     }
 
     fn nested_suffix(full_suffix: &Key) -> Cow<Key> {
@@ -1007,62 +1019,6 @@ pub enum Error {
 impl From<Infallible> for Error {
     fn from(x: Infallible) -> Self {
         x.into()
-    }
-}
-
-pub mod ledger {
-    use std::borrow::Cow;
-
-    use async_trait::async_trait;
-
-    use super::{KeyOwned, PutOptions, Value};
-    use crate::{context, ledger::Transaction};
-
-    pub struct Put {
-        key: KeyOwned,
-        current_value: Value,
-        previous_value: Option<Value>,
-    }
-
-    impl Put {
-        pub fn new(key: KeyOwned, current_value: Value, previous_value: Option<Value>) -> Self {
-            Self {
-                key,
-                current_value,
-                previous_value,
-            }
-        }
-    }
-
-    #[async_trait]
-    impl Transaction for Put {
-        fn description(&self) -> Cow<'static, str> {
-            "Put value".into()
-        }
-
-        fn detail(&self) -> Cow<'static, str> {
-            format!("Value to revert: {}", self.current_value).into()
-        }
-
-        async fn revert(mut self: Box<Self>) -> anyhow::Result<()> {
-            let mut kv = context::get_context().kv_mut().await;
-            match self.previous_value.take() {
-                Some(previous_value) => {
-                    kv.put_value(
-                        self.key,
-                        previous_value,
-                        PutOptions {
-                            force: true,
-                            ..Default::default()
-                        },
-                    )?;
-                }
-                None => {
-                    kv.drop_value(&self.key, true)?;
-                }
-            }
-            Ok(())
-        }
     }
 }
 
