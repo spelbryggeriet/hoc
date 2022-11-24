@@ -31,4 +31,4 @@ jobs:
     - name: Lint
       run: cargo clippy --verbose -- -D warnings
     - name: Run tests
-      run: RUSTFLAGS="-D warnings" cargo test --verbose
+      run: cargo test --verbose
