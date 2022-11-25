@@ -26,3 +26,5 @@ jobs:
           scripts/bumb_version.py $BUMP_VERSION
         env:
           BUMP_VERSION: ${{ inputs.bumpVersion }}
+      - name: Create pull request
+        uses: peter-evans/create-pull-request@v4
