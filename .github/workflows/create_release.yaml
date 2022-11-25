@@ -22,12 +22,13 @@ jobs:
         run: |
           git fetch origin master:master
       - name: Bump version
+        id: bump
         run: |
-          scripts/bumb_version.py $BUMP_VERSION
+          new_version=`scripts/bumb_version.py $BUMP_VERSION`
+          echo "::set-output name=NEW_VERSION::$new_version"
         env:
           BUMP_VERSION: ${{ inputs.bumpVersion }}
-      - name: Create pull request
-        uses: peter-evans/create-pull-request@v4
-        with:
-          branch: develop
-          base: master
+      - name: Commit changes
+        run: |
+          git config user.name "release"
+          git commit -a -m "Prepare Release v${{steps.bump.outputs.NEW_VERSION}}"
