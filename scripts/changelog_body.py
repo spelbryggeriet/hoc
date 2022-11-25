@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import datetime
+import json
 import os
 import subprocess
 import sys
@@ -38,7 +39,7 @@ def get_changelog_body(version):
     if len(body_without_title_suffix) == 1:
         error("invalid changelog format")
 
-    return body_without_title_suffix[1].strip()
+    return json.dumps(body_without_title_suffix[1].strip())
 
 
 if __name__ == "__main__":

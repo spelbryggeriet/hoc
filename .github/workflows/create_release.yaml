@@ -54,7 +54,7 @@ jobs:
             https://api.github.com/repos/${{ github.repository }}/pulls \
             -d "{
               \"title\": \"Release v${NEW_VERSION}\",
-              \"body\": \"Bump version to v${NEW_VERSION}.\",
+              \"body\": \"Bump to version v${NEW_VERSION}.\",
               \"head\": \"develop\",
               \"base\": \"master\"
             }" \
@@ -74,7 +74,7 @@ jobs:
             "tag_name": "v${NEW_VERSION}",
             "target_commitish": "master",
             "name": "v${NEW_VERSION}",
-            "body": "${changelog_body}",
+            "body": ${changelog_body},
             "draft": true,
             "prerelease": false,
             "generate_release_notes": false
