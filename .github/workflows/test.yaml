@@ -5,6 +5,7 @@ on:
     branches: [ develop ]
     paths-ignore:
     - 'README.md'
+    - 'scripts/**'
     - '.gitignore'
     - '.github/**'
     - '!.github/workflows/rust.yml'
@@ -12,6 +13,7 @@ on:
     branches: [ develop ]
     paths-ignore:
     - 'README.md'
+    - 'scripts/**'
     - '.gitignore'
     - '.github/**'
     - '!.github/workflows/rust.yml'
