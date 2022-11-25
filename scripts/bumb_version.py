@@ -58,7 +58,7 @@ def update_manifest(bump_comp_idx):
     EQUALS = "="
     NEW_LINE = "\n"
 
-    manifest_path = os.path.join(SCRIPT_DIR, "../Cargo.toml")
+    manifest_path = os.path.realpath(os.path.join(SCRIPT_DIR, "../Cargo.toml"))
     with open(manifest_path, "r") as f:
         content = f.read()
 
@@ -90,7 +90,7 @@ def update_manifest(bump_comp_idx):
 
 def update_changelog(new_version):
     HEADER_KEY = "## [Unreleased]"
-    changelog_path = os.path.join(SCRIPT_DIR, "../CHANGELOG.md")
+    changelog_path = os.path.realpath(os.path.join(SCRIPT_DIR, "../CHANGELOG.md"))
     stdout, stderr = run("git", "diff", f"master:{changelog_path}", f"HEAD:{changelog_path}", changelog_path)
 
     if len(stderr) > 0:
