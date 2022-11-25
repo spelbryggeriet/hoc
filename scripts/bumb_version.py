@@ -93,13 +93,10 @@ def update_changelog(new_version):
     changelog_path = os.path.join(SCRIPT_DIR, "../CHANGELOG.md")
     stdout, stderr = run("git", "diff", f"master:{changelog_path}", f"HEAD:{changelog_path}", changelog_path)
 
+    if len(stderr) > 0:
+        error(stderr.strip())
     if len(stdout) == 0:
-        if len(stderr) > 0:
-            expected_error = f"fatal: path '{changelog_path}' exists on disk, but not in 'master'"
-            if stderr.strip() != expected_error:
-                error(stderr.strip())
-        else:
-            error("no changes have been made to the changelog")
+        error("no changes have been made to the changelog")
 
     with open(changelog_path, "r") as f:
         content = f.read()
