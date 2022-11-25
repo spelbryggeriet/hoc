@@ -28,7 +28,14 @@ jobs:
           echo "::set-output name=NEW_VERSION::$new_version"
         env:
           BUMP_VERSION: ${{ inputs.bumpVersion }}
-      - name: Commit changes
+      - name: Commit
         run: |
-          git config user.name "release"
-          git commit -a -m "Prepare Release v${{steps.bump.outputs.NEW_VERSION}}"
+          git \
+            -c author.name=${{ github.actor }} \
+            -c author.email=${{ github.actor }}@users.noreply.github.com \
+            -c committer.name=Github \
+            -c committer.email=noreply@github.com \
+            commit -a -m "Prepare release v${{steps.bump.outputs.NEW_VERSION}}"
+      - name: Push
+        run:
+          git push
