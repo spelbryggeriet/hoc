@@ -7,6 +7,7 @@ import sys
 
 
 SCRIPT_DIR = os.path.dirname(os.path.realpath(__file__))
+REPO_DIR = os.path.realpath(os.path.join(SCRIPT_DIR, ".."))
 
 
 def eprint(*args, **kwargs):
@@ -58,7 +59,7 @@ def update_manifest(bump_comp_idx):
     EQUALS = "="
     NEW_LINE = "\n"
 
-    manifest_path = os.path.realpath(os.path.join(SCRIPT_DIR, "../Cargo.toml"))
+    manifest_path = os.path.join(REPO_DIR, "Cargo.toml")
     with open(manifest_path, "r") as f:
         content = f.read()
 
@@ -90,8 +91,10 @@ def update_manifest(bump_comp_idx):
 
 def update_changelog(new_version):
     HEADER_KEY = "## [Unreleased]"
-    changelog_path = os.path.realpath(os.path.join(SCRIPT_DIR, "../CHANGELOG.md"))
-    stdout, stderr = run("git", "diff", f"master:{changelog_path}", f"HEAD:{changelog_path}", changelog_path)
+    CHANGELOG_NAME = "CHANGELOG.md"
+
+    changelog_path = os.path.join(REPO_DIR, CHANGELOG_NAME)
+    stdout, stderr = run("git", "-C", REPO_DIR, "diff", "master", "HEAD", "--", CHANGELOG_NAME)
 
     if len(stderr) > 0:
         error(stderr.strip())
