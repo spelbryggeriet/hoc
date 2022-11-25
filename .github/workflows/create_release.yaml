@@ -12,11 +12,17 @@ on:
         - patch
         - minor
         - major
-  
+
 jobs:
-  log-the-inputs:
+  create-release:
     runs-on: ubuntu-latest
     steps:
-      - run: "scripts/bumb_version.py $BUMP_VERSION"
+      - uses: actions/checkout@v3
+      - name: Fetch master
+        run: |
+          git fetch origin master:master
+      - name: Bump version
+        run: |
+          scripts/bumb_version.py $BUMP_VERSION
         env:
           BUMP_VERSION: ${{ inputs.bumpVersion }}
