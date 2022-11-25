@@ -12,18 +12,52 @@ on:
         - patch
         - minor
         - major
-      changelog:
-        description: "Changelog"
-        required: true
-        type: string
-  
+
 jobs:
-  log-the-inputs:
+  create-release:
     runs-on: ubuntu-latest
     steps:
-      - run: |
-          echo "Bump version: $BUMP_VERSION"
-          echo "Changelog: $CHANGELOG"
+      - uses: actions/checkout@v3
+      - name: Check branch
+        run: |
+          if [[ ! `git branch --show-current` = 'develop' ]] ; then
+            echo "Releases can only be created from the \`develop\` branch" >&2
+            exit 1
+          fi
+      - name: Fetch master
+        run: |
+          git fetch origin master:master
+      - name: Bump version
+        id: bump
+        run: |
+          new_version=`scripts/bumb_version.py $BUMP_VERSION`
+          echo "::set-output name=NEW_VERSION::$new_version"
         env:
           BUMP_VERSION: ${{ inputs.bumpVersion }}
-          CHANGELOG: ${{ inputs.changelog }}
+      - name: Commit
+        run: |
+          git \
+            -c author.name=${{ github.actor }} \
+            -c author.email=${{ github.actor }}@users.noreply.github.com \
+            -c committer.name=Github \
+            -c committer.email=noreply@github.com \
+            commit -a -m "Prepare release v${{steps.bump.outputs.NEW_VERSION}}"
+      - name: Push
+        run: |
+          git push
+      - name: Create pull request
+        run: |
+          curl \
+            -X POST \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            https://api.github.com/repos/${{ github.repository }}/pulls \
+            -d "{
+              \"title\": \"Release v${NEW_VERSION}\",
+              \"body\": \"Bump version to v${NEW_VERSION}.\",
+              \"head\": \"develop\",
+              \"base\": \"master\"
+            }" \
+            --fail
+        env:
+          NEW_VERSION: ${{ steps.bump.outputs.NEW_VERSION }}
