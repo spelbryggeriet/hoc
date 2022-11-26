@@ -84,6 +84,7 @@ jobs:
       REPO: ${{ github.repository }}
       NEW_VERSION: ${{ jobs.bum-pversion.outputs.new-version }}
     runs-on: ubuntu-latest
+    steps:
       - name: Create pull request
         id: cpr
         uses: octokit/request-action@v2
