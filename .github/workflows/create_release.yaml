@@ -55,6 +55,8 @@ jobs:
   build:
     needs: bump-version
     runs-on: macos-latest
+    outputs:
+      artifact-name: ${{ steps.zza.outputs.artifact-name }}
     steps:
     - uses: actions/checkout@v3
       with:
@@ -72,14 +74,19 @@ jobs:
         command: build
         args: --release --verbose
     - name: Zip artifact
+      id: za
       run: |
+          artifact_name="hoc_v${NEW_VERSION//./_}_macos"
           cd target/release
-          zip -r ../../hoc_macos.zip hoc
+          zip -r ../../${artifact_name}.zip hoc
+          echo "artifact-name=$artifact_name" >> $GITHUB_OUTPUT
     - name: Upload artifact
       uses: actions/upload-artifact@v2
       with:
-        name: hoc_macos
-        path: hoc_macos.zip
+        name: ${{ env.ARTIFACT_NAME }}
+        path: ${{ env.ARTIFACT_NAME }}.zip
+      env:
+        ARTIFACT_NAME: ${{ steps.zza.outputs.artifact-name }}
       
   create-release:
     needs: [bump-version, build]
@@ -87,6 +94,7 @@ jobs:
       GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       REPO: ${{ github.repository }}
       NEW_VERSION: ${{ needs.bump-version.outputs.new-version }}
+      ARTIFACT_NAME: ${{ needs.build.outputs.artifact-name }}
     runs-on: ubuntu-latest
     steps:
       - name: Create pull request
@@ -104,7 +112,7 @@ jobs:
           route: PUT /repos/${{ env.REPO }}/pulls/${{ env.PULL_NUMBER }}/merge
           merge_method: rebase
         env:
-          PULL_NUMBER: ${{ fromJson(steps.cpr.outputs.data).id }}
+          PULL_NUMBER: ${{ fromJson(steps.cpr.outputs.data).number }}
       - name: Get changelog body
         id: gcb
         run: |
@@ -123,7 +131,7 @@ jobs:
       - name: Download artifact
         uses: actions/download-artifact@v3
         with:
-          name: hoc_macos
+          name: ${{ env.ARTIFACT_NAME }}
           path: artifact
       - name: Upload artifact
         run: |
@@ -133,7 +141,7 @@ jobs:
             -H "Authorization: Bearer ${GITHUB_TOKEN}" \
             -H "Content-Type: application/zip" \
             --data-binary @artifact/hoc \
-            https://uploads.github.com/repos/${REPO}/releases/${RELEASE_ID}/assets?name=hoc_macos.zip
+            https://uploads.github.com/repos/${REPO}/releases/${RELEASE_ID}/assets?name=${ARTIFACT_NAME}.zip
         env:
           RELEASE_ID: ${{ fromJson(steps.crd.outputs.data).id }}
       - name: Publish release
