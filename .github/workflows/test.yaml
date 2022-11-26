@@ -38,6 +38,12 @@ jobs:
     - name: Cache Rust
       uses: Swatinem/rust-cache@v2
     - name: Lint
-      run: cargo clippy --verbose -- -D warnings
+      uses: actions-rs/cargo@v1
+      with:
+        command: clippy
+        args: --verbose -- -D warnings
     - name: Run tests
-      run: cargo test --verbose
+      uses: actions-rs/cargo@v1
+      with:
+        command: test
+        args: --verbose
