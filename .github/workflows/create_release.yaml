@@ -78,11 +78,11 @@ jobs:
         path: hoc_macos.zip
       
   create-release:
-    needs: build
+    needs: [bump-version, build]
     env:
       GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       REPO: ${{ github.repository }}
-      NEW_VERSION: ${{ jobs.bum-pversion.outputs.new-version }}
+      NEW_VERSION: ${{ needs.bump-version.outputs.new-version }}
     runs-on: ubuntu-latest
     steps:
       - name: Create pull request
