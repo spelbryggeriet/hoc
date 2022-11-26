@@ -86,7 +86,7 @@ jobs:
         name: ${{ env.ARTIFACT_NAME }}
         path: ${{ env.ARTIFACT_NAME }}.zip
       env:
-        ARTIFACT_NAME: ${{ steps.zza.outputs.artifact-name }}
+        ARTIFACT_NAME: ${{ steps.za.outputs.artifact-name }}
       
   create-release:
     needs: [bump-version, build]
