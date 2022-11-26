@@ -91,7 +91,7 @@ jobs:
     steps:
       - name: Create pull request
         id: cpr
-        uses: octokit/request-action@v2
+        uses: octokit/request-action@v2.x
         with:
           route: POST /repos/${{ env.REPO }}/pulls
           title: Release v${{ env.NEW_VERSION }}
@@ -99,7 +99,7 @@ jobs:
           base: master
           head: develop
       - name: Merge pull request
-        uses: octokit/request-action@v2
+        uses: octokit/request-action@v2.x
         with:
           route: PUT /repos/${{ env.REPO }}/pulls/${{ env.PULL_NUMBER }}/merge
           merge_method: rebase
@@ -112,7 +112,7 @@ jobs:
           echo "changelog-body=${changelog_body}" >> $GITHUB_OUTPUT
       - name: Create release draft
         id: crd
-        uses: octokit/request-action@v2
+        uses: octokit/request-action@v2.x
         with:
           route: POST /repos/${{ env.REPO }}/releases
           tag_name: v${{ env.NEW_VERSION }}
@@ -137,7 +137,7 @@ jobs:
         env:
           RELEASE_ID: ${{ fromJson(steps.crd.outputs.data).id }}
       - name: Publish release
-        uses: octokit/request-action@v2
+        uses: octokit/request-action@v2.x
         with:
           route: PATCH /repos/${{ env.REPO }}/releases/${{ env.RELEASE_ID }}
           draft: false
