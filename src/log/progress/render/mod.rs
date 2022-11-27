@@ -23,6 +23,10 @@ mod view;
 mod anim;
 mod term;
 
+pub fn init() {
+    RenderThread::get_or_init();
+}
+
 #[throws(Error)]
 pub fn cleanup() {
     if let Some(render_thread) = RenderThread::cell().get() {

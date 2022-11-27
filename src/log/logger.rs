@@ -28,7 +28,7 @@ pub struct Logger {
 impl Logger {
     #[throws(Error)]
     pub(super) fn init() {
-        let level_str = env::var("RUST_LOG")
+        let level_str = env::var("HOC_LOG")
             .map(|v| Cow::Owned(v.to_uppercase()))
             .unwrap_or(Cow::Borrowed(MAX_DEFAULT_LEVEL.as_str()));
         let level = match &*level_str {

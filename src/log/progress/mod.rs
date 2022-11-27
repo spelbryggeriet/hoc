@@ -13,6 +13,10 @@ use render::PauseLock;
 
 mod render;
 
+pub fn init() {
+    render::init();
+}
+
 #[throws(Error)]
 pub fn cleanup() {
     render::cleanup()?;

@@ -87,6 +87,7 @@ pub struct DebugPromptCommand {}
 #[clap(name = "upgrade")]
 pub struct UpgradeCommand {
     /// The git ref to compile the source code from
+    #[clap(long)]
     from_ref: Option<String>,
 }
 
@@ -166,15 +167,16 @@ impl Command {
 
         match self {
             Upgrade(upgrade_command) => {
-                diagnostics!(UpgradeCommand);
+                cmd_diagnostics!(UpgradeCommand);
 
                 let from_ref = upgrade_command.from_ref;
+                arg_diagnostics!(from_ref);
 
                 upgrade::run(from_ref).await?;
             }
 
             Init(init_command) => {
-                diagnostics!(InitCommand);
+                cmd_diagnostics!(InitCommand);
 
                 let node_addresses = get_arg!(init_command.node_addresses, default = init)?;
                 let gateway = get_arg!(init_command.gateway, default = init)?;
@@ -194,7 +196,7 @@ impl Command {
 
             SdCard(sd_card_command) => match sd_card_command {
                 SdCardCommand::Prepare(_prepare_command) => {
-                    diagnostics!(SdCardPrepareCommand);
+                    cmd_diagnostics!(SdCardPrepareCommand);
                     sd_card::prepare::run().await?;
                 }
             },
@@ -208,12 +210,12 @@ impl Command {
             #[cfg(debug_assertions)]
             Debug(debug_command) => match debug_command {
                 DebugCommand::Progress(_progress_command) => {
-                    diagnostics!(DebugProgressCommand);
+                    cmd_diagnostics!(DebugProgressCommand);
                     debug::progress::run();
                 }
 
                 DebugCommand::Prompt(_prompt_command) => {
-                    diagnostics!(DebugPromptCommand);
+                    cmd_diagnostics!(DebugPromptCommand);
                     debug::prompt::run()?;
                 }
             },

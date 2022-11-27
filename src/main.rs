@@ -20,8 +20,6 @@ mod prompt;
 mod runner;
 mod util;
 
-const EXPECT_HOME_ENV_VAR: &str = "HOME environment variable not set";
-
 fn data_dir() -> PathBuf {
     let home_dir = env::var("HOME").expect(EXPECT_HOME_ENV_VAR);
     PathBuf::from(format!("{home_dir}/.local/share/hoc"))
@@ -64,9 +62,9 @@ async fn main() -> ExitCode {
         }
     }
 
-    Context::get_or_init().load().await?;
-
     let res = if app.command.needs_context() {
+        Context::get_or_init().load().await?;
+
         defer! {
             task::block_in_place(|| {
                 Handle::current().block_on(async {

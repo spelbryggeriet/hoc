@@ -14,6 +14,7 @@ mod progress;
 #[throws(Error)]
 pub fn init() {
     Logger::init()?;
+    progress::init();
 }
 
 #[throws(Error)]
