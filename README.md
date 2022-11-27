@@ -1,3 +1,21 @@
+# Hosting on Command
+
+`hoc` is a tool for easily deploying and managing your own home network cluster. It keeps track
+of all the necessary files and configuration for you, so you spend less time on being a system
+administrator and more time on developing services for your cluster.
+
+## Installation
+
+Run the following in your terminal:
+
+```sh
+curl --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/spelbryggeriet/hoc/master/init.sh | sh
+```
+
+This will install the binary to `~/.local/bin` and update your PATH environment variable.
+
+# TODO: Everything below here needs to be updated / removed
+
 # HomePi Hosting Tools
 The purpose of this tool is to help deploy clusterizd HomePi applications to a
 Raspberry Pi kubernetes cluster.
