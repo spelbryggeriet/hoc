@@ -23,19 +23,20 @@ pub struct Cache {
     #[serde(flatten)]
     map: IndexMap<KeyOwned, PathBuf>,
 
-    #[serde(skip)]
-    pub(in crate::context) cache_dir: PathBuf,
+    #[serde(skip, default = "Cache::cache_dir")]
+    cache_dir: PathBuf,
 }
 
 impl Cache {
-    pub(in crate::context) fn new<P>(cache_dir: P) -> Self
-    where
-        P: Into<PathBuf>,
-    {
+    pub(in crate::context) fn new() -> Self {
         Self {
             map: IndexMap::new(),
-            cache_dir: cache_dir.into(),
+            cache_dir: Self::cache_dir(),
         }
+    }
+
+    fn cache_dir() -> PathBuf {
+        crate::cache_dir().join("cache")
     }
 
     #[throws(Error)]
@@ -206,7 +207,7 @@ pub mod ledger {
     use tokio::fs;
 
     use crate::{
-        context::{self, key::KeyOwned},
+        context::{key::KeyOwned, Context},
         ledger::Transaction,
         prelude::*,
     };
@@ -245,7 +246,7 @@ pub mod ledger {
                     fs::rename(previous_file, current_file).await?;
                 }
                 None => {
-                    context::get_context()
+                    Context::get_or_init()
                         .cache_mut()
                         .await
                         .remove_file(&self.key, true)

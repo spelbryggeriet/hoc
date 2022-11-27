@@ -13,7 +13,7 @@ use tokio::{
 use crate::{context::Error, prelude::*, util};
 
 pub struct Temp {
-    pub(in crate::context) files_dir: PathBuf,
+    temp_dir: PathBuf,
 }
 
 impl Temp {
@@ -21,18 +21,9 @@ impl Temp {
                               abcdefghijklmnopqrstuvxyz\
                               0123456789";
 
-    pub(in crate::context) fn new<P>(files_dir: P) -> Self
-    where
-        P: Into<PathBuf>,
-    {
+    pub(in crate::context) fn new() -> Self {
         Self {
-            files_dir: files_dir.into(),
-        }
-    }
-
-    pub(in crate::context) fn empty() -> Self {
-        Self {
-            files_dir: PathBuf::new(),
+            temp_dir: crate::cache_dir().join("temp"),
         }
     }
 
@@ -41,9 +32,9 @@ impl Temp {
         let mut file_options = BlockingFile::options();
         file_options.write(true).truncate(true).read(true);
 
-        blocking_fs::create_dir_all(&self.files_dir)?;
+        blocking_fs::create_dir_all(&self.temp_dir)?;
 
-        let mut path = self.files_dir.clone();
+        let mut path = self.temp_dir.clone();
         let mut attempt = 1;
         let file = loop {
             path.push(util::random_string(Self::RAND_CHARS, 10));
@@ -73,7 +64,7 @@ impl Temp {
 
     #[throws(Error)]
     pub async fn clean(&self) {
-        let mut read_dir = match fs::read_dir(&self.files_dir).await {
+        let mut read_dir = match fs::read_dir(&self.temp_dir).await {
             Ok(read_dir) => read_dir,
             Err(err) if err.kind() == io::ErrorKind::NotFound => return,
             Err(err) => throw!(err),

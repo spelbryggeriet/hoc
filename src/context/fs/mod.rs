@@ -8,7 +8,7 @@ use std::{
 use tokio::fs::File;
 
 use crate::{
-    context::{self, key::Key},
+    context::{key::Key, Context},
     ledger::Ledger,
     prelude::*,
 };
@@ -37,12 +37,12 @@ impl FileBuilder<Persisted> {
 
     #[throws(anyhow::Error)]
     pub async fn get(self) -> (File, PathBuf) {
-        context::get_context().files().await.get_file(self.key)?
+        Context::get_or_init().files().await.get_file(self.key)?
     }
 
     #[throws(anyhow::Error)]
     pub async fn create(self) -> (File, PathBuf) {
-        let context = context::get_context();
+        let context = Context::get_or_init();
         let mut previous_path = None;
         let (had_previous_file, (file, path)) = context
             .files_mut()
@@ -86,7 +86,7 @@ where
 {
     #[throws(anyhow::Error)]
     pub async fn get_or_create(self) -> (File, PathBuf) {
-        let context = context::get_context();
+        let context = Context::get_or_init();
         let mut previous_path = None;
         let (had_previous_file, (file, path)) = context
             .cache_mut()
@@ -115,7 +115,7 @@ where
 
     #[throws(anyhow::Error)]
     pub async fn _create_or_overwrite(self) -> (File, PathBuf) {
-        let context = context::get_context();
+        let context = Context::get_or_init();
         let mut previous_path = None;
         let (had_previous_file, (file, path)) = context
             .cache_mut()

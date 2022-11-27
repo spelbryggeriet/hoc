@@ -13,11 +13,6 @@ use render::PauseLock;
 
 mod render;
 
-pub fn init() {
-    Progress::get_or_init();
-    render::init();
-}
-
 #[throws(Error)]
 pub fn cleanup() {
     render::cleanup()?;
