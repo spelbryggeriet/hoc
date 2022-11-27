@@ -1,10 +1,11 @@
-use std::{env, process::ExitCode};
+use std::{env, path::PathBuf, process::ExitCode};
 
+use anyhow::Error;
 use clap::Parser;
 use scopeguard::defer;
 use tokio::{runtime::Handle, task};
 
-use self::{command::Command, ledger::Ledger, prelude::*};
+use self::{command::Command, context::Context, ledger::Ledger, prelude::*};
 
 #[macro_use]
 mod macros;
@@ -17,7 +18,18 @@ mod log;
 mod prelude;
 mod prompt;
 mod runner;
+mod temp;
 mod util;
+
+fn data_dir() -> PathBuf {
+    let home_dir = env::var("HOME").expect(EXPECT_HOME_ENV_VAR);
+    PathBuf::from(format!("{home_dir}/.local/share/hoc"))
+}
+
+fn cache_dir() -> PathBuf {
+    let home_dir = env::var("HOME").expect(EXPECT_HOME_ENV_VAR);
+    PathBuf::from(format!("{home_dir}/.cache/hoc"))
+}
 
 #[derive(Parser)]
 struct App {
@@ -26,27 +38,8 @@ struct App {
 }
 
 impl App {
-    #[throws(anyhow::Error)]
+    #[throws(Error)]
     async fn run(self) {
-        debug!("Feching HOME environment variable");
-        let home_dir = env::var("HOME")?;
-
-        context::init(
-            format!("{home_dir}/.local/share/hoc"),
-            format!("{home_dir}/.cache/hoc"),
-        )
-        .await?;
-
-        defer! {
-            task::block_in_place(|| {
-                Handle::current().block_on(async {
-                    if let Err(err) = context::get_context().persist().await {
-                        error!("{err}");
-                    }
-                });
-            });
-        }
-
         match self.command.run().await {
             Ok(()) => (),
             Err(err) => {
@@ -57,7 +50,7 @@ impl App {
     }
 }
 
-#[throws(anyhow::Error)]
+#[throws(Error)]
 #[tokio::main]
 async fn main() -> ExitCode {
     let app = App::parse();
@@ -70,7 +63,35 @@ async fn main() -> ExitCode {
         }
     }
 
-    let exit_code = match app.run().await {
+    defer! {
+        task::block_in_place(|| {
+            Handle::current().block_on(async {
+                debug!("Cleaning temporary files");
+                if let Err(err) = temp::clean().await {
+                    error!("{err}");
+                }
+            });
+        });
+    }
+
+    let res = if app.command.needs_context() {
+        Context::get_or_init().load().await?;
+
+        defer! {
+            task::block_in_place(|| {
+                Handle::current().block_on(async {
+                    if let Err(err) = Context::get_or_init().persist().await {
+                        error!("{err}");
+                    }
+                });
+            });
+        };
+        app.run().await
+    } else {
+        app.run().await
+    };
+
+    let exit_code = match res {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             error!("{error:?}");

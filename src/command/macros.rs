@@ -1,38 +1,52 @@
-macro_rules! diagnostics {
+macro_rules! cmd_diagnostics {
     ($type:ty) => {{
         debug!("Running {} command", <$type>::command().get_name());
     }};
 }
 
+macro_rules! arg_diagnostics {
+    ($field:ident) => {{
+        if let Some(__inner) = &$field {
+            arg_diagnostics!($field, __inner);
+        }
+    }};
+
+    ($field:ident, $value:ident) => {{
+        let message = ::heck::ToTitleCase::to_title_case(stringify!($field));
+        info!("{message}: {}", $value)
+    }};
+}
+
 macro_rules! get_arg {
     ($self:ident.$field:ident $(, default = $command:ident)? $(,)?) => {{
-        let __message = ::heck::ToTitleCase::to_title_case(stringify!($field));
-        let __value = if let Some(__inner) = $self.$field {
-            info!("{__message}: {__inner}");
-            __inner
+
+        let value = if let Some(inner) = $self.$field {
+            arg_diagnostics!($field, inner);
+            inner
         } else {
-            let __value = prompt!("{__message}")
+            let message = ::heck::ToTitleCase::to_title_case(stringify!($field));
+            let value = prompt!("{message}")
                 $(.with_default(default::$command::$field()))?
                 .get()?;
-            __value
+            value
         };
 
-        ::anyhow::Ok(__value)
+        ::anyhow::Ok(value)
     }};
 }
 
 macro_rules! get_secret_arg {
     ($self:ident.$field:ident $(,)?) => {{
-        let __message = ::heck::ToTitleCase::to_title_case(stringify!($field));
-        let __value = if let Some(__inner) = $self.$field {
-            info!("{__message}: {__inner}");
-            __inner
+        let value = if let Some(inner) = $self.$field {
+            arg_diagnostics!($field, inner);
+            inner
         } else {
-            let __value = prompt!("{__message}").secret().get()?;
-            __value
+            let message = ::heck::ToTitleCase::to_title_case(stringify!($field));
+            let value = prompt!("{message}").secret().get()?;
+            value
         };
 
-        ::anyhow::Ok(__value)
+        ::anyhow::Ok(value)
     }};
 }
 

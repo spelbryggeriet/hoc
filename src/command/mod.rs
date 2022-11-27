@@ -33,7 +33,7 @@ commands_summary! {
     }
 }
 
-/// Hosting on command
+/// Hosting on Command
 ///
 /// `hoc` is a tool for easily deploying and managing your own home network cluster. It keeps track
 /// of all the necessary files and configuration for you, so you spend less time on being a system
@@ -50,6 +50,8 @@ pub enum Command {
     #[cfg(debug_assertions)]
     #[clap(subcommand)]
     Debug(DebugCommand),
+
+    Upgrade(UpgradeCommand),
 
     Init(InitCommand),
 
@@ -79,6 +81,15 @@ pub struct DebugProgressCommand {}
 #[cfg(debug_assertions)]
 #[derive(Parser)]
 pub struct DebugPromptCommand {}
+
+/// Upgrade `hoc` itself
+#[derive(Parser)]
+#[clap(name = "upgrade")]
+pub struct UpgradeCommand {
+    /// The git ref to compile the source code from
+    #[clap(long)]
+    from_ref: Option<String>,
+}
 
 /// Initialize the cluster
 #[derive(Parser)]
@@ -144,11 +155,28 @@ pub enum NodeCommand {
 pub struct NodeDeployCommand {}
 
 impl Command {
+    pub fn needs_context(&self) -> bool {
+        use Command::*;
+
+        !matches!(self, Debug(_) | Upgrade(_))
+    }
+
     #[throws(anyhow::Error)]
     pub async fn run(self) {
+        use Command::*;
+
         match self {
-            Command::Init(init_command) => {
-                diagnostics!(InitCommand);
+            Upgrade(upgrade_command) => {
+                cmd_diagnostics!(UpgradeCommand);
+
+                let from_ref = upgrade_command.from_ref;
+                arg_diagnostics!(from_ref);
+
+                upgrade::run(from_ref).await?;
+            }
+
+            Init(init_command) => {
+                cmd_diagnostics!(InitCommand);
 
                 let node_addresses = get_arg!(init_command.node_addresses, default = init)?;
                 let gateway = get_arg!(init_command.gateway, default = init)?;
@@ -166,28 +194,28 @@ impl Command {
                 init::run(node_addresses, gateway, admin_username, admin_password).await?;
             }
 
-            Command::SdCard(sd_card_command) => match sd_card_command {
+            SdCard(sd_card_command) => match sd_card_command {
                 SdCardCommand::Prepare(_prepare_command) => {
-                    diagnostics!(SdCardPrepareCommand);
+                    cmd_diagnostics!(SdCardPrepareCommand);
                     sd_card::prepare::run().await?;
                 }
             },
 
-            Command::Node(node_command) => match node_command {
+            Node(node_command) => match node_command {
                 NodeCommand::Deploy(_deploy_command) => {}
             },
 
-            Command::Deploy(_deploy_command) => {}
+            Deploy(_deploy_command) => {}
 
             #[cfg(debug_assertions)]
-            Command::Debug(debug_command) => match debug_command {
+            Debug(debug_command) => match debug_command {
                 DebugCommand::Progress(_progress_command) => {
-                    diagnostics!(DebugProgressCommand);
+                    cmd_diagnostics!(DebugProgressCommand);
                     debug::progress::run();
                 }
 
                 DebugCommand::Prompt(_prompt_command) => {
-                    diagnostics!(DebugPromptCommand);
+                    cmd_diagnostics!(DebugPromptCommand);
                     debug::prompt::run()?;
                 }
             },

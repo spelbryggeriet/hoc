@@ -6,6 +6,7 @@ use std::{
 };
 
 use async_trait::async_trait;
+use crossterm::style::Stylize;
 use thiserror::Error;
 use tokio::{
     io::{self, AsyncBufReadExt, AsyncRead, AsyncWriteExt, BufReader},
@@ -37,12 +38,19 @@ async fn read_lines(reader: impl AsyncRead + Unpin, print_line: impl Fn(&str)) -
     out
 }
 
+fn sudo_string(is_sudo: bool) -> Cow<'static, str> {
+    if is_sudo {
+        format!("{} ", "sudo".black().on_yellow()).into()
+    } else {
+        "".into()
+    }
+}
+
 #[derive(Clone)]
 pub struct CmdBuilder<C> {
     cmd: C,
     sudo: bool,
-    hide_stdout: bool,
-    hide_stderr: bool,
+    current_dir: Option<Cow<'static, str>>,
 }
 
 #[derive(Clone)]
@@ -59,20 +67,18 @@ impl CmdBuilder<Regular> {
         Self {
             cmd: Regular(cmd),
             sudo: false,
-            hide_stdout: false,
-            hide_stderr: false,
+            current_dir: None,
         }
     }
 
-    pub fn _revertible(self, revert_cmd: Self) -> CmdBuilder<Revertible> {
+    pub fn revertible(self, revert_cmd: Self) -> CmdBuilder<Revertible> {
         CmdBuilder {
             cmd: Revertible {
                 raw_forward_cmd: self.cmd.0,
                 revert_cmd,
             },
-            sudo: false,
-            hide_stdout: false,
-            hide_stderr: false,
+            sudo: self.sudo,
+            current_dir: self.current_dir,
         }
     }
 
@@ -96,6 +102,7 @@ impl CmdBuilder<Revertible> {
     fn get_transaction(&self) -> impl Transaction {
         struct RevertibleTransaction {
             forward_cmd: Cow<'static, str>,
+            is_forward_cmd_sudo: bool,
             revert_cmd: CmdBuilder<Regular>,
         }
 
@@ -106,7 +113,21 @@ impl CmdBuilder<Revertible> {
             }
 
             fn detail(&self) -> Cow<'static, str> {
-                format!("Command to revert: {}", self.forward_cmd).into()
+                let sudo_str = sudo_string(self.is_forward_cmd_sudo || self.revert_cmd.sudo);
+
+                format!(
+                    "Command to revert: {}{}\nCommand used to revert: {}{}",
+                    self.is_forward_cmd_sudo
+                        .then_some(&*sudo_str)
+                        .unwrap_or_default(),
+                    self.forward_cmd.yellow(),
+                    self.revert_cmd
+                        .sudo
+                        .then_some(&*sudo_str)
+                        .unwrap_or_default(),
+                    self.revert_cmd.cmd.0.yellow(),
+                )
+                .into()
             }
 
             async fn revert(self: Box<Self>) -> anyhow::Result<()> {
@@ -117,6 +138,7 @@ impl CmdBuilder<Revertible> {
 
         RevertibleTransaction {
             forward_cmd: self.cmd.raw_forward_cmd.clone(),
+            is_forward_cmd_sudo: self.sudo,
             revert_cmd: self.cmd.revert_cmd.clone(),
         }
     }
@@ -129,15 +151,7 @@ impl CmdBuilder<Revertible> {
     #[throws(Error)]
     async fn revert_transaction(&self) {
         let transaction = self.get_transaction();
-
-        let revert_cmd = &self.cmd.revert_cmd.cmd.0;
-        info!("Revert command available: {revert_cmd}");
-        let opt = select!("Do you want to revert the failed command?")
-            .with_options([Opt::Yes, Opt::No])
-            .get()?;
-        if opt == Opt::Yes {
-            Box::new(transaction).revert().await?;
-        }
+        Box::new(transaction).revert().await?;
     }
 
     #[throws(Error)]
@@ -154,14 +168,13 @@ impl CmdBuilder<Revertible> {
 }
 
 impl<C> CmdBuilder<C> {
-    pub fn hide_output(mut self) -> Self {
-        self.hide_stdout = true;
-        self.hide_stderr = true;
+    pub fn sudo(mut self) -> Self {
+        self.sudo = true;
         self
     }
 
-    pub fn sudo(mut self) -> Self {
-        self.sudo = true;
+    pub fn current_dir<P: Into<Cow<'static, str>>>(mut self, current_dir: P) -> Self {
+        self.current_dir.replace(current_dir.into());
         self
     }
 }
@@ -183,7 +196,6 @@ impl<C> CmdBuilder<C> {
         R: for<'a> RunLoopEventFn<'a, Self, Result<(), Error>>,
         A: for<'a> RunLoopEventFn<'a, Self, ()>,
     {
-        let sudo_str = if self.sudo { "sudo " } else { "" };
         let runnable_sudo_str = if self.sudo { "sudo -kSp '' " } else { "" };
 
         let mut cmd = get_raw_forward_cmd(&self.cmd);
@@ -192,28 +204,35 @@ impl<C> CmdBuilder<C> {
         let mut pipe_input = Vec::new();
 
         let mut progress_desc = "Running command";
-        let mut retrying = false;
         return loop {
             let mut password_to_cache = None;
             if self.sudo {
                 if let Ok(Item::Value(Value::String(password))) = kv!("admin/password").await {
                     pipe_input.push(Cow::Owned(password));
                 } else {
-                    let password: Secret<String> = prompt!("[sudo] Password")
-                        .without_verification()
-                        .hidden()
-                        .get()?;
+                    let password: Secret<String> = prompt!(
+                        "[sudo] Password for command {}",
+                        cmd.split_once(' ')
+                            .map(|opt| opt.0)
+                            .unwrap_or(&cmd)
+                            .yellow()
+                    )
+                    .without_verification()
+                    .hidden()
+                    .get()?;
                     password_to_cache.replace(password.clone());
                     pipe_input.push(Cow::Owned(password.into_non_secret()));
                 }
             }
 
-            let handle = progress_with_handle!("{progress_desc}: {sudo_str}{cmd}");
-            info!("Host: this computer");
-            let res = self.exec(&runnable_cmd, &mut pipe_input, retrying).await;
-            handle.finish();
+            if log_enabled!(Level::Debug) {
+                let sudo_str = sudo_string(self.sudo);
+                let cmd_str = cmd.yellow();
+                debug!("{progress_desc}: {sudo_str}{cmd_str}");
+                debug!("Host: this computer");
+            }
 
-            match res {
+            match self.exec(&runnable_cmd, &mut pipe_input).await {
                 Ok(output) => {
                     if let Some(on_ok) = on_ok {
                         on_ok(&self).await;
@@ -224,19 +243,38 @@ impl<C> CmdBuilder<C> {
                     break output;
                 }
                 Err(Error::Failed(output)) => {
-                    error!("The process failed with exit code {}", output.code);
+                    let cmd_only = cmd.split_once(' ').map(|opt| opt.0).unwrap_or(&cmd);
 
-                    if is_revertible {
-                        if let Some(on_revert) = &on_revert {
-                            on_revert(&self).await?;
-                        }
+                    // TODO: Due to an unknown bug, a space character is needed at the start or end
+                    // to render the icon color.
+                    error!(
+                        "The command {cmd_only} failed with exit code {}\n ",
+                        output.code
+                    );
+                    error!("[stdout]");
+                    if !output.stdout.is_empty() {
+                        error!("{}", output.stdout);
+                    }
+                    error!(" \n[stderr]");
+                    if !output.stderr.is_empty() {
+                        error!("{}", output.stderr);
                     }
 
-                    let modify_command = Opt::Custom("Modify command");
-                    let select = select!("How do you want to resolve the command error?")
-                        .with_option(modify_command)
-                        .with_option(Opt::Rerun);
-                    let mut opt = match select.get() {
+                    let modify = Opt::Custom("Modify");
+                    let revert_modify = Opt::Custom("Revert and modify");
+                    let revert_rerun = Opt::Custom("Revert and rerun");
+                    let mut select = select!("How do you want to resolve the command error?");
+
+                    if is_revertible {
+                        select = select.with_option(revert_modify).with_option(revert_rerun);
+                    }
+
+                    let mut opt = match select
+                        .with_option(modify)
+                        .with_option(Opt::Rerun)
+                        .with_option(Opt::Skip)
+                        .get()
+                    {
                         Ok(opt) => opt,
                         Err(err) => {
                             if let Some(on_abort) = on_abort {
@@ -246,7 +284,13 @@ impl<C> CmdBuilder<C> {
                         }
                     };
 
-                    if opt == modify_command {
+                    if let Some(on_revert) = &on_revert {
+                        if [revert_modify, revert_rerun].contains(&opt) {
+                            on_revert(&self).await?;
+                        }
+                    }
+
+                    if [modify, revert_modify].contains(&opt) {
                         let mut prompt = prompt!("New command").with_initial_input(&cmd);
 
                         if is_revertible {
@@ -266,6 +310,9 @@ impl<C> CmdBuilder<C> {
                         } else {
                             opt = Opt::Rerun;
                         }
+                    } else if opt == Opt::Skip {
+                        warn!("Skipping to resolve command error");
+                        break output;
                     }
 
                     progress_desc = if opt == Opt::Rerun {
@@ -273,8 +320,6 @@ impl<C> CmdBuilder<C> {
                     } else {
                         "Running modified command"
                     };
-
-                    retrying = true;
                 }
                 Err(err) => throw!(err),
             }
@@ -282,29 +327,18 @@ impl<C> CmdBuilder<C> {
     }
 
     #[throws(Error)]
-    pub async fn exec(
-        &self,
-        raw_cmd: &str,
-        pipe_input: &mut Vec<Cow<'_, str>>,
-        override_show_output: bool,
-    ) -> Output {
+    pub async fn exec(&self, raw_cmd: &str, pipe_input: &mut Vec<Cow<'_, str>>) -> Output {
         let mut cmd = Command::new("sh");
         cmd.args(["-c", raw_cmd])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
 
-        let mut child = cmd.spawn()?;
-
-        if !override_show_output {
-            if self.hide_stdout && self.hide_stderr {
-                info!("Output hidden");
-            } else if self.hide_stdout {
-                info!("Standard output hidden");
-            } else if self.hide_stderr {
-                info!("Standard error hidden");
-            }
+        if let Some(current_dir) = &self.current_dir {
+            cmd.current_dir(&**current_dir);
         }
+
+        let mut child = cmd.spawn()?;
 
         if !pipe_input.is_empty() {
             let mut stdin = child.stdin.take().expect("stdin should not be taken");
@@ -317,14 +351,10 @@ impl<C> CmdBuilder<C> {
         let mut output = Output::new();
         let (stdout, stderr) = join!(
             read_lines(child.stdout.take().expect("stdout should exist"), |line| {
-                if override_show_output || !self.hide_stdout {
-                    info!("[stdout] {line}")
-                }
+                debug!("[stdout] {line}")
             }),
             read_lines(child.stderr.take().expect("stderr should exist"), |line| {
-                if override_show_output || !self.hide_stderr {
-                    warn!("[stderr] {line}")
-                }
+                debug!("[stderr] {line}")
             }),
         );
 

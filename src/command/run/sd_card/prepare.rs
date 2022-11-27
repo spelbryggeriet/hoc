@@ -311,9 +311,7 @@ mod macos {
 
     #[throws(Error)]
     pub async fn get_attached_disks() -> impl Iterator<Item = DiskInfo> {
-        let output = cmd!("diskutil list -plist external physical")
-            .hide_output()
-            .await?;
+        let output = cmd!("diskutil list -plist external physical").await?;
         let diskutil_output: DiskutilOutput = plist::from_bytes(output.stdout.as_bytes())?;
         diskutil_output
             .all_disks_and_partitions

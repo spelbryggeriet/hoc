@@ -29,7 +29,9 @@ pub fn init() {
 
 #[throws(Error)]
 pub fn cleanup() {
-    RenderThread::get_or_init().terminate()?;
+    if let Some(render_thread) = RenderThread::cell().get() {
+        render_thread.terminate()?;
+    }
 }
 
 #[must_use]
@@ -42,9 +44,13 @@ pub struct RenderThread {
 
 impl RenderThread {
     fn get_or_init() -> &'static RenderThread {
+        Self::cell().get_or_init(Self::new)
+    }
+
+    fn cell() -> &'static OnceCell<Self> {
         static RENDER_THREAD: OnceCell<RenderThread> = OnceCell::new();
 
-        RENDER_THREAD.get_or_init(RenderThread::new)
+        &RENDER_THREAD
     }
 
     fn new() -> Self {

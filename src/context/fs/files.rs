@@ -18,19 +18,20 @@ pub struct Files {
     #[serde(flatten)]
     map: IndexMap<KeyOwned, PathBuf>,
 
-    #[serde(skip)]
-    pub(in crate::context) files_dir: PathBuf,
+    #[serde(skip, default = "Files::files_dir")]
+    files_dir: PathBuf,
 }
 
 impl Files {
-    pub(in crate::context) fn new<P>(files_dir: P) -> Self
-    where
-        P: Into<PathBuf>,
-    {
+    pub(in crate::context) fn new() -> Self {
         Self {
             map: IndexMap::new(),
-            files_dir: files_dir.into(),
+            files_dir: Self::files_dir(),
         }
+    }
+
+    fn files_dir() -> PathBuf {
+        crate::data_dir().join("files")
     }
 
     #[throws(Error)]
@@ -165,7 +166,7 @@ pub mod ledger {
     use tokio::fs;
 
     use crate::{
-        context::{self, key::KeyOwned},
+        context::{key::KeyOwned, Context},
         ledger::Transaction,
         prelude::*,
     };
@@ -204,7 +205,7 @@ pub mod ledger {
                     fs::rename(previous_file, current_file).await?;
                 }
                 None => {
-                    context::get_context()
+                    Context::get_or_init()
                         .files_mut()
                         .await
                         .remove_file(&self.key, true)
