@@ -26,8 +26,8 @@ jobs:
       - uses: actions/checkout@v3
       - name: Check branch
         run: |
-          if [[ ! `git branch --show-current` = 'develop' ]] ; then
-            echo "Releases can only be created from the \`develop\` branch" >&2
+          if [[ ! `git branch --show-current` = 'nightly' ]] ; then
+            echo "Releases can only be created from the \`nightly\` branch" >&2
             exit 1
           fi
       - name: Fetch master
@@ -60,7 +60,7 @@ jobs:
     steps:
     - uses: actions/checkout@v3
       with:
-        ref: develop
+        ref: nightly
     - name: Install Rust
       uses: actions-rs/toolchain@v1
       with:
@@ -105,7 +105,7 @@ jobs:
           title: Release v${{ env.NEW_VERSION }}
           body: Bump to version v${{ env.NEW_VERSION }}.
           base: master
-          head: develop
+          head: nightly
       - name: Merge pull request
         uses: octokit/request-action@v2.x
         with:

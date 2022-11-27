@@ -2,23 +2,23 @@ name: Test
 
 on:
   push:
-    branches: [ develop ]
+    branches: [ nightly ]
     paths-ignore:
     - 'README.md'
     - 'CHANGELOG.md'
     - 'scripts/**'
     - '.gitignore'
     - '.github/**'
-    - '!.github/workflows/rust.yml'
+    - '!.github/workflows/test.yml'
   pull_request:
-    branches: [ develop ]
+    branches: [ nightly ]
     paths-ignore:
     - 'README.md'
     - 'CHANGELOG.md'
     - 'scripts/**'
     - '.gitignore'
     - '.github/**'
-    - '!.github/workflows/rust.yml'
+    - '!.github/workflows/test.yml'
 
 env:
   CARGO_TERM_COLOR: always
