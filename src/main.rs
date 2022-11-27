@@ -66,17 +66,20 @@ async fn main() -> ExitCode {
 
     Context::get_or_init().load().await?;
 
-    defer! {
-        task::block_in_place(|| {
-            Handle::current().block_on(async {
-                if let Err(err) = Context::get_or_init().persist().await {
-                    error!("{err}");
-                }
+    let res = if app.command.needs_context() {
+        defer! {
+            task::block_in_place(|| {
+                Handle::current().block_on(async {
+                    if let Err(err) = Context::get_or_init().persist().await {
+                        error!("{err}");
+                    }
+                });
             });
-        });
+        };
+        app.run().await
+    } else {
+        app.run().await
     };
-
-    let res = app.run().await;
 
     let exit_code = match res {
         Ok(()) => ExitCode::SUCCESS,
