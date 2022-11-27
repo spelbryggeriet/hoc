@@ -18,6 +18,7 @@ mod log;
 mod prelude;
 mod prompt;
 mod runner;
+mod temp;
 mod util;
 
 fn data_dir() -> PathBuf {
@@ -60,6 +61,17 @@ async fn main() -> ExitCode {
         if let Err(err) = log::cleanup() {
             eprintln!("{err}");
         }
+    }
+
+    defer! {
+        task::block_in_place(|| {
+            Handle::current().block_on(async {
+                debug!("Cleaning temporary files");
+                if let Err(err) = temp::clean().await {
+                    error!("{err}");
+                }
+            });
+        });
     }
 
     let res = if app.command.needs_context() {

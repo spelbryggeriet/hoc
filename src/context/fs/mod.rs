@@ -11,11 +11,11 @@ use crate::{
     context::{key::Key, Context},
     ledger::Ledger,
     prelude::*,
+    temp,
 };
 
 pub mod cache;
 pub mod files;
-pub mod temp;
 
 pub struct FileBuilder<S> {
     key: Cow<'static, Key>,
@@ -48,7 +48,7 @@ impl FileBuilder<Persisted> {
             .files_mut()
             .await
             .create_file(&self.key, |path| async {
-                let (_, temp_path) = context.temp_mut().await.create_file()?;
+                let (_, temp_path) = temp::create_file().await?;
                 tokio::fs::rename(path, &temp_path).await?;
                 previous_path.replace(temp_path);
                 Ok(())
@@ -92,7 +92,7 @@ where
             .cache_mut()
             .await
             .get_or_create_file(&self.key, self.state.file_cacher, |path| async {
-                let (_, temp_path) = context.temp_mut().await.create_file()?;
+                let (_, temp_path) = temp::create_file().await?;
                 tokio::fs::rename(path, &temp_path).await?;
                 previous_path.replace(temp_path);
                 Ok(())
@@ -121,7 +121,7 @@ where
             .cache_mut()
             .await
             ._create_or_overwrite_file(self.key.as_ref(), self.state.file_cacher, |path| async {
-                let (_, temp_path) = context.temp_mut().await.create_file()?;
+                let (_, temp_path) = temp::create_file().await?;
                 tokio::fs::rename(path, &temp_path).await?;
                 previous_path.replace(temp_path);
                 Ok(())

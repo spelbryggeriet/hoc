@@ -14,7 +14,7 @@ use tokio::{
 };
 
 use self::{
-    fs::{cache::Cache, files::Files, temp::Temp, CachedFileFn},
+    fs::{cache::Cache, files::Files, CachedFileFn},
     key::Key,
     kv::{Item, Kv, PutOptions, Value},
 };
@@ -34,18 +34,12 @@ where
     RwLock::new(T::deserialize(deserializer)?)
 }
 
-fn default_temp_rw_lock() -> RwLock<Temp> {
-    RwLock::new(Temp::new())
-}
-
 #[derive(Deserialize)]
 pub struct Context {
     #[serde(deserialize_with = "deserialize_rw_lock")]
     kv: RwLock<Kv>,
     #[serde(deserialize_with = "deserialize_rw_lock")]
     files: RwLock<Files>,
-    #[serde(skip, default = "default_temp_rw_lock")]
-    temp: RwLock<Temp>,
     #[serde(deserialize_with = "deserialize_rw_lock")]
     cache: RwLock<Cache>,
 }
@@ -63,7 +57,6 @@ impl Context {
         Self {
             kv: RwLock::new(Kv::new()),
             files: RwLock::new(Files::new()),
-            temp: RwLock::new(Temp::new()),
             cache: RwLock::new(Cache::new()),
         }
     }
@@ -107,7 +100,6 @@ impl Context {
                 let context: Self = serde_yaml::from_reader(File::into_std(file).await)?;
                 *self.kv.write().await = context.kv.into_inner();
                 *self.files.write().await = context.files.into_inner();
-                *self.temp.write().await = context.temp.into_inner();
                 *self.cache.write().await = context.cache.into_inner();
             }
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
@@ -133,10 +125,6 @@ impl Context {
         self.files.write().await
     }
 
-    pub async fn temp_mut(&self) -> RwLockWriteGuard<Temp> {
-        self.temp.write().await
-    }
-
     pub async fn cache_mut(&self) -> RwLockWriteGuard<Cache> {
         self.cache.write().await
     }
@@ -157,10 +145,6 @@ impl Context {
 
         debug!("Serializing context to file");
         serde_yaml::to_writer(file, self)?;
-
-        debug!("Cleaning temporary files");
-        let temp = self.temp.write();
-        temp.await.clean().await?;
     }
 }
 
