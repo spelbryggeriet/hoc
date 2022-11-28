@@ -4,8 +4,7 @@ on:
   push:
     branches: [ nightly ]
     paths-ignore:
-    - 'README.md'
-    - 'CHANGELOG.md'
+    - '*.md'
     - 'scripts/**'
     - '.gitignore'
     - '.github/**'

@@ -32,7 +32,7 @@ jobs:
           fi
       - name: Fetch master
         run: |
-          git fetch origin master:master
+          git fetch --depth=1 origin master:master
       - name: Bump version
         id: bv
         run: |
@@ -97,22 +97,18 @@ jobs:
       ARTIFACT_NAME: ${{ needs.build.outputs.artifact-name }}
     runs-on: ubuntu-latest
     steps:
-      - name: Create pull request
-        id: cpr
-        uses: octokit/request-action@v2.x
+      - name: Checkout
+        uses: actions/checkout@v2
         with:
-          route: POST /repos/${{ env.REPO }}/pulls
-          title: Release v${{ env.NEW_VERSION }}
-          body: Bump to version v${{ env.NEW_VERSION }}.
-          base: master
-          head: nightly
-      - name: Merge pull request
-        uses: octokit/request-action@v2.x
+          fetch-depth: 0
+          ref: master
+      - name: Merge Fast Forward
+        uses: MaximeHeckel/github-action-merge-fast-forward@v1.1.0
         with:
-          route: PUT /repos/${{ env.REPO }}/pulls/${{ env.PULL_NUMBER }}/merge
-          merge_method: rebase
+          branchtomerge: master
+          branch: nightly
         env:
-          PULL_NUMBER: ${{ fromJson(steps.cpr.outputs.data).number }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - name: Get changelog body
         id: gcb
         run: |
