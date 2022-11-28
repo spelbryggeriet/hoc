@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- An `upgrade` command to upgrade `hoc` itself.
+
+### Changed
+
+- Shell command output is now less verbose.
+
 ## [0.0.1] - 2022-11-26
 
 ### Added
