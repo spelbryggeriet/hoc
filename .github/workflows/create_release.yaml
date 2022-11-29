@@ -37,6 +37,11 @@ jobs:
       run: |
         new_version=`scripts/bumb_version.py ${{ inputs.bumpVersion }}`
         echo "new_version=$new_version" >> $GITHUB_OUTPUT
+    - name: Update lock file
+      uses: actions-rs/cargo@v1
+      with:
+        command: update
+        args: --package hoc
     - name: Create release branch
       id: crb
       run: |
