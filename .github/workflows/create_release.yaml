@@ -61,16 +61,16 @@ jobs:
         body: Bump to version v${{ env.NEW_VERSION }}.
         base: master
         head: ${{ env.RELEASE_BRANCH }}
-     env:
-       RELEASE_BRANCH: ${{ steps.crb.outputs.release_branch }}
-     - name: Merge pull request
-       uses: octokit/request-action@v2.x
-       with:
-         route: PUT /repos/${{ env.REPO }}/pulls/${{ env.PULL_NUMBER }}/merge
-         commit_title: Prepare release v${{ env.NEW_VERSION }} (#${{ env.PULL_NUMBER }})
-         merge_method: squash
-       env:
-         PULL_NUMBER: ${{ fromJson(steps.cpr.outputs.data).number }}
+      env:
+        RELEASE_BRANCH: ${{ steps.crb.outputs.release_branch }}
+    - name: Merge pull request
+      uses: octokit/request-action@v2.x
+      with:
+        route: PUT /repos/${{ env.REPO }}/pulls/${{ env.PULL_NUMBER }}/merge
+        commit_title: Prepare release v${{ env.NEW_VERSION }} (#${{ env.PULL_NUMBER }})
+        merge_method: squash
+      env:
+        PULL_NUMBER: ${{ fromJson(steps.cpr.outputs.data).number }}
 
   build:
     needs: bump_version
