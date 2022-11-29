@@ -21,7 +21,7 @@ def error(msg):
 
 def run(*cmd):
     output = subprocess.run(cmd, capture_output=True)
-    return output.stdout.decode("utf-8"), output.stderr.decode("utf-8")
+    return output.stdout.decode("utf-8").strip(), output.stderr.decode("utf-8").strip()
 
 
 def split(content, sep, desc=None):
@@ -79,7 +79,7 @@ def update_manifest(bump_comp_idx):
             parsed += line + NEW_LINE
             continue
 
-        version = line.strip().strip('"') 
+        version = line.strip().strip('"')
         new_version = get_next_version(bump_comp_idx, version)
 
         parsed += f' "{new_version}"' + NEW_LINE + content
