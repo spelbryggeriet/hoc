@@ -53,16 +53,16 @@ jobs:
       env:
         NEW_VERSION: ${{ steps.bv.outputs.new-version }}
     - name: Create pull request
-       id: cpr
-       uses: octokit/request-action@v2.x
-       with:
-         route: POST /repos/${{ env.REPO }}/pulls
-         title: Release v${{ env.NEW_VERSION }}
-         body: Bump to version v${{ env.NEW_VERSION }}.
-         base: master
-         head: ${{ env.RELEASE_BRANCH }}
-      env:
-        RELEASE_BRANCH: ${{ steps.crb.outputs.release-branch }}
+      id: cpr
+      uses: octokit/request-action@v2.x
+      with:
+        route: POST /repos/${{ env.REPO }}/pulls
+        title: Release v${{ env.NEW_VERSION }}
+        body: Bump to version v${{ env.NEW_VERSION }}.
+        base: master
+        head: ${{ env.RELEASE_BRANCH }}
+     env:
+       RELEASE_BRANCH: ${{ steps.crb.outputs.release-branch }}
      - name: Merge pull request
        uses: octokit/request-action@v2.x
        with:
