@@ -87,7 +87,7 @@ jobs:
       NEW_VERSION: ${{ needs.bump_version.outputs.new_version }}
     runs-on: macos-latest
     outputs:
-      artifact_name: ${{ steps.zza.outputs.artifact_name }}
+      artifact_name: ${{ steps.za.outputs.artifact_name }}
     steps:
     - uses: actions/checkout@v3
       with:
@@ -149,7 +149,7 @@ jobs:
         tag_name: v${{ env.NEW_VERSION }}
         target_commitish: master
         name: v${{ env.NEW_VERSION }}
-        body: ${{ steps.gcb.outputs.changelog_body }}
+        body: "${{ steps.gcb.outputs.changelog_body }}"
         draft: true
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
