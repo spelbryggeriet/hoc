@@ -155,10 +155,14 @@ pub enum NodeCommand {
 pub struct NodeDeployCommand {}
 
 impl Command {
+    #[cfg(debug_assertions)]
     pub fn needs_context(&self) -> bool {
-        use Command::*;
+        !matches!(self, Command::Debug(_) | Command::Upgrade(_))
+    }
 
-        !matches!(self, Debug(_) | Upgrade(_))
+    #[cfg(not(debug_assertions))]
+    pub fn needs_context(&self) -> bool {
+        !matches!(self, Command::Upgrade(_))
     }
 
     #[throws(anyhow::Error)]
