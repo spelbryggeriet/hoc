@@ -94,7 +94,8 @@ def update_changelog(new_version):
     CHANGELOG_NAME = "CHANGELOG.md"
 
     changelog_path = os.path.join(REPO_DIR, CHANGELOG_NAME)
-    stdout, stderr = run("git", "-C", REPO_DIR, "diff", "master", "HEAD", "--", CHANGELOG_NAME)
+    last_version, _ = run("git", "-C", REPO_DIR, "rev-list", "--date-order", "--tags", "--max-count=1")
+    stdout, stderr = run("git", "-C", REPO_DIR, "diff", last_version, "HEAD", "--", CHANGELOG_NAME)
 
     if len(stderr) > 0:
         error(stderr.strip())
