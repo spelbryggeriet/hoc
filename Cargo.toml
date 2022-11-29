@@ -5,7 +5,7 @@ edition = "2021"
 
 [dependencies]
 anyhow = "1.0.66"
-async-trait = "0.1.58"
+async-trait = "0.1.59"
 chrono = "0.4.23"
 clap = { version = "4.0.29", features = ["derive"] }
 crossterm = "0.25.0"
