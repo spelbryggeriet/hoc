@@ -63,6 +63,7 @@ jobs:
         head: ${{ env.RELEASE_BRANCH }}
       env:
         RELEASE_BRANCH: ${{ steps.crb.outputs.release_branch }}
+        NEW_VERSION: ${{ steps.bv.outputs.new_version }}
     - name: Merge pull request
       uses: octokit/request-action@v2.x
       with:
@@ -71,6 +72,7 @@ jobs:
         merge_method: squash
       env:
         PULL_NUMBER: ${{ fromJson(steps.cpr.outputs.data).number }}
+        NEW_VERSION: ${{ steps.bv.outputs.new_version }}
 
   build:
     needs: bump_version
