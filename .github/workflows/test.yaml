@@ -2,7 +2,7 @@ name: Test
 
 on:
   push:
-    branches: [ nightly ]
+    branches: [ master ]
     paths-ignore:
     - '*.md'
     - 'scripts/**'
@@ -10,10 +10,9 @@ on:
     - '.github/**'
     - '!.github/workflows/test.yml'
   pull_request:
-    branches: [ nightly ]
+    branches: [ master ]
     paths-ignore:
-    - 'README.md'
-    - 'CHANGELOG.md'
+    - '*.md'
     - 'scripts/**'
     - '.gitignore'
     - '.github/**'
