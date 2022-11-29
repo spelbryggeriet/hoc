@@ -18,10 +18,10 @@ env:
   RUST_VERSION: 1.65.0
 
 jobs:
-  bump-version:
+  bump_version:
     runs-on: ubuntu-latest
     outputs:
-      new-version: ${{ steps.bv.outputs.new-version }}
+      new_version: ${{ steps.bv.outputs.new_version }}
     steps:
     - uses: actions/checkout@v3
     - name: Prepare branch
@@ -36,7 +36,7 @@ jobs:
       id: bv
       run: |
         new_version=`scripts/bumb_version.py ${{ inputs.bumpVersion }}`
-        echo "new-version=$new_version" >> $GITHUB_OUTPUT
+        echo "new_version=$new_version" >> $GITHUB_OUTPUT
     - name: Create release branch
       id: crb
       run: |
@@ -49,9 +49,9 @@ jobs:
           -c committer.email=noreply@github.com \
           commit -a -m "Prepare release v${NEW_VERSION}"
         git push --set-upstream origin "$release_branch"
-        echo "release-branch=$release_branch" >> $GITHUB_OUTPUT
+        echo "release_branch=$release_branch" >> $GITHUB_OUTPUT
       env:
-        NEW_VERSION: ${{ steps.bv.outputs.new-version }}
+        NEW_VERSION: ${{ steps.bv.outputs.new_version }}
     - name: Create pull request
       id: cpr
       uses: octokit/request-action@v2.x
@@ -62,7 +62,7 @@ jobs:
         base: master
         head: ${{ env.RELEASE_BRANCH }}
      env:
-       RELEASE_BRANCH: ${{ steps.crb.outputs.release-branch }}
+       RELEASE_BRANCH: ${{ steps.crb.outputs.release_branch }}
      - name: Merge pull request
        uses: octokit/request-action@v2.x
        with:
@@ -73,10 +73,10 @@ jobs:
          PULL_NUMBER: ${{ fromJson(steps.cpr.outputs.data).number }}
 
   build:
-    needs: bump-version
+    needs: bump_version
     runs-on: macos-latest
     outputs:
-      artifact-name: ${{ steps.zza.outputs.artifact-name }}
+      artifact_name: ${{ steps.zza.outputs.artifact_name }}
     steps:
     - uses: actions/checkout@v3
       with:
@@ -100,29 +100,29 @@ jobs:
           artifact_name="hoc_v${NEW_VERSION//./_}_macos"
           cd target/release
           zip -r ../../${artifact_name}.zip hoc
-          echo "artifact-name=$artifact_name" >> $GITHUB_OUTPUT
+          echo "artifact_name=$artifact_name" >> $GITHUB_OUTPUT
     - name: Upload artifact
       uses: actions/upload-artifact@v2
       with:
         name: ${{ env.ARTIFACT_NAME }}
         path: ${{ env.ARTIFACT_NAME }}.zip
       env:
-        ARTIFACT_NAME: ${{ steps.za.outputs.artifact-name }}
+        ARTIFACT_NAME: ${{ steps.za.outputs.artifact_name }}
 
-  create-release:
-    needs: [bump-version, build]
+  create_release:
+    needs: [bump_version, build]
     env:
       GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       REPO: ${{ github.repository }}
-      NEW_VERSION: ${{ needs.bump-version.outputs.new-version }}
-      ARTIFACT_NAME: ${{ needs.build.outputs.artifact-name }}
+      NEW_VERSION: ${{ needs.bump_version.outputs.new_version }}
+      ARTIFACT_NAME: ${{ needs.build.outputs.artifact_name }}
     runs-on: ubuntu-latest
     steps:
     - name: Get changelog body
       id: gcb
       run: |
         changelog_body=`scripts/changelog_body.py $NEW_VERSION`
-        echo "changelog-body=${changelog_body}" >> $GITHUB_OUTPUT
+        echo "changelog_body=${changelog_body}" >> $GITHUB_OUTPUT
     - name: Download artifact
       uses: actions/download-artifact@v3
       with:
@@ -136,7 +136,7 @@ jobs:
         tag_name: v${{ env.NEW_VERSION }}
         target_commitish: master
         name: v${{ env.NEW_VERSION }}
-        body: ${{ steps.gcb.outputs.changelog-body }}
+        body: ${{ steps.gcb.outputs.changelog_body }}
         draft: true
     - name: Upload artifact
       run: |
