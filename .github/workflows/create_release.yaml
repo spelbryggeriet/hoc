@@ -62,6 +62,7 @@ jobs:
         base: master
         head: ${{ env.RELEASE_BRANCH }}
       env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         RELEASE_BRANCH: ${{ steps.crb.outputs.release_branch }}
     - name: Merge pull request
       uses: octokit/request-action@v2.x
@@ -70,6 +71,7 @@ jobs:
         commit_title: Prepare release v${{ env.NEW_VERSION }} (#${{ env.PULL_NUMBER }})
         merge_method: squash
       env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         PULL_NUMBER: ${{ fromJson(steps.cpr.outputs.data).number }}
 
   build:
@@ -112,7 +114,6 @@ jobs:
   create_release:
     needs: [bump_version, build]
     env:
-      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       REPO: ${{ github.repository }}
       NEW_VERSION: ${{ needs.bump_version.outputs.new_version }}
       ARTIFACT_NAME: ${{ needs.build.outputs.artifact_name }}
@@ -128,6 +129,8 @@ jobs:
       with:
         name: ${{ env.ARTIFACT_NAME }}
         path: artifact
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     - name: Create release draft
       id: crd
       uses: octokit/request-action@v2.x
@@ -138,6 +141,8 @@ jobs:
         name: v${{ env.NEW_VERSION }}
         body: ${{ steps.gcb.outputs.changelog_body }}
         draft: true
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     - name: Upload artifact
       run: |
         curl \
@@ -148,6 +153,7 @@ jobs:
           --data-binary @artifact/hoc \
           https://uploads.github.com/repos/${REPO}/releases/${RELEASE_ID}/assets?name=${ARTIFACT_NAME}.zip
       env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         RELEASE_ID: ${{ fromJson(steps.crd.outputs.data).id }}
     - name: Publish release
       uses: octokit/request-action@v2.x
@@ -155,4 +161,5 @@ jobs:
         route: PATCH /repos/${{ env.REPO }}/releases/${{ env.RELEASE_ID }}
         draft: false
       env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         RELEASE_ID: ${{ fromJson(steps.crd.outputs.data).id }}
