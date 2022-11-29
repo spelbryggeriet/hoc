@@ -39,9 +39,9 @@ jobs:
       uses: actions-rs/cargo@v1
       with:
         command: clippy
-        args: --verbose -- -D warnings
+        args: --verbose --release -- -D warnings
     - name: Run tests
       uses: actions-rs/cargo@v1
       with:
         command: test
-        args: --verbose
+        args: --verbose --release
