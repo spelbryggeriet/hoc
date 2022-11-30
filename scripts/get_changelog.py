@@ -18,20 +18,21 @@ def get_changelog_body():
 
     version = get_version()
     version_line = f"## [{version}]"
-    split_content = content.split(version_line)
+    version_split= content.split(version_line)
 
-    if len(split_content) < 2:
+    if len(version_split) < 2:
         error("version changelog section found")
-    if len(split_content) > 2:
+    if len(version_split) > 2:
         error("multiple version changelog sections found")
 
-    body = split_content[1].split("## [", 1)
-    body_without_title_suffix = body[0].split("\n", 1)
+    title_suffix_with_body_split = version_split[1].split("## [", 1)
+    body_split = title_suffix_with_body_split[0].split("\n", 1)
 
-    if len(body_without_title_suffix) == 1:
+    if len(body_split) == 1:
         error("invalid changelog format")
 
-    return json.dumps(body_without_title_suffix[1].strip()).strip('"')
+    stripped_body = body_split[1].strip()
+    return json.dumps(stripped_body)
 
 
 if __name__ == "__main__":
