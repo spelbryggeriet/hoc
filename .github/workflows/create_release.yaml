@@ -161,7 +161,7 @@ jobs:
           -H "Accept: application/vnd.github+json" \
           -H "Authorization: Bearer ${GITHUB_TOKEN}" \
           -H "Content-Type: application/zip" \
-          --data-binary @artifact/hoc \
+          --data-binary @artifact/${ARTIFACT_NAME}.zip \
           https://uploads.github.com/repos/${{ github.repository }}/releases/${RELEASE_ID}/assets?name=${ARTIFACT_NAME}.zip
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
