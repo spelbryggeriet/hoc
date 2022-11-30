@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 
+from get_version import get_version as get_current_version
+from util import error
 import datetime
 import os
 import subprocess
@@ -10,28 +12,9 @@ SCRIPT_DIR = os.path.dirname(os.path.realpath(__file__))
 REPO_DIR = os.path.realpath(os.path.join(SCRIPT_DIR, ".."))
 
 
-def eprint(*args, **kwargs):
-    print(*args, file=sys.stderr, **kwargs)
-
-
-def error(msg):
-    eprint("error:", msg)
-    sys.exit(1)
-
-
 def run(*cmd):
     output = subprocess.run(cmd, capture_output=True)
     return output.stdout.decode("utf-8").strip(), output.stderr.decode("utf-8").strip()
-
-
-def split(content, sep, desc=None):
-    parts = content.split(sep, 1)
-    if len(parts) == 1:
-        if desc is not None:
-            error(desc)
-        else:
-            error(f'"{sep}" separator not found')
-    return parts
 
 
 def get_next_version(bump_comp_idx, current_version):
@@ -54,42 +37,23 @@ def get_next_version(bump_comp_idx, current_version):
 
 
 def update_manifest(bump_comp_idx):
-    HEADER_KEY = "[package]"
-    VERSION_KEY = "version"
-    EQUALS = "="
-    NEW_LINE = "\n"
-
     manifest_path = os.path.join(REPO_DIR, "Cargo.toml")
     with open(manifest_path, "r") as f:
         content = f.read()
 
-    [parsed, content] = split(content, HEADER_KEY)
-    parsed += HEADER_KEY
-    while len(content) > 0:
-        [line, content] = split(content, NEW_LINE)
+    current_version = get_current_version(content)
+    next_version = get_next_version(bump_comp_idx, current_version)
+    content = content.replace(
+        f'version = "{current_version}"',
+        f'version = "{next_version}"')
 
-        if len(line.strip()) == 0:
-            parsed += line + NEW_LINE
-            continue
+    with open(manifest_path, "w") as f:
+        f.write(content)
 
-        [key, line] = split(line, EQUALS, f'"{VERSION_KEY}" key not found')
-        parsed += key + EQUALS
-
-        if key.strip() != VERSION_KEY:
-            parsed += line + NEW_LINE
-            continue
-
-        version = line.strip().strip('"')
-        new_version = get_next_version(bump_comp_idx, version)
-
-        parsed += f' "{new_version}"' + NEW_LINE + content
-        with open(manifest_path, "w") as f:
-            f.write(parsed)
-
-        return new_version
+    return next_version
 
 
-def update_changelog(new_version):
+def update_changelog(next_version):
     HEADER_KEY = "## [Unreleased]"
     CHANGELOG_NAME = "CHANGELOG.md"
 
@@ -107,7 +71,7 @@ def update_changelog(new_version):
 
     current_date = datetime.datetime.now(datetime.timezone.utc)
     formatted_date = current_date.strftime("%Y-%m-%d")
-    replacement = f"## [{new_version}] - {formatted_date}"
+    replacement = f"## [{next_version}] - {formatted_date}"
     new_content = content.replace(HEADER_KEY, replacement, 1)
 
     if content == new_content:
@@ -121,9 +85,9 @@ def update_changelog(new_version):
 
 
 def bump_version(bump_comp_idx):
-    new_version = update_manifest(bump_comp_idx)
-    update_changelog(new_version)
-    return new_version
+    next_version = update_manifest(bump_comp_idx)
+    update_changelog(next_version)
+    return next_version
 
 
 if __name__ == "__main__":
