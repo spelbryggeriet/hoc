@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 
-import datetime
+from get_version import get_version
+from util import error
 import json
 import os
-import subprocess
 import sys
 
 
@@ -11,20 +11,12 @@ SCRIPT_DIR = os.path.dirname(os.path.realpath(__file__))
 REPO_DIR = os.path.realpath(os.path.join(SCRIPT_DIR, ".."))
 
 
-def eprint(*args, **kwargs):
-    print(*args, file=sys.stderr, **kwargs)
-
-
-def error(msg):
-    eprint("error:", msg)
-    sys.exit(1)
-
-
-def get_changelog_body(version):
+def get_changelog_body():
     manifest_path = os.path.join(REPO_DIR, "CHANGELOG.md")
     with open(manifest_path, "r") as f:
         content = f.read()
 
+    version = get_version()
     version_line = f"## [{version}]"
     split_content = content.split(version_line)
 
@@ -43,7 +35,4 @@ def get_changelog_body(version):
 
 
 if __name__ == "__main__":
-    if len(sys.argv) < 2:
-        error("version argument missing")
-
-    print(get_changelog_body(sys.argv[1]))
+    print(get_changelog_body())

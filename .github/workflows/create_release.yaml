@@ -106,7 +106,7 @@ jobs:
     - name: Zip artifact
       id: za
       run: |
-          artifact_name="hoc_v${NEW_VERSION}_macos"
+          artifact_name=`scripts/get_target.py`
           cd target/release
           zip -r ../../${artifact_name}.zip hoc
           echo "artifact_name=$artifact_name" >> $GITHUB_OUTPUT
@@ -129,10 +129,10 @@ jobs:
       with:
         fetch-depth: 0
         ref: master
-    - name: Get changelog body
+    - name: Get changelog
       id: gcb
       run: |
-        changelog_body=`scripts/changelog_body.py $NEW_VERSION`
+        changelog_body=`scripts/get_changelog.py`
         echo "changelog_body=${changelog_body}" >> $GITHUB_OUTPUT
     - name: Download artifact
       uses: actions/download-artifact@v3
@@ -149,7 +149,8 @@ jobs:
         tag_name: v${{ env.NEW_VERSION }}
         target_commitish: master
         name: v${{ env.NEW_VERSION }}
-        body: "${{ steps.gcb.outputs.changelog_body }}"
+        body: |-
+          ${{ steps.gcb.outputs.changelog_body }}
         draft: true
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
