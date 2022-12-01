@@ -51,6 +51,8 @@ pub enum Command {
     #[clap(subcommand)]
     Debug(DebugCommand),
 
+    Version(VersionCommand),
+
     Upgrade(UpgradeCommand),
 
     Init(InitCommand),
@@ -75,14 +77,21 @@ pub enum DebugCommand {
 /// Debug the progress module
 #[cfg(debug_assertions)]
 #[derive(Parser)]
-pub struct DebugProgressCommand {}
+#[clap(name = "debug-progress")]
+pub struct DebugProgressCommand;
 
 /// Debug the prompt module
 #[cfg(debug_assertions)]
 #[derive(Parser)]
-pub struct DebugPromptCommand {}
+#[clap(name = "debug-prompt")]
+pub struct DebugPromptCommand;
 
-/// Upgrade `hoc` itself
+/// Show the current version
+#[derive(Parser)]
+#[clap(name = "version")]
+pub struct VersionCommand;
+
+/// Upgrade `hoc`
 #[derive(Parser)]
 #[clap(name = "upgrade")]
 pub struct UpgradeCommand {
@@ -157,12 +166,15 @@ pub struct NodeDeployCommand {}
 impl Command {
     #[cfg(debug_assertions)]
     pub fn needs_context(&self) -> bool {
-        !matches!(self, Command::Debug(_) | Command::Upgrade(_))
+        !matches!(
+            self,
+            Command::Debug(_) | Command::Version(_) | Command::Upgrade(_)
+        )
     }
 
     #[cfg(not(debug_assertions))]
     pub fn needs_context(&self) -> bool {
-        !matches!(self, Command::Upgrade(_))
+        !matches!(self, Command::Version(_) | Command::Upgrade(_))
     }
 
     #[throws(anyhow::Error)]
@@ -170,6 +182,12 @@ impl Command {
         use Command::*;
 
         match self {
+            Version(_) => {
+                cmd_diagnostics!(VersionCommand);
+
+                version::run();
+            }
+
             Upgrade(upgrade_command) => {
                 cmd_diagnostics!(UpgradeCommand);
 
