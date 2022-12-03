@@ -32,7 +32,10 @@ pub async fn run() {
 
     let node_name = generate_node_name().await?;
     assign_ip_address(&node_name).await?;
-    flash_image(&os_image_path).await?;
+    let disk = choose_sd_card().await?;
+    unmount_sd_card(&disk).await?;
+    flash_image(&disk, &os_image_path).await?;
+    mount_sd_card().await?;
 }
 
 #[throws(Error)]
@@ -169,15 +172,6 @@ async fn assign_ip_address(node_name: &str) {
 }
 
 #[throws(Error)]
-async fn flash_image(os_image_path: &Path) {
-    progress!("Flashing image");
-
-    let disk = choose_sd_card().await?;
-    unmount_sd_card(&disk).await?;
-    flash_sd_card(&disk, os_image_path).await?;
-}
-
-#[throws(Error)]
 async fn choose_sd_card() -> DiskInfo {
     progress!("Choosing SD card");
 
@@ -205,7 +199,7 @@ async fn unmount_sd_card(disk: &DiskInfo) {
 }
 
 #[throws(Error)]
-async fn flash_sd_card(disk: &DiskInfo, os_image_path: &Path) {
+async fn flash_image(disk: &DiskInfo, os_image_path: &Path) {
     let opt = select!("Do you want to flash target disk {:?}?", disk.description())
         .with_options([Opt::Yes, Opt::No])
         .get()?;
@@ -213,8 +207,41 @@ async fn flash_sd_card(disk: &DiskInfo, os_image_path: &Path) {
         return;
     }
 
+    progress!("Flashing image");
+
     let id = &disk.id;
     cmd!(sudo "dd bs=1m if={os_image_path:?} of=/dev/r{id}").await?;
+}
+
+#[throws(Error)]
+async fn mount_sd_card() {
+    progress!("Mounting SD card");
+
+    let partition = loop {
+        let partitions = macos::get_attached_disks().await?.flat_map(|disk| {
+            disk.partitions
+                .into_iter()
+                .filter(|part| part.name == "system-boot")
+        });
+
+        let select =
+            select!("Which refers to the boot partition of the disk?").with_options(partitions);
+        if select.option_count() > 0 {
+            break select.get()?;
+        }
+
+        error!("No mounted disk detected");
+
+        select!("How do you want to proceed?")
+            .with_option(Opt::Retry)
+            .get()?;
+    };
+
+    select!("Do you want to mount disk partition '{partition}'?")
+        .with_options([Opt::Yes, Opt::No])
+        .get()?;
+
+    cmd!("diskutil mount {}", partition.id).await?;
 }
 
 fn unnamed_if_empty<S: AsRef<str> + ?Sized>(name: &S) -> String {
