@@ -151,7 +151,15 @@ impl CmdBuilder<Revertible> {
     #[throws(Error)]
     async fn revert_transaction(&self) {
         let transaction = self.get_transaction();
-        Box::new(transaction).revert().await?;
+
+        info!("{}", transaction.detail());
+
+        let opt = select!("Do you want to revert the failed command?")
+            .with_options([Opt::Yes, Opt::No])
+            .get()?;
+        if opt == Opt::Yes {
+            Box::new(transaction).revert().await?;
+        }
     }
 
     #[throws(Error)]

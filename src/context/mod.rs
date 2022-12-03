@@ -286,7 +286,15 @@ pub mod ledger {
         }
 
         fn detail(&self) -> Cow<'static, str> {
-            format!("Value to revert: {}", self.current_value).into()
+            let mut detail = "Key: ".to_owned();
+            detail += self.key.as_str();
+            detail += "\nCurrent Value: ";
+            detail += &self.current_value.to_string();
+            if let Some(previous_value) = &self.previous_value {
+                detail += "\nPrevious Value: ";
+                detail += &previous_value.to_string();
+            }
+            detail.into()
         }
 
         async fn revert(mut self: Box<Self>) -> anyhow::Result<()> {

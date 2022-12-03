@@ -30,12 +30,14 @@ const UBUNTU_VERSION: UbuntuVersion = UbuntuVersion {
 pub async fn run() {
     let (_os_image_file, os_image_path) = files!("images/os").cached(get_os_image).await?;
 
+    let disk = choose_sd_card().await?;
+    if !has_system_boot_partition(&disk) || wants_to_flash()? {
+        unmount_sd_card(&disk).await?;
+        flash_image(&disk, &os_image_path).await?;
+    }
+    mount_sd_card().await?;
     let node_name = generate_node_name().await?;
     assign_ip_address(&node_name).await?;
-    let disk = choose_sd_card().await?;
-    unmount_sd_card(&disk).await?;
-    flash_image(&disk, &os_image_path).await?;
-    mount_sd_card().await?;
 }
 
 #[throws(Error)]
@@ -242,6 +244,23 @@ async fn mount_sd_card() {
         .get()?;
 
     cmd!("diskutil mount {}", partition.id).await?;
+}
+
+fn has_system_boot_partition(disk: &DiskInfo) -> bool {
+    disk.partitions
+        .iter()
+        .any(|part| part.name == "system-boot")
+}
+
+#[throws(Error)]
+fn wants_to_flash() -> bool {
+    let opt = select!(
+        "Selected SD card seems to have already been flashed with Ubuntu. Do you want to skip \
+        flashing the SD card?"
+    )
+    .with_options([Opt::Skip, Opt::Custom("Format anyway")])
+    .get()?;
+    opt != Opt::Skip
 }
 
 fn unnamed_if_empty<S: AsRef<str> + ?Sized>(name: &S) -> String {

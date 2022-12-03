@@ -263,8 +263,13 @@ impl<T> SelectBuilder<T> {
 
 impl<T: Display> SelectBuilder<T> {
     #[throws(Error)]
-    pub fn get(self) -> T {
-        let num_options = self.options.len();
+    pub fn get(mut self) -> T {
+        let num_options = self.option_count();
+
+        if num_options == 1 {
+            return self.options.remove(0);
+        }
+
         let pause_lock = log::pause_rendering(2 + num_options)?;
 
         let render_config =

@@ -46,12 +46,12 @@ impl Ledger {
 
         let mut always_yes = false;
         while let Some(transaction) = self.transactions.pop() {
-            progress!("[Transaction] {}", transaction.description());
+            progress!("[Change] {}", transaction.description());
             info!("{}", transaction.detail());
 
             if !always_yes {
                 let yes_to_all = Opt::Custom("Yes to all");
-                match select!("Do you want to roll back the transaction?")
+                match select!("Do you want to revert this change?")
                     .with_options([Opt::Yes, yes_to_all, Opt::No])
                     .get()?
                 {
