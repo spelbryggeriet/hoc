@@ -3,13 +3,13 @@ use std::{
     fs::File as BlockingFile,
     io::{Cursor, Read, SeekFrom},
     net::IpAddr,
-    path::Path,
+    path::{Path, PathBuf},
 };
 
 use anyhow::Error;
 use tokio::{
-    fs::File,
-    io::{self, AsyncSeekExt, AsyncWriteExt},
+    fs::{self, File},
+    io::{self, AsyncReadExt, AsyncSeekExt, AsyncWriteExt},
 };
 use xz2::read::XzDecoder;
 
@@ -35,9 +35,15 @@ pub async fn run() {
         unmount_sd_card(&disk).await?;
         flash_image(&disk, &os_image_path).await?;
     }
-    mount_sd_card().await?;
+
     let node_name = generate_node_name().await?;
-    assign_ip_address(&node_name).await?;
+    let ip_address = assign_ip_address(&node_name).await?;
+
+    let partition = mount_sd_card().await?;
+    let mount_dir = find_mount_dir(&disk).await?;
+
+    modify_image(&mount_dir, &node_name, ip_address).await?;
+    unmount_partition(&partition).await?;
 }
 
 #[throws(Error)]
@@ -119,61 +125,6 @@ async fn decompress_xz_file(os_image_file: &mut File, os_image_path: &Path) {
 }
 
 #[throws(Error)]
-async fn generate_node_name() -> String {
-    progress!("Generating node name");
-
-    let num_nodes = match kv!("nodes/**").await {
-        Ok(item) => item
-            .into_iter()
-            .filter_key_value("initialized", true)
-            .count(),
-        Err(kv::Error::Key(key::Error::KeyDoesNotExist(_))) => 0,
-        Err(err) => throw!(err),
-    };
-
-    let node_name = format!("node-{}", util::numeral(num_nodes as u64 + 1));
-    kv!("nodes/{node_name}/initialized").put(false).await?;
-    info!("Node name: {node_name}");
-
-    node_name
-}
-
-#[throws(Error)]
-async fn assign_ip_address(node_name: &str) {
-    progress!("Assigning IP address");
-
-    let start_address: IpAddr = kv!("network/start_address").await?.convert()?;
-    let used_addresses: Vec<IpAddr> = match kv!("nodes/**").await {
-        Ok(item) => item
-            .into_iter()
-            .filter_key_value("initialized", true)
-            .try_get_key("network/start_address")
-            .and_convert()
-            .collect::<Result<_, _>>()?,
-        Err(kv::Error::Key(key::Error::KeyDoesNotExist(_))) => Vec::new(),
-        Err(err) => throw!(err),
-    };
-    let prefix_len: u32 = kv!("network/prefix_len").await?.convert()?;
-
-    let addresses = Cidr {
-        ip_addr: start_address,
-        prefix_len,
-    };
-    for step in 0.. {
-        let next_address = addresses
-            .step(step)
-            .context("No more IP addresses available")?;
-        if !used_addresses.contains(&next_address) {
-            kv!("nodes/{node_name}/network/address")
-                .put(next_address.to_string())
-                .await?;
-            info!("Assigned IP Address: {next_address}");
-            break;
-        }
-    }
-}
-
-#[throws(Error)]
 async fn choose_sd_card() -> DiskInfo {
     progress!("Choosing SD card");
 
@@ -216,7 +167,7 @@ async fn flash_image(disk: &DiskInfo, os_image_path: &Path) {
 }
 
 #[throws(Error)]
-async fn mount_sd_card() {
+async fn mount_sd_card() -> DiskPartitionInfo {
     progress!("Mounting SD card");
 
     let partition = loop {
@@ -239,11 +190,145 @@ async fn mount_sd_card() {
             .get()?;
     };
 
-    select!("Do you want to mount disk partition '{partition}'?")
+    cmd!("diskutil mount {}", partition.id).await?;
+
+    partition
+}
+
+#[throws(Error)]
+async fn find_mount_dir(disk: &DiskInfo) -> PathBuf {
+    progress!("Finding mount directory");
+
+    let output = cmd!("df").await?;
+    let mount_line = output
+        .stdout
+        .lines()
+        .find(|line| line.contains(&disk.id))
+        .with_context(|| format!("{} not mounted", disk.id))?;
+    mount_line
+        .split_terminator(' ')
+        .last()
+        .with_context(|| format!("mount point not found for {}", disk.id))?
+        .into()
+}
+
+#[throws(Error)]
+async fn generate_node_name() -> String {
+    progress!("Generating node name");
+
+    let num_nodes = match kv!("nodes/**").await {
+        Ok(item) => item
+            .into_iter()
+            .filter_key_value("initialized", true)
+            .count(),
+        Err(kv::Error::Key(key::Error::KeyDoesNotExist(_))) => 0,
+        Err(err) => throw!(err),
+    };
+
+    let node_name = format!("node-{}", util::numeral(num_nodes as u64 + 1));
+    kv!("nodes/{node_name}/initialized").put(false).await?;
+    info!("Node name: {node_name}");
+
+    node_name
+}
+
+#[throws(Error)]
+async fn assign_ip_address(node_name: &str) -> IpAddr {
+    progress!("Assigning IP address");
+
+    let start_address: IpAddr = kv!("network/start_address").await?.convert()?;
+    let used_addresses: Vec<IpAddr> = match kv!("nodes/**").await {
+        Ok(item) => item
+            .into_iter()
+            .filter_key_value("initialized", true)
+            .try_get_key("network/start_address")
+            .and_convert()
+            .collect::<Result<_, _>>()?,
+        Err(kv::Error::Key(key::Error::KeyDoesNotExist(_))) => Vec::new(),
+        Err(err) => throw!(err),
+    };
+    let prefix_len: u32 = kv!("network/prefix_len").await?.convert()?;
+
+    let addresses = Cidr {
+        ip_addr: start_address,
+        prefix_len,
+    };
+
+    let mut step = 0;
+    loop {
+        let next_address = addresses
+            .step(step)
+            .context("No more IP addresses available")?;
+        if !used_addresses.contains(&next_address) {
+            kv!("nodes/{node_name}/network/address")
+                .put(next_address.to_string())
+                .await?;
+            info!("Assigned IP Address: {next_address}");
+            break next_address;
+        }
+
+        step += 1;
+    }
+}
+
+#[throws(Error)]
+async fn modify_image(mount_dir: &Path, node_name: &str, ip_address: IpAddr) {
+    let opt = select!("Do you want to modify the partition mounted at {mount_dir:?}?")
         .with_options([Opt::Yes, Opt::No])
         .get()?;
 
-    cmd!("diskutil mount {}", partition.id).await?;
+    if opt == Opt::No {
+        return;
+    }
+
+    progress!("Modifying image");
+
+    let (mut pub_key_file, _) = files!("admin/ssh/pub").await?;
+    let mut pub_key = String::new();
+    pub_key_file.read_to_string(&mut pub_key).await?;
+
+    // Deserialize and serialize to check for syntax errors.
+    let admin_username: String = kv!("admin/username").await?.convert()?;
+    let data_map: serde_yaml::Value = serde_yaml::from_str(&format!(
+        include_str!("../../../../config/cloud-init/user_data.yaml"),
+        admin_username = admin_username,
+        hostname = node_name,
+        ssh_pub_key = pub_key,
+    ))?;
+    let data = serde_yaml::to_string(&data_map)?;
+    let data = "#cloud-config".to_owned() + data.strip_prefix("---").unwrap_or(&data);
+
+    debug!("User data:\n{data}");
+
+    let user_data_path = mount_dir.join("user-data");
+    fs::write(&user_data_path, &data).await?;
+
+    // Deserialize and serialize to check for syntax errors.
+    let gateway: IpAddr = kv!("network/gateway").await?.convert()?;
+    let gateway_ip_version = if gateway.is_ipv4() { 4 } else { 6 };
+    let network_config_map: serde_yaml::Value = serde_yaml::from_str(&format!(
+        include_str!("../../../../config/cloud-init/network_config.yaml"),
+        ip_address = ip_address,
+        gateway = gateway,
+        gateway_ip_version = gateway_ip_version,
+    ))?;
+    let network_config = serde_yaml::to_string(&network_config_map)?;
+    let network_config = network_config
+        .strip_prefix("---\n")
+        .unwrap_or(&network_config);
+
+    debug!("Network config:\n{network_config}");
+
+    let network_config_path = mount_dir.join("network-config");
+    fs::write(&network_config_path, &network_config).await?;
+}
+
+#[throws(Error)]
+async fn unmount_partition(partition: &DiskPartitionInfo) {
+    progress!("Unmounting partition");
+
+    cmd!("sync").await?;
+    cmd!("diskutil unmount {}", partition.id).await?;
 }
 
 fn has_system_boot_partition(disk: &DiskInfo) -> bool {
@@ -254,13 +339,11 @@ fn has_system_boot_partition(disk: &DiskInfo) -> bool {
 
 #[throws(Error)]
 fn wants_to_flash() -> bool {
-    let opt = select!(
-        "Selected SD card seems to have already been flashed with Ubuntu. Do you want to skip \
-        flashing the SD card?"
-    )
-    .with_options([Opt::Skip, Opt::Custom("Format anyway")])
-    .get()?;
-    opt != Opt::Skip
+    let flash_anyway = Opt::Custom("Flash anyway");
+    let opt = select!("Selected SD card seems to have already been flashed with Ubuntu.")
+        .with_options([Opt::Custom("Skip flashing"), flash_anyway])
+        .get()?;
+    opt == flash_anyway
 }
 
 fn unnamed_if_empty<S: AsRef<str> + ?Sized>(name: &S) -> String {

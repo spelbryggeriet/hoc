@@ -233,12 +233,10 @@ impl<C> CmdBuilder<C> {
                 }
             }
 
-            if log_enabled!(Level::Debug) {
-                let sudo_str = sudo_string(self.sudo);
-                let cmd_str = cmd.yellow();
-                debug!("{progress_desc}: {sudo_str}{cmd_str}");
-                debug!("Host: this computer");
-            }
+            let sudo_str = sudo_string(self.sudo);
+            let cmd_str = cmd.yellow();
+            debug!("{progress_desc}: {sudo_str}{cmd_str}");
+            debug!("Host: this computer");
 
             match self.exec(&runnable_cmd, &mut pipe_input).await {
                 Ok(output) => {

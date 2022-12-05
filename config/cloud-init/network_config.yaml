@@ -1,0 +1,13 @@
+version: 2
+ethernets:
+  eth0:
+    dhcp4: false
+    dhcp6: false
+    addresses:
+      - {ip_address}
+    gateway{gateway_ip_version}: {gateway}
+    nameservers:
+      addresses:
+        - {gateway}
+        - 8.8.8.8
+        - 8.8.4.4
