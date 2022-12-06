@@ -95,9 +95,7 @@ async fn fetch_source(dest_path: &Path) {
 
     info!("Repository URL: {repo_url}");
 
-    cmd!("git clone {repo_url} {dest_path:?}")
-        .revertible(cmd!("rm -fr {dest_path:?}"))
-        .await?;
+    cmd!("git clone --depth=1 {repo_url} {dest_path:?}").await?;
 }
 
 #[throws(Error)]
@@ -106,14 +104,12 @@ async fn checkout_ref(source_path: &Path, from_ref: &str) {
 
     let source_path_string = source_path.to_string_lossy().into_owned();
 
-    let original_branch = cmd!("git branch --show-current")
+    cmd!("git fetch --force origin {from_ref}")
         .current_dir(source_path_string.clone())
-        .await?
-        .stdout;
-    cmd!("git checkout {from_ref}")
+        .await?;
+    cmd!("git reset --hard FETCH_HEAD")
         .current_dir(source_path_string.clone())
-        .revertible(cmd!("git checkout {original_branch}").current_dir(source_path_string.clone()))
-        .await?
+        .await?;
 }
 
 #[throws(Error)]

@@ -71,7 +71,7 @@ impl CmdBuilder<Regular> {
         }
     }
 
-    pub fn revertible(self, revert_cmd: Self) -> CmdBuilder<Revertible> {
+    pub fn _revertible(self, revert_cmd: Self) -> CmdBuilder<Revertible> {
         CmdBuilder {
             cmd: Revertible {
                 raw_forward_cmd: self.cmd.0,
@@ -151,7 +151,15 @@ impl CmdBuilder<Revertible> {
     #[throws(Error)]
     async fn revert_transaction(&self) {
         let transaction = self.get_transaction();
-        Box::new(transaction).revert().await?;
+
+        info!("{}", transaction.detail());
+
+        let opt = select!("Do you want to revert the failed command?")
+            .with_options([Opt::Yes, Opt::No])
+            .get()?;
+        if opt == Opt::Yes {
+            Box::new(transaction).revert().await?;
+        }
     }
 
     #[throws(Error)]
@@ -225,12 +233,10 @@ impl<C> CmdBuilder<C> {
                 }
             }
 
-            if log_enabled!(Level::Debug) {
-                let sudo_str = sudo_string(self.sudo);
-                let cmd_str = cmd.yellow();
-                debug!("{progress_desc}: {sudo_str}{cmd_str}");
-                debug!("Host: this computer");
-            }
+            let sudo_str = sudo_string(self.sudo);
+            let cmd_str = cmd.yellow();
+            debug!("{progress_desc}: {sudo_str}{cmd_str}");
+            debug!("Host: this computer");
 
             match self.exec(&runnable_cmd, &mut pipe_input).await {
                 Ok(output) => {

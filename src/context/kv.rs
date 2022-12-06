@@ -226,12 +226,7 @@ impl Kv {
         V: Into<Value> + Clone + Display,
     {
         let key = key.into();
-        let original_value = if log_enabled!(Level::Trace) {
-            Some(value.clone())
-        } else {
-            None
-        };
-        let original_value = original_value.as_ref();
+        let original_value = value.clone();
         let value = if !options.temporary {
             ValueType::Persistent(value.into())
         } else {
@@ -266,9 +261,7 @@ impl Kv {
 
                     should_overwrite = opt == Opt::Overwrite;
                     if !should_overwrite {
-                        if let Some(v) = original_value {
-                            warn!("Putting {desc}: {key} => {v} (skipping)");
-                        }
+                        warn!("Putting {desc}: {key} => {original_value} (skipping)");
                         return Some(None);
                     }
                 }
@@ -283,9 +276,7 @@ impl Kv {
                     } else if existing.is_persistent() && value.is_temporary() {
                         error!("Key {key} is marked as persistent");
                     } else {
-                        if let Some(v) = original_value {
-                            debug!("Putting {desc}: {key} => {v} (no change)");
-                        }
+                        debug!("Putting {desc}: {key} => {original_value} (no change)");
                         return Some(None);
                     }
 
@@ -295,9 +286,7 @@ impl Kv {
 
                     should_overwrite = opt == Opt::Overwrite;
                     if !should_overwrite {
-                        if let Some(v) = original_value {
-                            warn!("Putting {desc}: {key} => {v} (skipping)");
-                        }
+                        warn!("Putting {desc}: {key} => {original_value} (skipping)");
                         return Some(None);
                     }
                 }
@@ -306,26 +295,20 @@ impl Kv {
         }
 
         if !should_overwrite {
-            if let Some(v) = original_value {
-                debug!("Putting {desc}: {key} => {v}");
-            }
+            debug!("Putting {desc}: {key} => {original_value}");
         } else {
-            if log_enabled!(Level::Trace) {
-                trace!(
-                    "Old item for key {key}: {}",
-                    serde_json::to_string(&self.get_item(&*key)?)?
-                );
-            }
-            if let Some(v) = original_value {
-                log!(
-                    if options.force {
-                        Level::Debug
-                    } else {
-                        Level::Warn
-                    },
-                    "Putting {desc}: {key} => {v} (overwriting)",
-                );
-            }
+            trace!(
+                "Old item for key {key}: {}",
+                serde_json::to_string(&self.get_item(&*key)?)?
+            );
+            log!(
+                if options.force {
+                    Level::Debug
+                } else {
+                    Level::Warn
+                },
+                "Putting {desc}: {key} => {original_value} (overwriting)",
+            );
         }
 
         self.map
