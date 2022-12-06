@@ -4,7 +4,7 @@ on:
   push:
     branches: [ master ]
     paths-ignore:
-    - '*.md'
+    - '**.md'
     - 'scripts/**'
     - '.gitignore'
     - '.github/**'
@@ -12,7 +12,7 @@ on:
   pull_request:
     branches: [ master ]
     paths-ignore:
-    - '*.md'
+    - '**.md'
     - 'scripts/**'
     - '.gitignore'
     - '.github/**'
