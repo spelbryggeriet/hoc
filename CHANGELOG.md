@@ -2,10 +2,22 @@
 
 All notable changes to this project will be documented in this file.
 
-The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
-and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), and this project
+adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+
+### Changed
+
+- The `sd-card-prepare` command now modifies the flashed SD card with
+  [cloud-init](https://cloud-init.io) settings.
+
+### Fixed
+
+- The `upgrade` command will now work properly with the `--from-ref` flag when a branch has been
+  fore-pushed with new commits.
+- The `upgrade` command will now check if an SD card has previously been flashed.
+- An issue where some logs would not be written to the `~/.local/share/hoc/logs` folder.
 
 ## [0.0.3] - 2022-12-01
 
