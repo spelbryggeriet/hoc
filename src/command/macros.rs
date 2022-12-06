@@ -13,7 +13,7 @@ macro_rules! arg_diagnostics {
 
     ($field:ident, $value:ident) => {{
         let message = ::heck::ToTitleCase::to_title_case(stringify!($field));
-        info!("{message}: {}", $value)
+        debug!("{message}: {}", $value)
     }};
 }
 

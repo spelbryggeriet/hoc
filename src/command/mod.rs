@@ -224,7 +224,10 @@ impl Command {
             },
 
             Node(node_command) => match node_command {
-                NodeCommand::Deploy(_deploy_command) => {}
+                NodeCommand::Deploy(_deploy_command) => {
+                    cmd_diagnostics!(NodeDeployCommand);
+                    node::deploy::run().await?;
+                }
             },
 
             Deploy(_deploy_command) => {}
