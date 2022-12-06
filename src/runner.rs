@@ -71,7 +71,7 @@ impl CmdBuilder<Regular> {
         }
     }
 
-    pub fn revertible(self, revert_cmd: Self) -> CmdBuilder<Revertible> {
+    pub fn _revertible(self, revert_cmd: Self) -> CmdBuilder<Revertible> {
         CmdBuilder {
             cmd: Revertible {
                 raw_forward_cmd: self.cmd.0,
