@@ -11,9 +11,9 @@ macro_rules! arg_diagnostics {
         }
     }};
 
-    ($field:ident, $value:ident) => {{
+    ($field:ident, $value:expr) => {{
         let message = ::heck::ToTitleCase::to_title_case(stringify!($field));
-        debug!("{message}: {}", $value)
+        debug!("{message}: {}", $value);
     }};
 }
 

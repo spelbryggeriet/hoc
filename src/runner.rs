@@ -254,16 +254,14 @@ impl<C> CmdBuilder<C> {
                     // TODO: Due to an unknown bug, a space character is needed at the start or end
                     // to render the icon color.
                     error!(
-                        "The command {cmd_only} failed with exit code {}\n ",
-                        output.code
+                        "The command {cmd_only} failed with exit code {}",
+                        output.code,
                     );
-                    error!("[stdout]");
                     if !output.stdout.is_empty() {
-                        error!("{}", output.stdout);
+                        info!("[stdout]\n{}", output.stdout);
                     }
-                    error!(" \n[stderr]");
                     if !output.stderr.is_empty() {
-                        error!("{}", output.stderr);
+                        info!("[stderr]\n{}", output.stderr);
                     }
 
                     let modify = Opt::Custom("Modify");

@@ -28,11 +28,10 @@ const UBUNTU_VERSION: UbuntuVersion = UbuntuVersion {
 
 #[throws(Error)]
 pub async fn run() {
-    let (_os_image_file, os_image_path) = files!("images/os").cached(get_os_image).await?;
-
     let disk = choose_sd_card().await?;
     if !has_system_boot_partition(&disk) || wants_to_flash()? {
         unmount_sd_card(&disk).await?;
+        let os_image_path = get_os_image_path().await?;
         flash_image(&disk, &os_image_path).await?;
     }
 
@@ -44,6 +43,14 @@ pub async fn run() {
 
     modify_image(&mount_dir, &node_name, ip_address).await?;
     unmount_partition(&partition).await?;
+
+    report(&node_name);
+}
+
+#[throws(Error)]
+async fn get_os_image_path() -> PathBuf {
+    let (_, os_image_path) = files!("images/os").cached(get_os_image).await?;
+    os_image_path
 }
 
 #[throws(Error)]
@@ -329,6 +336,13 @@ async fn unmount_partition(partition: &DiskPartitionInfo) {
 
     cmd!("sync").await?;
     cmd!("diskutil unmount {}", partition.id).await?;
+}
+
+fn report(node_name: &str) {
+    info!(
+        "SD card prepared. Deploy the node using the following command:\n\nhoc node deploy \
+        {node_name}",
+    );
 }
 
 fn has_system_boot_partition(disk: &DiskInfo) -> bool {

@@ -31,6 +31,11 @@ commands_summary! {
                 passphrase for the SSH keypair."
         }
     }
+    node_deploy {
+        node_name {
+            help = "The name of the node",
+        }
+    }
 }
 
 /// Hosting on Command
@@ -161,7 +166,11 @@ pub enum NodeCommand {
 
 /// Deploy a node
 #[derive(Parser)]
-pub struct NodeDeployCommand {}
+#[clap(name = "node-deploy")]
+pub struct NodeDeployCommand {
+    #[clap(help = help::node_deploy::node_name())]
+    node_name: String,
+}
 
 impl Command {
     #[cfg(debug_assertions)]
@@ -224,9 +233,12 @@ impl Command {
             },
 
             Node(node_command) => match node_command {
-                NodeCommand::Deploy(_deploy_command) => {
+                NodeCommand::Deploy(deploy_command) => {
                     cmd_diagnostics!(NodeDeployCommand);
-                    node::deploy::run().await?;
+
+                    arg_diagnostics!(node_name, deploy_command.node_name);
+
+                    node::deploy::run(deploy_command.node_name).await?;
                 }
             },
 
