@@ -170,6 +170,7 @@ impl TryFrom<Item> for IpAddr {
 pub enum Opt<'a> {
     Yes,
     No,
+    Modify,
     Overwrite,
     Rerun,
     Retry,
@@ -182,6 +183,7 @@ impl Display for Opt<'_> {
         match self {
             Self::Yes => write!(f, "Yes"),
             Self::No => write!(f, "No"),
+            Self::Modify => write!(f, "Modify"),
             Self::Overwrite => write!(f, "Overwrite"),
             Self::Rerun => write!(f, "Rerun"),
             Self::Retry => write!(f, "Retry"),

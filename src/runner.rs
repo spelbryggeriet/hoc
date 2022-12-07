@@ -7,11 +7,13 @@ use std::{
 
 use async_trait::async_trait;
 use crossterm::style::Stylize;
+use once_cell::sync::OnceCell;
 use thiserror::Error;
 use tokio::{
     io::{self, AsyncBufReadExt, AsyncRead, AsyncWriteExt, BufReader},
     join,
     process::Command,
+    sync::{Mutex, MutexGuard},
 };
 
 use crate::{
@@ -22,88 +24,64 @@ use crate::{
     util::Opt,
 };
 
-#[throws(Error)]
-async fn read_lines(reader: impl AsyncRead + Unpin, print_line: impl Fn(&str)) -> String {
-    let mut lines = BufReader::new(reader).lines();
-    let mut out = String::new();
+pub async fn global_settings<'a>() -> MutexGuard<'a, Settings> {
+    static SETTINGS_QUEUE: OnceCell<Mutex<Settings>> = OnceCell::new();
 
-    while let Some(line) = lines.next_line().await? {
-        print_line(&line);
-        if !out.is_empty() {
-            out.push('\n');
-        }
-        out.push_str(&line);
-    }
-
-    out
-}
-
-fn sudo_string(is_sudo: bool) -> Cow<'static, str> {
-    if is_sudo {
-        format!("{} ", "sudo".black().on_yellow()).into()
-    } else {
-        "".into()
-    }
+    SETTINGS_QUEUE
+        .get_or_init(|| Mutex::new(Settings::new()))
+        .lock()
+        .await
 }
 
 #[derive(Clone)]
 pub struct CmdBuilder<C> {
     cmd: C,
-    sudo: bool,
-    current_dir: Option<Cow<'static, str>>,
+    settings: Settings,
+}
+
+#[async_trait]
+trait Cmd: Send + Sync {
+    fn as_raw(&self) -> String;
+
+    async fn on_finished(&self, _is_forward_cmd_sudo: bool, _revert_cmd_settings: Settings) {}
+
+    async fn on_revert(
+        &self,
+        _is_forward_cmd_sudo: bool,
+        _revert_cmd_settings: Settings,
+    ) -> Result<(), Error> {
+        Ok(())
+    }
 }
 
 #[derive(Clone)]
-pub struct Regular(Cow<'static, str>);
-
-#[derive(Clone)]
-pub struct Revertible {
+pub struct RegularCmd {
     raw_forward_cmd: Cow<'static, str>,
-    revert_cmd: CmdBuilder<Regular>,
 }
 
-impl CmdBuilder<Regular> {
-    pub fn new(cmd: Cow<'static, str>) -> Self {
-        Self {
-            cmd: Regular(cmd),
-            sudo: false,
-            current_dir: None,
-        }
-    }
-
-    pub fn _revertible(self, revert_cmd: Self) -> CmdBuilder<Revertible> {
-        CmdBuilder {
-            cmd: Revertible {
-                raw_forward_cmd: self.cmd.0,
-                revert_cmd,
-            },
-            sudo: self.sudo,
-            current_dir: self.current_dir,
-        }
-    }
-
-    async fn noop(&self) {}
-
-    #[throws(Error)]
-    async fn try_noop(&self) {}
-
-    pub async fn run(self) -> Result<Output, Error> {
-        let mut noop = Some(Self::noop);
-        let mut try_noop = Some(Self::try_noop);
-        noop.take();
-        try_noop.take();
-
-        self.run_loop(|cmd| Cow::Borrowed(&cmd.0), false, noop, try_noop, noop)
-            .await
+impl Cmd for RegularCmd {
+    fn as_raw(&self) -> String {
+        self.raw_forward_cmd.clone().into_owned()
     }
 }
 
-impl CmdBuilder<Revertible> {
-    fn get_transaction(&self) -> impl Transaction {
+#[derive(Clone)]
+pub struct RevertibleCmd {
+    raw_forward_cmd: Cow<'static, str>,
+    revert_cmd: CmdBuilder<RegularCmd>,
+}
+
+impl RevertibleCmd {
+    fn get_transaction(
+        &self,
+        is_forward_cmd_sudo: bool,
+        revert_cmd_settings: Settings,
+    ) -> impl Transaction {
         struct RevertibleTransaction {
-            forward_cmd: Cow<'static, str>,
+            raw_forward_cmd: Cow<'static, str>,
             is_forward_cmd_sudo: bool,
-            revert_cmd: CmdBuilder<Regular>,
+            revert_cmd: CmdBuilder<RegularCmd>,
+            revert_cmd_settings: Settings,
         }
 
         #[async_trait]
@@ -113,44 +91,62 @@ impl CmdBuilder<Revertible> {
             }
 
             fn detail(&self) -> Cow<'static, str> {
-                let sudo_str = sudo_string(self.is_forward_cmd_sudo || self.revert_cmd.sudo);
+                let sudo_str = util::sudo_string(
+                    self.is_forward_cmd_sudo || self.revert_cmd_settings.is_sudo(),
+                );
 
                 format!(
                     "Command to revert: {}{}\nCommand used to revert: {}{}",
                     self.is_forward_cmd_sudo
                         .then_some(&*sudo_str)
                         .unwrap_or_default(),
-                    self.forward_cmd.yellow(),
-                    self.revert_cmd
-                        .sudo
+                    self.raw_forward_cmd.yellow(),
+                    self.revert_cmd_settings
+                        .is_sudo()
                         .then_some(&*sudo_str)
                         .unwrap_or_default(),
-                    self.revert_cmd.cmd.0.yellow(),
+                    self.revert_cmd.cmd.raw_forward_cmd.yellow(),
                 )
                 .into()
             }
 
             async fn revert(self: Box<Self>) -> anyhow::Result<()> {
-                self.revert_cmd.await?;
+                util::run_loop(
+                    Box::new(self.revert_cmd.cmd),
+                    &self.revert_cmd_settings,
+                    None,
+                )
+                .await?;
                 Ok(())
             }
         }
 
         RevertibleTransaction {
-            forward_cmd: self.cmd.raw_forward_cmd.clone(),
-            is_forward_cmd_sudo: self.sudo,
-            revert_cmd: self.cmd.revert_cmd.clone(),
+            raw_forward_cmd: self.raw_forward_cmd.clone(),
+            is_forward_cmd_sudo,
+            revert_cmd: self.revert_cmd.clone(),
+            revert_cmd_settings,
         }
     }
+}
 
-    async fn add_transaction_to_ledger(&self) {
-        let transaction = self.get_transaction();
+#[async_trait]
+impl Cmd for RevertibleCmd {
+    fn as_raw(&self) -> String {
+        self.raw_forward_cmd.clone().into_owned()
+    }
+
+    async fn on_finished(&self, is_forward_cmd_sudo: bool, revert_cmd_settings: Settings) {
+        let transaction = self.get_transaction(is_forward_cmd_sudo, revert_cmd_settings);
         Ledger::get_or_init().lock().await.add(transaction);
     }
 
-    #[throws(Error)]
-    async fn revert_transaction(&self) {
-        let transaction = self.get_transaction();
+    async fn on_revert(
+        &self,
+        is_forward_cmd_sudo: bool,
+        revert_cmd_settings: Settings,
+    ) -> Result<(), Error> {
+        let transaction = self.get_transaction(is_forward_cmd_sudo, revert_cmd_settings);
 
         info!("{}", transaction.detail());
 
@@ -160,69 +156,237 @@ impl CmdBuilder<Revertible> {
         if opt == Opt::Yes {
             Box::new(transaction).revert().await?;
         }
+        Ok(())
+    }
+}
+
+impl CmdBuilder<RegularCmd> {
+    pub fn new(cmd: Cow<'static, str>) -> Self {
+        Self {
+            cmd: RegularCmd {
+                raw_forward_cmd: cmd,
+            },
+            settings: Settings::new(),
+        }
+    }
+
+    pub fn _revertible(self, revert_cmd: Self) -> CmdBuilder<RevertibleCmd> {
+        CmdBuilder {
+            cmd: RevertibleCmd {
+                raw_forward_cmd: self.cmd.raw_forward_cmd,
+                revert_cmd,
+            },
+            settings: self.settings,
+        }
     }
 
     #[throws(Error)]
     pub async fn run(self) -> Output {
-        self.run_loop(
-            |cmd| Cow::Borrowed(&cmd.raw_forward_cmd),
-            true,
-            Some(Self::add_transaction_to_ledger),
-            Some(Self::revert_transaction),
-            Some(Self::add_transaction_to_ledger),
+        let settings: Settings = self.get_current_settings().await;
+        util::run_loop(Box::new(self.cmd), &settings, None).await?
+    }
+}
+
+impl CmdBuilder<RevertibleCmd> {
+    #[throws(Error)]
+    pub async fn run(self) -> Output {
+        let forward_cmd_settings = self.get_current_settings().await;
+        let revert_cmd_settings = self.cmd.revert_cmd.get_current_settings().await;
+        util::run_loop(
+            Box::new(self.cmd),
+            &forward_cmd_settings,
+            Some(revert_cmd_settings),
         )
         .await?
     }
 }
 
 impl<C> CmdBuilder<C> {
+    async fn get_current_settings(&self) -> Settings {
+        let mut derived_settings = Settings::new();
+        derived_settings.apply(&*global_settings().await);
+        derived_settings.apply(&self.settings);
+        derived_settings
+    }
+
     pub fn sudo(mut self) -> Self {
-        self.sudo = true;
+        self.settings.sudo();
         self
     }
 
     pub fn current_dir<P: Into<Cow<'static, str>>>(mut self, current_dir: P) -> Self {
-        self.current_dir.replace(current_dir.into());
+        self.settings.current_dir(current_dir);
+        self
+    }
+
+    pub fn remote_mode(mut self) -> Self {
+        self.settings.remote_mode();
         self
     }
 }
 
-impl CmdBuilder<Revertible> {}
+type CmdBuilderFuture = Pin<Box<dyn Future<Output = Result<Output, Error>> + Send>>;
 
-impl<C> CmdBuilder<C> {
+impl IntoFuture for CmdBuilder<RegularCmd> {
+    type IntoFuture = CmdBuilderFuture;
+    type Output = <CmdBuilderFuture as Future>::Output;
+
+    fn into_future(self) -> Self::IntoFuture {
+        Box::pin(self.run())
+    }
+}
+
+impl IntoFuture for CmdBuilder<RevertibleCmd> {
+    type IntoFuture = CmdBuilderFuture;
+    type Output = <CmdBuilderFuture as Future>::Output;
+
+    fn into_future(self) -> Self::IntoFuture {
+        Box::pin(self.run())
+    }
+}
+
+#[derive(Debug)]
+pub struct Output {
+    pub code: i32,
+    pub stdout: String,
+    pub stderr: String,
+}
+
+impl Output {
+    fn new() -> Self {
+        Self {
+            code: 0,
+            stdout: String::new(),
+            stderr: String::new(),
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct Settings {
+    sudo: Option<bool>,
+    current_dir: Option<Option<Cow<'static, str>>>,
+    mode: Option<CmdMode>,
+}
+
+impl Settings {
+    const DEFAULT_SUDO: bool = false;
+    const DEFAULT_CURRENT_DIR: Option<Cow<'static, str>> = None;
+    const DEFAULT_MODE: CmdMode = CmdMode::Local;
+
+    fn new() -> Self {
+        Self {
+            sudo: None,
+            current_dir: None,
+            mode: None,
+        }
+    }
+
+    fn apply(&mut self, other: &Self) {
+        if let Some(sudo) = other.sudo {
+            self.sudo.replace(sudo);
+        }
+
+        if let Some(current_dir) = &other.current_dir {
+            self.current_dir.replace(current_dir.clone());
+        }
+
+        if let Some(mode) = other.mode {
+            self.mode.replace(mode);
+        }
+    }
+
+    pub fn sudo(&mut self) -> &mut Self {
+        self.sudo.replace(true);
+        self
+    }
+
+    fn is_sudo(&self) -> bool {
+        self.sudo.unwrap_or(Self::DEFAULT_SUDO)
+    }
+
+    pub fn current_dir<P: Into<Cow<'static, str>>>(&mut self, current_dir: P) -> &mut Self {
+        self.current_dir.replace(Some(current_dir.into()));
+        self
+    }
+
+    fn get_current_dir(&self) -> Option<Cow<str>> {
+        self.current_dir
+            .as_ref()
+            .map(|opt| opt.as_ref().map(|v| Cow::Borrowed(&**v)))
+            .unwrap_or(Self::DEFAULT_CURRENT_DIR)
+    }
+
+    pub fn remote_mode(&mut self) -> &mut Self {
+        self.mode.replace(CmdMode::Remote);
+        self
+    }
+
+    fn get_mode(&self) -> CmdMode {
+        self.mode.unwrap_or(Self::DEFAULT_MODE)
+    }
+}
+
+#[derive(Default, Clone, Copy, PartialEq, Eq)]
+enum CmdMode {
+    #[default]
+    Local,
+    Remote,
+}
+
+#[derive(Debug, Error)]
+pub enum Error {
+    #[error("The process failed with exit code {}", _0.code)]
+    Failed(Output),
+
+    #[error("The process was terminated by a signal")]
+    Terminated,
+
+    #[error(transparent)]
+    Prompt(#[from] prompt::Error),
+
+    #[error(transparent)]
+    Kv(#[from] kv::Error),
+
+    #[error(transparent)]
+    Io(#[from] io::Error),
+
+    #[error(transparent)]
+    Transaction(#[from] anyhow::Error),
+}
+
+mod util {
+    use super::*;
+
     #[throws(Error)]
-    async fn run_loop<O, R, A>(
-        self,
-        get_raw_forward_cmd: impl FnOnce(&C) -> Cow<str>,
-        mut is_revertible: bool,
-        mut on_ok: Option<O>,
-        mut on_revert: Option<R>,
-        mut on_abort: Option<A>,
-    ) -> Output
-    where
-        O: for<'a> RunLoopEventFn<'a, Self, ()>,
-        R: for<'a> RunLoopEventFn<'a, Self, Result<(), Error>>,
-        A: for<'a> RunLoopEventFn<'a, Self, ()>,
-    {
-        let runnable_sudo_str = if self.sudo { "sudo -kSp '' " } else { "" };
+    pub(super) async fn run_loop(
+        mut cmd: Box<dyn Cmd>,
+        forward_cmd_settings: &Settings,
+        mut revert_cmd_settings: Option<Settings>,
+    ) -> Output {
+        let maybe_sudo = if forward_cmd_settings.is_sudo() {
+            "sudo -kSp '' "
+        } else {
+            ""
+        };
 
-        let mut cmd = get_raw_forward_cmd(&self.cmd);
-        let mut runnable_cmd = format!("{runnable_sudo_str}{cmd}");
-
+        let mut raw_cmd = cmd.as_raw();
+        let mut runnable_cmd = format!("{maybe_sudo}{raw_cmd}");
         let mut pipe_input = Vec::new();
-
         let mut progress_desc = "Running command";
+
         return loop {
             let mut password_to_cache = None;
-            if self.sudo {
+            if forward_cmd_settings.is_sudo() {
                 if let Ok(Item::Value(Value::String(password))) = kv!("admin/password").await {
                     pipe_input.push(Cow::Owned(password));
                 } else {
                     let password: Secret<String> = prompt!(
                         "[sudo] Password for command {}",
-                        cmd.split_once(' ')
+                        raw_cmd
+                            .split_once(' ')
                             .map(|opt| opt.0)
-                            .unwrap_or(&cmd)
+                            .unwrap_or(&raw_cmd)
                             .yellow()
                     )
                     .without_verification()
@@ -233,26 +397,31 @@ impl<C> CmdBuilder<C> {
                 }
             }
 
-            let sudo_str = sudo_string(self.sudo);
-            let cmd_str = cmd.yellow();
+            let sudo_str = sudo_string(forward_cmd_settings.is_sudo());
+            let cmd_str = raw_cmd.as_str().yellow();
             debug!("{progress_desc}: {sudo_str}{cmd_str}");
             debug!("Host: this computer");
 
-            match self.exec(&runnable_cmd, &mut pipe_input).await {
+            if forward_cmd_settings.get_mode() == CmdMode::Remote {
+                info!("Remote");
+            }
+
+            match exec(&runnable_cmd, &mut pipe_input, forward_cmd_settings).await {
                 Ok(output) => {
-                    if let Some(on_ok) = on_ok {
-                        on_ok(&self).await;
-                    }
                     if let Some(password) = password_to_cache {
                         kv!("admin/password").temporary().put(password).await?;
                     }
+
+                    if let Some(revert_cmd_settings) = revert_cmd_settings {
+                        cmd.on_finished(forward_cmd_settings.is_sudo(), revert_cmd_settings)
+                            .await;
+                    }
+
                     break output;
                 }
                 Err(Error::Failed(output)) => {
-                    let cmd_only = cmd.split_once(' ').map(|opt| opt.0).unwrap_or(&cmd);
+                    let cmd_only = raw_cmd.split_once(' ').map(|opt| opt.0).unwrap_or(&raw_cmd);
 
-                    // TODO: Due to an unknown bug, a space character is needed at the start or end
-                    // to render the icon color.
                     error!(
                         "The command {cmd_only} failed with exit code {}",
                         output.code,
@@ -264,53 +433,58 @@ impl<C> CmdBuilder<C> {
                         info!("[stderr]\n{}", output.stderr);
                     }
 
-                    let modify = Opt::Custom("Modify");
                     let revert_modify = Opt::Custom("Revert and modify");
                     let revert_rerun = Opt::Custom("Revert and rerun");
                     let mut select = select!("How do you want to resolve the command error?");
 
-                    if is_revertible {
+                    if revert_cmd_settings.is_some() {
                         select = select.with_option(revert_modify).with_option(revert_rerun);
                     }
 
                     let mut opt = match select
-                        .with_option(modify)
+                        .with_option(Opt::Modify)
                         .with_option(Opt::Rerun)
                         .with_option(Opt::Skip)
                         .get()
                     {
                         Ok(opt) => opt,
                         Err(err) => {
-                            if let Some(on_abort) = on_abort {
-                                on_abort(&self).await;
+                            if let Some(revert_cmd_settings) = revert_cmd_settings {
+                                cmd.on_finished(
+                                    forward_cmd_settings.is_sudo(),
+                                    revert_cmd_settings,
+                                )
+                                .await;
                             }
+
                             throw!(err);
                         }
                     };
 
-                    if let Some(on_revert) = &on_revert {
-                        if [revert_modify, revert_rerun].contains(&opt) {
-                            on_revert(&self).await?;
+                    if [revert_modify, revert_rerun].contains(&opt) {
+                        if let Some(revert_cmd_settings) = revert_cmd_settings.clone() {
+                            cmd.on_revert(forward_cmd_settings.is_sudo(), revert_cmd_settings)
+                                .await?;
                         }
                     }
 
-                    if [modify, revert_modify].contains(&opt) {
-                        let mut prompt = prompt!("New command").with_initial_input(&cmd);
+                    if [Opt::Modify, revert_modify].contains(&opt) {
+                        let mut prompt = prompt!("New command").with_initial_input(&raw_cmd);
 
-                        if is_revertible {
+                        if revert_cmd_settings.is_some() {
                             prompt = prompt.with_help_message(
                                 "Modifying the command will make it non-revertible",
                             );
                         }
 
-                        let new_cmd = Cow::Owned(prompt.get()?);
-                        if new_cmd != cmd {
-                            cmd = new_cmd;
-                            runnable_cmd = format!("{runnable_sudo_str}{cmd}");
-                            is_revertible = false;
-                            on_ok.take();
-                            on_revert.take();
-                            on_abort.take();
+                        let new_raw_cmd = prompt.get()?;
+                        if new_raw_cmd != raw_cmd {
+                            raw_cmd = new_raw_cmd;
+                            runnable_cmd = format!("{maybe_sudo}{raw_cmd}");
+                            revert_cmd_settings.take();
+                            cmd = Box::new(RegularCmd {
+                                raw_forward_cmd: raw_cmd.clone().into(),
+                            });
                         } else {
                             opt = Opt::Rerun;
                         }
@@ -331,14 +505,18 @@ impl<C> CmdBuilder<C> {
     }
 
     #[throws(Error)]
-    pub async fn exec(&self, raw_cmd: &str, pipe_input: &mut Vec<Cow<'_, str>>) -> Output {
+    pub async fn exec(
+        raw_cmd: &str,
+        pipe_input: &mut Vec<Cow<'_, str>>,
+        settings: &Settings,
+    ) -> Output {
         let mut cmd = Command::new("sh");
         cmd.args(["-c", raw_cmd])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
 
-        if let Some(current_dir) = &self.current_dir {
+        if let Some(current_dir) = &settings.get_current_dir() {
             cmd.current_dir(&**current_dir);
         }
 
@@ -378,74 +556,28 @@ impl<C> CmdBuilder<C> {
             throw!(Error::Failed(output))
         }
     }
-}
 
-type CmdBuilderFuture = Pin<Box<dyn Future<Output = Result<Output, Error>> + Send>>;
-
-impl IntoFuture for CmdBuilder<Regular> {
-    type IntoFuture = CmdBuilderFuture;
-    type Output = <CmdBuilderFuture as Future>::Output;
-
-    fn into_future(self) -> Self::IntoFuture {
-        Box::pin(self.run())
-    }
-}
-
-impl IntoFuture for CmdBuilder<Revertible> {
-    type IntoFuture = CmdBuilderFuture;
-    type Output = <CmdBuilderFuture as Future>::Output;
-
-    fn into_future(self) -> Self::IntoFuture {
-        Box::pin(self.run())
-    }
-}
-
-pub trait RunLoopEventFn<'a, C: 'a, O>: Fn(&'a C) -> Self::Fut {
-    type Fut: Future<Output = O>;
-}
-
-impl<'a, C: 'a, O, F, Fut> RunLoopEventFn<'a, C, O> for F
-where
-    F: Fn(&'a C) -> Fut,
-    Fut: Future<Output = O>,
-{
-    type Fut = Fut;
-}
-
-#[derive(Debug)]
-pub struct Output {
-    pub code: i32,
-    pub stdout: String,
-    pub stderr: String,
-}
-
-impl Output {
-    fn new() -> Self {
-        Self {
-            code: 0,
-            stdout: String::new(),
-            stderr: String::new(),
+    pub fn sudo_string(is_sudo: bool) -> Cow<'static, str> {
+        if is_sudo {
+            format!("{} ", "sudo".black().on_yellow()).into()
+        } else {
+            "".into()
         }
     }
-}
 
-#[derive(Debug, Error)]
-pub enum Error {
-    #[error("The process failed with exit code {}", _0.code)]
-    Failed(Output),
+    #[throws(Error)]
+    async fn read_lines(reader: impl AsyncRead + Unpin, print_line: impl Fn(&str)) -> String {
+        let mut lines = BufReader::new(reader).lines();
+        let mut out = String::new();
 
-    #[error("The process was terminated by a signal")]
-    Terminated,
+        while let Some(line) = lines.next_line().await? {
+            print_line(&line);
+            if !out.is_empty() {
+                out.push('\n');
+            }
+            out.push_str(&line);
+        }
 
-    #[error(transparent)]
-    Prompt(#[from] prompt::Error),
-
-    #[error(transparent)]
-    Kv(#[from] kv::Error),
-
-    #[error(transparent)]
-    Io(#[from] io::Error),
-
-    #[error(transparent)]
-    Transaction(#[from] anyhow::Error),
+        out
+    }
 }
