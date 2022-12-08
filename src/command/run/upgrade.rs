@@ -95,7 +95,7 @@ async fn fetch_source(dest_path: &Path) {
 
     info!("Repository URL: {repo_url}");
 
-    cmd!("git clone --depth=1 {repo_url} {dest_path:?}").await?;
+    process!("git clone --depth=1 {repo_url} {dest_path:?}").await?;
 }
 
 #[throws(Error)]
@@ -104,10 +104,10 @@ async fn checkout_ref(source_path: &Path, from_ref: &str) {
 
     let source_path_string = source_path.to_string_lossy().into_owned();
 
-    cmd!("git fetch --force origin {from_ref}")
+    process!("git fetch --force origin {from_ref}")
         .current_dir(source_path_string.clone())
         .await?;
-    cmd!("git reset --hard FETCH_HEAD")
+    process!("git reset --hard FETCH_HEAD")
         .current_dir(source_path_string.clone())
         .await?;
 }
@@ -116,7 +116,7 @@ async fn checkout_ref(source_path: &Path, from_ref: &str) {
 async fn build(source_path: &Path) -> PathBuf {
     progress!("Building");
 
-    cmd!("cargo build --release")
+    process!("cargo build --release")
         .current_dir(source_path.to_string_lossy().into_owned())
         .await?;
 
@@ -129,7 +129,7 @@ async fn install_by_path(executable_source_path: PathBuf) {
 
     let executable_destination_path = get_executable_destination_path();
 
-    cmd!("cp {executable_source_path:?} {executable_destination_path:?}").await?;
+    process!("cp {executable_source_path:?} {executable_destination_path:?}").await?;
 }
 
 #[throws(Error)]

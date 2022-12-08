@@ -89,7 +89,7 @@ fn ubuntu_image_url<T: Display>(version: T) -> String {
 async fn validate_os_image(os_image_file_path: &Path) {
     progress!("Validating file type");
 
-    let mut output = cmd!("file -E {}", os_image_file_path.to_string_lossy()).await?;
+    let mut output = process!("file -E {}", os_image_file_path.to_string_lossy()).await?;
     output.stdout = output.stdout.to_lowercase();
 
     if !output.stdout.contains("xz compressed data") {
@@ -100,7 +100,7 @@ async fn validate_os_image(os_image_file_path: &Path) {
             .get()?;
 
         if opt == Opt::Yes {
-            cmd!("cat {}", os_image_file_path.to_string_lossy()).await?;
+            process!("cat {}", os_image_file_path.to_string_lossy()).await?;
         }
 
         bail!("Validation failed");
@@ -155,7 +155,7 @@ async fn unmount_sd_card(disk: &DiskInfo) {
     progress!("Unmounting SD card");
 
     let id = &disk.id;
-    cmd!("diskutil unmountDisk {id}").await?;
+    process!("diskutil unmountDisk {id}").await?;
 }
 
 #[throws(Error)]
@@ -170,7 +170,7 @@ async fn flash_image(disk: &DiskInfo, os_image_path: &Path) {
     progress!("Flashing image");
 
     let id = &disk.id;
-    cmd!(sudo "dd bs=1m if={os_image_path:?} of=/dev/r{id}").await?;
+    process!(sudo "dd bs=1m if={os_image_path:?} of=/dev/r{id}").await?;
 }
 
 #[throws(Error)]
@@ -197,7 +197,7 @@ async fn mount_sd_card() -> DiskPartitionInfo {
             .get()?;
     };
 
-    cmd!("diskutil mount {}", partition.id).await?;
+    process!("diskutil mount {}", partition.id).await?;
 
     partition
 }
@@ -206,7 +206,7 @@ async fn mount_sd_card() -> DiskPartitionInfo {
 async fn find_mount_dir(disk: &DiskInfo) -> PathBuf {
     progress!("Finding mount directory");
 
-    let output = cmd!("df").await?;
+    let output = process!("df").await?;
     let mount_line = output
         .stdout
         .lines()
@@ -334,8 +334,8 @@ async fn modify_image(mount_dir: &Path, node_name: &str, ip_address: IpAddr) {
 async fn unmount_partition(partition: &DiskPartitionInfo) {
     progress!("Unmounting partition");
 
-    cmd!("sync").await?;
-    cmd!("diskutil unmount {}", partition.id).await?;
+    process!("sync").await?;
+    process!("diskutil unmount {}", partition.id).await?;
 }
 
 fn report(node_name: &str) {
@@ -454,7 +454,7 @@ mod macos {
 
     #[throws(Error)]
     pub async fn get_attached_disks() -> impl Iterator<Item = DiskInfo> {
-        let output = cmd!("diskutil list -plist external physical").await?;
+        let output = process!("diskutil list -plist external physical").await?;
         let diskutil_output: DiskutilOutput = plist::from_bytes(output.stdout.as_bytes())?;
         diskutil_output
             .all_disks_and_partitions

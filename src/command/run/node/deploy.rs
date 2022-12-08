@@ -31,7 +31,7 @@ async fn get_node_ip_address(node_name: &str) -> IpAddr {
 async fn ping_endpoint(ip_address: IpAddr, timeout: u32) {
     progress!("Pinging node");
 
-    cmd!("ping -o -t {timeout} -i 5 {ip_address}").await?;
+    process!("ping -o -t {timeout} -i 5 {ip_address}").await?;
 }
 
 #[throws(Error)]
@@ -54,5 +54,5 @@ async fn await_node(node_name: &str, ip_address: IpAddr) {
 
     progress!("Waiting for node pre-initialization to finish");
 
-    cmd!("cloud-init status --wait").remote_mode().await?;
+    process!("cloud-init status --wait").remote_mode().await?;
 }

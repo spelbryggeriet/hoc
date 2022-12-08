@@ -25,63 +25,68 @@ use crate::{
 };
 
 pub async fn global_settings<'a>() -> MutexGuard<'a, Settings> {
-    static SETTINGS_QUEUE: OnceCell<Mutex<Settings>> = OnceCell::new();
+    static SETTINGS: OnceCell<Mutex<Settings>> = OnceCell::new();
 
-    SETTINGS_QUEUE
+    SETTINGS
         .get_or_init(|| Mutex::new(Settings::new()))
         .lock()
         .await
 }
 
 #[derive(Clone)]
-pub struct CmdBuilder<C> {
-    cmd: C,
+pub struct ProcessBuilder<C> {
+    handler: C,
     settings: Settings,
 }
 
 #[async_trait]
-trait Cmd: Send + Sync {
+trait ProcessHandler: Send + Sync {
     fn as_raw(&self) -> String;
 
-    async fn on_finished(&self, _is_forward_cmd_sudo: bool, _revert_cmd_settings: Settings) {}
+    async fn on_finished(
+        &self,
+        _is_forward_process_sudo: bool,
+        _revert_process_settings: Settings,
+    ) {
+    }
 
     async fn on_revert(
         &self,
-        _is_forward_cmd_sudo: bool,
-        _revert_cmd_settings: Settings,
+        _is_forward_process_sudo: bool,
+        _revert_process_settings: Settings,
     ) -> Result<(), Error> {
         Ok(())
     }
 }
 
 #[derive(Clone)]
-pub struct RegularCmd {
-    raw_forward_cmd: Cow<'static, str>,
+pub struct RegularProcessHandler {
+    raw_forward_process: Cow<'static, str>,
 }
 
-impl Cmd for RegularCmd {
+impl ProcessHandler for RegularProcessHandler {
     fn as_raw(&self) -> String {
-        self.raw_forward_cmd.clone().into_owned()
+        self.raw_forward_process.clone().into_owned()
     }
 }
 
 #[derive(Clone)]
-pub struct RevertibleCmd {
-    raw_forward_cmd: Cow<'static, str>,
-    revert_cmd: CmdBuilder<RegularCmd>,
+pub struct RevertibleProcessHandler {
+    raw_forward_process: Cow<'static, str>,
+    revert_process: ProcessBuilder<RegularProcessHandler>,
 }
 
-impl RevertibleCmd {
+impl RevertibleProcessHandler {
     fn get_transaction(
         &self,
-        is_forward_cmd_sudo: bool,
-        revert_cmd_settings: Settings,
+        is_forward_process_sudo: bool,
+        revert_process_settings: Settings,
     ) -> impl Transaction {
         struct RevertibleTransaction {
-            raw_forward_cmd: Cow<'static, str>,
-            is_forward_cmd_sudo: bool,
-            revert_cmd: CmdBuilder<RegularCmd>,
-            revert_cmd_settings: Settings,
+            raw_forward_process: Cow<'static, str>,
+            is_forward_process_sudo: bool,
+            revert_process: ProcessBuilder<RegularProcessHandler>,
+            revert_process_settings: Settings,
         }
 
         #[async_trait]
@@ -92,28 +97,28 @@ impl RevertibleCmd {
 
             fn detail(&self) -> Cow<'static, str> {
                 let sudo_str = util::sudo_string(
-                    self.is_forward_cmd_sudo || self.revert_cmd_settings.is_sudo(),
+                    self.is_forward_process_sudo || self.revert_process_settings.is_sudo(),
                 );
 
                 format!(
                     "Command to revert: {}{}\nCommand used to revert: {}{}",
-                    self.is_forward_cmd_sudo
+                    self.is_forward_process_sudo
                         .then_some(&*sudo_str)
                         .unwrap_or_default(),
-                    self.raw_forward_cmd.yellow(),
-                    self.revert_cmd_settings
+                    self.raw_forward_process.yellow(),
+                    self.revert_process_settings
                         .is_sudo()
                         .then_some(&*sudo_str)
                         .unwrap_or_default(),
-                    self.revert_cmd.cmd.raw_forward_cmd.yellow(),
+                    self.revert_process.handler.raw_forward_process.yellow(),
                 )
                 .into()
             }
 
             async fn revert(self: Box<Self>) -> anyhow::Result<()> {
                 util::run_loop(
-                    Box::new(self.revert_cmd.cmd),
-                    &self.revert_cmd_settings,
+                    Box::new(self.revert_process.handler),
+                    &self.revert_process_settings,
                     None,
                 )
                 .await?;
@@ -122,31 +127,31 @@ impl RevertibleCmd {
         }
 
         RevertibleTransaction {
-            raw_forward_cmd: self.raw_forward_cmd.clone(),
-            is_forward_cmd_sudo,
-            revert_cmd: self.revert_cmd.clone(),
-            revert_cmd_settings,
+            raw_forward_process: self.raw_forward_process.clone(),
+            is_forward_process_sudo,
+            revert_process: self.revert_process.clone(),
+            revert_process_settings,
         }
     }
 }
 
 #[async_trait]
-impl Cmd for RevertibleCmd {
+impl ProcessHandler for RevertibleProcessHandler {
     fn as_raw(&self) -> String {
-        self.raw_forward_cmd.clone().into_owned()
+        self.raw_forward_process.clone().into_owned()
     }
 
-    async fn on_finished(&self, is_forward_cmd_sudo: bool, revert_cmd_settings: Settings) {
-        let transaction = self.get_transaction(is_forward_cmd_sudo, revert_cmd_settings);
+    async fn on_finished(&self, is_forward_process_sudo: bool, revert_process_settings: Settings) {
+        let transaction = self.get_transaction(is_forward_process_sudo, revert_process_settings);
         Ledger::get_or_init().lock().await.add(transaction);
     }
 
     async fn on_revert(
         &self,
-        is_forward_cmd_sudo: bool,
-        revert_cmd_settings: Settings,
+        is_forward_process_sudo: bool,
+        revert_process_settings: Settings,
     ) -> Result<(), Error> {
-        let transaction = self.get_transaction(is_forward_cmd_sudo, revert_cmd_settings);
+        let transaction = self.get_transaction(is_forward_process_sudo, revert_process_settings);
 
         info!("{}", transaction.detail());
 
@@ -160,21 +165,21 @@ impl Cmd for RevertibleCmd {
     }
 }
 
-impl CmdBuilder<RegularCmd> {
-    pub fn new(cmd: Cow<'static, str>) -> Self {
+impl ProcessBuilder<RegularProcessHandler> {
+    pub fn new(process: Cow<'static, str>) -> Self {
         Self {
-            cmd: RegularCmd {
-                raw_forward_cmd: cmd,
+            handler: RegularProcessHandler {
+                raw_forward_process: process,
             },
             settings: Settings::new(),
         }
     }
 
-    pub fn _revertible(self, revert_cmd: Self) -> CmdBuilder<RevertibleCmd> {
-        CmdBuilder {
-            cmd: RevertibleCmd {
-                raw_forward_cmd: self.cmd.raw_forward_cmd,
-                revert_cmd,
+    pub fn _revertible(self, revert_process: Self) -> ProcessBuilder<RevertibleProcessHandler> {
+        ProcessBuilder {
+            handler: RevertibleProcessHandler {
+                raw_forward_process: self.handler.raw_forward_process,
+                revert_process,
             },
             settings: self.settings,
         }
@@ -183,25 +188,25 @@ impl CmdBuilder<RegularCmd> {
     #[throws(Error)]
     pub async fn run(self) -> Output {
         let settings: Settings = self.get_current_settings().await;
-        util::run_loop(Box::new(self.cmd), &settings, None).await?
+        util::run_loop(Box::new(self.handler), &settings, None).await?
     }
 }
 
-impl CmdBuilder<RevertibleCmd> {
+impl ProcessBuilder<RevertibleProcessHandler> {
     #[throws(Error)]
     pub async fn run(self) -> Output {
-        let forward_cmd_settings = self.get_current_settings().await;
-        let revert_cmd_settings = self.cmd.revert_cmd.get_current_settings().await;
+        let forward_process_settings = self.get_current_settings().await;
+        let revert_process_settings = self.handler.revert_process.get_current_settings().await;
         util::run_loop(
-            Box::new(self.cmd),
-            &forward_cmd_settings,
-            Some(revert_cmd_settings),
+            Box::new(self.handler),
+            &forward_process_settings,
+            Some(revert_process_settings),
         )
         .await?
     }
 }
 
-impl<C> CmdBuilder<C> {
+impl<C> ProcessBuilder<C> {
     async fn get_current_settings(&self) -> Settings {
         let mut derived_settings = Settings::new();
         derived_settings.apply(&*global_settings().await);
@@ -225,20 +230,20 @@ impl<C> CmdBuilder<C> {
     }
 }
 
-type CmdBuilderFuture = Pin<Box<dyn Future<Output = Result<Output, Error>> + Send>>;
+type ProcessBuilderFuture = Pin<Box<dyn Future<Output = Result<Output, Error>> + Send>>;
 
-impl IntoFuture for CmdBuilder<RegularCmd> {
-    type IntoFuture = CmdBuilderFuture;
-    type Output = <CmdBuilderFuture as Future>::Output;
+impl IntoFuture for ProcessBuilder<RegularProcessHandler> {
+    type IntoFuture = ProcessBuilderFuture;
+    type Output = <ProcessBuilderFuture as Future>::Output;
 
     fn into_future(self) -> Self::IntoFuture {
         Box::pin(self.run())
     }
 }
 
-impl IntoFuture for CmdBuilder<RevertibleCmd> {
-    type IntoFuture = CmdBuilderFuture;
-    type Output = <CmdBuilderFuture as Future>::Output;
+impl IntoFuture for ProcessBuilder<RevertibleProcessHandler> {
+    type IntoFuture = ProcessBuilderFuture;
+    type Output = <ProcessBuilderFuture as Future>::Output;
 
     fn into_future(self) -> Self::IntoFuture {
         Box::pin(self.run())
@@ -266,13 +271,13 @@ impl Output {
 pub struct Settings {
     sudo: Option<bool>,
     current_dir: Option<Option<Cow<'static, str>>>,
-    mode: Option<CmdMode>,
+    mode: Option<ProcessMode>,
 }
 
 impl Settings {
     const DEFAULT_SUDO: bool = false;
     const DEFAULT_CURRENT_DIR: Option<Cow<'static, str>> = None;
-    const DEFAULT_MODE: CmdMode = CmdMode::Local;
+    const DEFAULT_MODE: ProcessMode = ProcessMode::Local;
 
     fn new() -> Self {
         Self {
@@ -318,17 +323,17 @@ impl Settings {
     }
 
     pub fn remote_mode(&mut self) -> &mut Self {
-        self.mode.replace(CmdMode::Remote);
+        self.mode.replace(ProcessMode::Remote);
         self
     }
 
-    fn get_mode(&self) -> CmdMode {
+    fn get_mode(&self) -> ProcessMode {
         self.mode.unwrap_or(Self::DEFAULT_MODE)
     }
 }
 
 #[derive(Default, Clone, Copy, PartialEq, Eq)]
-enum CmdMode {
+enum ProcessMode {
     #[default]
     Local,
     Remote,
@@ -360,33 +365,33 @@ mod util {
 
     #[throws(Error)]
     pub(super) async fn run_loop(
-        mut cmd: Box<dyn Cmd>,
-        forward_cmd_settings: &Settings,
-        mut revert_cmd_settings: Option<Settings>,
+        mut process_handler: Box<dyn ProcessHandler>,
+        forward_process_settings: &Settings,
+        mut revert_process_settings: Option<Settings>,
     ) -> Output {
-        let maybe_sudo = if forward_cmd_settings.is_sudo() {
+        let maybe_sudo = if forward_process_settings.is_sudo() {
             "sudo -kSp '' "
         } else {
             ""
         };
 
-        let mut raw_cmd = cmd.as_raw();
-        let mut runnable_cmd = format!("{maybe_sudo}{raw_cmd}");
+        let mut raw_process = process_handler.as_raw();
+        let mut runnable_process = format!("{maybe_sudo}{raw_process}");
         let mut pipe_input = Vec::new();
         let mut progress_desc = "Running command";
 
         return loop {
             let mut password_to_cache = None;
-            if forward_cmd_settings.is_sudo() {
+            if forward_process_settings.is_sudo() {
                 if let Ok(Item::Value(Value::String(password))) = kv!("admin/password").await {
                     pipe_input.push(Cow::Owned(password));
                 } else {
                     let password: Secret<String> = prompt!(
                         "[sudo] Password for command {}",
-                        raw_cmd
+                        raw_process
                             .split_once(' ')
                             .map(|opt| opt.0)
-                            .unwrap_or(&raw_cmd)
+                            .unwrap_or(&raw_process)
                             .yellow()
                     )
                     .without_verification()
@@ -397,33 +402,40 @@ mod util {
                 }
             }
 
-            let sudo_str = sudo_string(forward_cmd_settings.is_sudo());
-            let cmd_str = raw_cmd.as_str().yellow();
-            debug!("{progress_desc}: {sudo_str}{cmd_str}");
+            let sudo_str = sudo_string(forward_process_settings.is_sudo());
+            let process_str = raw_process.as_str().yellow();
+            debug!("{progress_desc}: {sudo_str}{process_str}");
             debug!("Host: this computer");
 
-            if forward_cmd_settings.get_mode() == CmdMode::Remote {
+            if forward_process_settings.get_mode() == ProcessMode::Remote {
                 info!("Remote");
             }
 
-            match exec(&runnable_cmd, &mut pipe_input, forward_cmd_settings).await {
+            match exec(&runnable_process, &mut pipe_input, forward_process_settings).await {
                 Ok(output) => {
                     if let Some(password) = password_to_cache {
                         kv!("admin/password").temporary().put(password).await?;
                     }
 
-                    if let Some(revert_cmd_settings) = revert_cmd_settings {
-                        cmd.on_finished(forward_cmd_settings.is_sudo(), revert_cmd_settings)
+                    if let Some(revert_process_settings) = revert_process_settings {
+                        process_handler
+                            .on_finished(
+                                forward_process_settings.is_sudo(),
+                                revert_process_settings,
+                            )
                             .await;
                     }
 
                     break output;
                 }
                 Err(Error::Failed(output)) => {
-                    let cmd_only = raw_cmd.split_once(' ').map(|opt| opt.0).unwrap_or(&raw_cmd);
+                    let program = raw_process
+                        .split_once(' ')
+                        .map(|opt| opt.0)
+                        .unwrap_or(&raw_process);
 
                     error!(
-                        "The command {cmd_only} failed with exit code {}",
+                        "The command {program} failed with exit code {}",
                         output.code,
                     );
                     if !output.stdout.is_empty() {
@@ -437,7 +449,7 @@ mod util {
                     let revert_rerun = Opt::Custom("Revert and rerun");
                     let mut select = select!("How do you want to resolve the command error?");
 
-                    if revert_cmd_settings.is_some() {
+                    if revert_process_settings.is_some() {
                         select = select.with_option(revert_modify).with_option(revert_rerun);
                     }
 
@@ -449,12 +461,13 @@ mod util {
                     {
                         Ok(opt) => opt,
                         Err(err) => {
-                            if let Some(revert_cmd_settings) = revert_cmd_settings {
-                                cmd.on_finished(
-                                    forward_cmd_settings.is_sudo(),
-                                    revert_cmd_settings,
-                                )
-                                .await;
+                            if let Some(revert_process_settings) = revert_process_settings {
+                                process_handler
+                                    .on_finished(
+                                        forward_process_settings.is_sudo(),
+                                        revert_process_settings,
+                                    )
+                                    .await;
                             }
 
                             throw!(err);
@@ -462,28 +475,32 @@ mod util {
                     };
 
                     if [revert_modify, revert_rerun].contains(&opt) {
-                        if let Some(revert_cmd_settings) = revert_cmd_settings.clone() {
-                            cmd.on_revert(forward_cmd_settings.is_sudo(), revert_cmd_settings)
+                        if let Some(revert_process_settings) = revert_process_settings.clone() {
+                            process_handler
+                                .on_revert(
+                                    forward_process_settings.is_sudo(),
+                                    revert_process_settings,
+                                )
                                 .await?;
                         }
                     }
 
                     if [Opt::Modify, revert_modify].contains(&opt) {
-                        let mut prompt = prompt!("New command").with_initial_input(&raw_cmd);
+                        let mut prompt = prompt!("New command").with_initial_input(&raw_process);
 
-                        if revert_cmd_settings.is_some() {
+                        if revert_process_settings.is_some() {
                             prompt = prompt.with_help_message(
                                 "Modifying the command will make it non-revertible",
                             );
                         }
 
-                        let new_raw_cmd = prompt.get()?;
-                        if new_raw_cmd != raw_cmd {
-                            raw_cmd = new_raw_cmd;
-                            runnable_cmd = format!("{maybe_sudo}{raw_cmd}");
-                            revert_cmd_settings.take();
-                            cmd = Box::new(RegularCmd {
-                                raw_forward_cmd: raw_cmd.clone().into(),
+                        let new_raw_process = prompt.get()?;
+                        if new_raw_process != raw_process {
+                            raw_process = new_raw_process;
+                            runnable_process = format!("{maybe_sudo}{raw_process}");
+                            revert_process_settings.take();
+                            process_handler = Box::new(RegularProcessHandler {
+                                raw_forward_process: raw_process.clone().into(),
                             });
                         } else {
                             opt = Opt::Rerun;
@@ -506,12 +523,12 @@ mod util {
 
     #[throws(Error)]
     pub async fn exec(
-        raw_cmd: &str,
+        raw_process: &str,
         pipe_input: &mut Vec<Cow<'_, str>>,
         settings: &Settings,
     ) -> Output {
         let mut cmd = Command::new("sh");
-        cmd.args(["-c", raw_cmd])
+        cmd.args(["-c", raw_process])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());

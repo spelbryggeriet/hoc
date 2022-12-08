@@ -49,7 +49,7 @@ macro_rules! _temp_file {
     };
 }
 
-macro_rules! cmd {
+macro_rules! process {
     ($($sudo:ident)? $fmt:literal $($args:tt)*) => {{
         let is_sudo = $(if __is_sudo!($sudo) {
             true
@@ -57,8 +57,8 @@ macro_rules! cmd {
             false
         };
 
-        let cmd = $crate::util::from_arguments_to_str_cow(format_args!($fmt $($args)*));
-        let mut builder = $crate::runner::CmdBuilder::new(cmd);
+        let process = $crate::util::from_arguments_to_str_cow(format_args!($fmt $($args)*));
+        let mut builder = $crate::process::ProcessBuilder::new(process);
 
         if is_sudo {
             builder = builder.sudo();
