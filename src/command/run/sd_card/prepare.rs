@@ -1,21 +1,17 @@
 use std::{
     fmt::{self, Display, Formatter},
-    fs::File as BlockingFile,
-    io::{Cursor, Read, SeekFrom},
+    fs::{self, File},
+    io::{Read, Seek, SeekFrom, Write},
     net::IpAddr,
     path::{Path, PathBuf},
 };
 
 use anyhow::Error;
-use tokio::{
-    fs::{self, File},
-    io::{self, AsyncReadExt, AsyncSeekExt, AsyncWriteExt},
-};
 use xz2::read::XzDecoder;
 
 use crate::{
     cidr::Cidr,
-    context::{key, kv},
+    context::{self, key, kv},
     prelude::*,
     util::{self, Opt},
 };
@@ -27,41 +23,41 @@ const UBUNTU_VERSION: UbuntuVersion = UbuntuVersion {
 };
 
 #[throws(Error)]
-pub async fn run() {
-    let disk = choose_sd_card().await?;
+pub fn run() {
+    let disk = choose_sd_card()?;
     if !has_system_boot_partition(&disk) || wants_to_flash()? {
-        unmount_sd_card(&disk).await?;
-        let os_image_path = get_os_image_path().await?;
-        flash_image(&disk, &os_image_path).await?;
+        unmount_sd_card(&disk)?;
+        let os_image_path = get_os_image_path()?;
+        flash_image(&disk, &os_image_path)?;
     }
 
-    let node_name = generate_node_name().await?;
-    let ip_address = assign_ip_address(&node_name).await?;
+    let node_name = generate_node_name()?;
+    let ip_address = assign_ip_address(&node_name)?;
 
-    let partition = mount_sd_card().await?;
-    let mount_dir = find_mount_dir(&disk).await?;
+    let partition = mount_sd_card()?;
+    let mount_dir = find_mount_dir(&disk)?;
 
-    modify_image(&mount_dir, &node_name, ip_address).await?;
-    unmount_partition(&partition).await?;
+    modify_image(&mount_dir, &node_name, ip_address)?;
+    unmount_partition(&partition)?;
 
     report(&node_name);
 }
 
 #[throws(Error)]
-async fn get_os_image_path() -> PathBuf {
-    let (_, os_image_path) = files!("images/os").cached(get_os_image).await?;
+fn get_os_image_path() -> PathBuf {
+    let (_, os_image_path) = files!("images/os").cached(get_os_image).get_or_create()?;
     os_image_path
 }
 
-#[throws(Error)]
-async fn get_os_image(file: &mut File, path: &Path, retrying: bool) {
-    download_os_image(file, retrying).await?;
-    validate_os_image(path).await?;
-    decompress_xz_file(file, path).await?;
+#[throws(context::Error)]
+fn get_os_image(file: &mut File, path: &Path, retrying: bool) {
+    download_os_image(file, retrying)?;
+    validate_os_image(path)?;
+    decompress_xz_file(file, path)?;
 }
 
 #[throws(Error)]
-async fn download_os_image(file: &mut File, prompt_url: bool) {
+fn download_os_image(file: &mut File, prompt_url: bool) {
     progress!("Downloading OS image");
 
     let os_image_url = if prompt_url {
@@ -74,11 +70,10 @@ async fn download_os_image(file: &mut File, prompt_url: bool) {
         url
     };
 
-    let mut os_image_reader = Cursor::new(reqwest::get(os_image_url).await?.bytes().await?);
-    io::copy(&mut os_image_reader, file).await?;
+    reqwest::blocking::get(os_image_url)?.copy_to(file)?;
 
     // Reset file.
-    file.seek(SeekFrom::Start(0)).await?;
+    file.seek(SeekFrom::Start(0))?;
 }
 
 fn ubuntu_image_url<T: Display>(version: T) -> String {
@@ -86,10 +81,10 @@ fn ubuntu_image_url<T: Display>(version: T) -> String {
 }
 
 #[throws(Error)]
-async fn validate_os_image(os_image_file_path: &Path) {
+fn validate_os_image(os_image_file_path: &Path) {
     progress!("Validating file type");
 
-    let mut output = process!("file -E {}", os_image_file_path.to_string_lossy()).await?;
+    let mut output = process!("file -E {}", os_image_file_path.to_string_lossy()).run()?;
     output.stdout = output.stdout.to_lowercase();
 
     if !output.stdout.contains("xz compressed data") {
@@ -100,7 +95,7 @@ async fn validate_os_image(os_image_file_path: &Path) {
             .get()?;
 
         if opt == Opt::Yes {
-            process!("cat {}", os_image_file_path.to_string_lossy()).await?;
+            process!("cat {}", os_image_file_path.to_string_lossy()).run()?;
         }
 
         bail!("Validation failed");
@@ -110,10 +105,10 @@ async fn validate_os_image(os_image_file_path: &Path) {
 }
 
 #[throws(Error)]
-async fn decompress_xz_file(os_image_file: &mut File, os_image_path: &Path) {
+fn decompress_xz_file(os_image_file: &mut File, os_image_path: &Path) {
     let decompress_progress = progress_with_handle!("Decompressing image");
 
-    let os_image_file_ro = BlockingFile::options().read(true).open(os_image_path)?;
+    let os_image_file_ro = File::options().read(true).open(os_image_path)?;
     let mut decompressor = XzDecoder::new(os_image_file_ro);
     let mut image_data = Vec::new();
     decompressor
@@ -125,18 +120,18 @@ async fn decompress_xz_file(os_image_file: &mut File, os_image_path: &Path) {
     progress!("Saving decompressed image to file");
 
     // Truncate any existing data.
-    os_image_file.set_len(0).await?;
+    os_image_file.set_len(0)?;
 
     // Write to file.
-    os_image_file.write_all(&image_data).await?;
+    os_image_file.write_all(&image_data)?;
 }
 
 #[throws(Error)]
-async fn choose_sd_card() -> DiskInfo {
+fn choose_sd_card() -> DiskInfo {
     progress!("Choosing SD card");
 
     loop {
-        let disks = macos::get_attached_disks().await?;
+        let disks = macos::get_attached_disks()?;
         let select = select!("Which disk is your SD card?").with_options(disks);
         if select.option_count() > 0 {
             break select.get()?;
@@ -151,15 +146,15 @@ async fn choose_sd_card() -> DiskInfo {
 }
 
 #[throws(Error)]
-async fn unmount_sd_card(disk: &DiskInfo) {
+fn unmount_sd_card(disk: &DiskInfo) {
     progress!("Unmounting SD card");
 
     let id = &disk.id;
-    process!("diskutil unmountDisk {id}").await?;
+    process!("diskutil unmountDisk {id}").run()?;
 }
 
 #[throws(Error)]
-async fn flash_image(disk: &DiskInfo, os_image_path: &Path) {
+fn flash_image(disk: &DiskInfo, os_image_path: &Path) {
     let opt = select!("Do you want to flash target disk {:?}?", disk.description())
         .with_options([Opt::Yes, Opt::No])
         .get()?;
@@ -170,15 +165,15 @@ async fn flash_image(disk: &DiskInfo, os_image_path: &Path) {
     progress!("Flashing image");
 
     let id = &disk.id;
-    process!(sudo "dd bs=1m if={os_image_path:?} of=/dev/r{id}").await?;
+    process!(sudo "dd bs=1m if={os_image_path:?} of=/dev/r{id}").run()?;
 }
 
 #[throws(Error)]
-async fn mount_sd_card() -> DiskPartitionInfo {
+fn mount_sd_card() -> DiskPartitionInfo {
     progress!("Mounting SD card");
 
     let partition = loop {
-        let partitions = macos::get_attached_disks().await?.flat_map(|disk| {
+        let partitions = macos::get_attached_disks()?.flat_map(|disk| {
             disk.partitions
                 .into_iter()
                 .filter(|part| part.name == "system-boot")
@@ -197,16 +192,16 @@ async fn mount_sd_card() -> DiskPartitionInfo {
             .get()?;
     };
 
-    process!("diskutil mount {}", partition.id).await?;
+    process!("diskutil mount {}", partition.id).run()?;
 
     partition
 }
 
 #[throws(Error)]
-async fn find_mount_dir(disk: &DiskInfo) -> PathBuf {
+fn find_mount_dir(disk: &DiskInfo) -> PathBuf {
     progress!("Finding mount directory");
 
-    let output = process!("df").await?;
+    let output = process!("df").run()?;
     let mount_line = output
         .stdout
         .lines()
@@ -220,10 +215,10 @@ async fn find_mount_dir(disk: &DiskInfo) -> PathBuf {
 }
 
 #[throws(Error)]
-async fn generate_node_name() -> String {
+fn generate_node_name() -> String {
     progress!("Generating node name");
 
-    let num_nodes = match kv!("nodes/**").await {
+    let num_nodes = match kv!("nodes/**").get() {
         Ok(item) => item
             .into_iter()
             .filter_key_value("initialized", true)
@@ -233,18 +228,18 @@ async fn generate_node_name() -> String {
     };
 
     let node_name = format!("node-{}", util::numeral(num_nodes as u64 + 1));
-    kv!("nodes/{node_name}/initialized").put(false).await?;
+    kv!("nodes/{node_name}/initialized").put(false)?;
     info!("Node name: {node_name}");
 
     node_name
 }
 
 #[throws(Error)]
-async fn assign_ip_address(node_name: &str) -> IpAddr {
+fn assign_ip_address(node_name: &str) -> IpAddr {
     progress!("Assigning IP address");
 
-    let start_address: IpAddr = kv!("network/start_address").await?.convert()?;
-    let used_addresses: Vec<IpAddr> = match kv!("nodes/**").await {
+    let start_address: IpAddr = kv!("network/start_address").get()?.convert()?;
+    let used_addresses: Vec<IpAddr> = match kv!("nodes/**").get() {
         Ok(item) => item
             .into_iter()
             .filter_key_value("initialized", true)
@@ -254,7 +249,7 @@ async fn assign_ip_address(node_name: &str) -> IpAddr {
         Err(kv::Error::Key(key::Error::KeyDoesNotExist(_))) => Vec::new(),
         Err(err) => throw!(err),
     };
-    let prefix_len: u32 = kv!("network/prefix_len").await?.convert()?;
+    let prefix_len: u32 = kv!("network/prefix_len").get()?.convert()?;
 
     let addresses = Cidr {
         ip_addr: start_address,
@@ -267,9 +262,7 @@ async fn assign_ip_address(node_name: &str) -> IpAddr {
             .step(step)
             .context("No more IP addresses available")?;
         if !used_addresses.contains(&next_address) {
-            kv!("nodes/{node_name}/network/address")
-                .put(next_address.to_string())
-                .await?;
+            kv!("nodes/{node_name}/network/address").put(next_address.to_string())?;
             info!("Assigned IP Address: {next_address}");
             break next_address;
         }
@@ -279,7 +272,7 @@ async fn assign_ip_address(node_name: &str) -> IpAddr {
 }
 
 #[throws(Error)]
-async fn modify_image(mount_dir: &Path, node_name: &str, ip_address: IpAddr) {
+fn modify_image(mount_dir: &Path, node_name: &str, ip_address: IpAddr) {
     let opt = select!("Do you want to modify the partition mounted at {mount_dir:?}?")
         .with_options([Opt::Yes, Opt::No])
         .get()?;
@@ -290,12 +283,12 @@ async fn modify_image(mount_dir: &Path, node_name: &str, ip_address: IpAddr) {
 
     progress!("Modifying image");
 
-    let (mut pub_key_file, _) = files!("admin/ssh/pub").await?;
+    let (mut pub_key_file, _) = files!("admin/ssh/pub").get()?;
     let mut pub_key = String::new();
-    pub_key_file.read_to_string(&mut pub_key).await?;
+    pub_key_file.read_to_string(&mut pub_key)?;
 
     // Deserialize and serialize to check for syntax errors.
-    let admin_username: String = kv!("admin/username").await?.convert()?;
+    let admin_username: String = kv!("admin/username").get()?.convert()?;
     let data_map: serde_yaml::Value = serde_yaml::from_str(&format!(
         include_str!("../../../../config/cloud-init/user_data.yaml"),
         admin_username = admin_username,
@@ -308,10 +301,10 @@ async fn modify_image(mount_dir: &Path, node_name: &str, ip_address: IpAddr) {
     debug!("User data:\n{data}");
 
     let user_data_path = mount_dir.join("user-data");
-    fs::write(&user_data_path, &data).await?;
+    fs::write(&user_data_path, &data)?;
 
     // Deserialize and serialize to check for syntax errors.
-    let gateway: IpAddr = kv!("network/gateway").await?.convert()?;
+    let gateway: IpAddr = kv!("network/gateway").get()?.convert()?;
     let gateway_ip_version = if gateway.is_ipv4() { 4 } else { 6 };
     let network_config_map: serde_yaml::Value = serde_yaml::from_str(&format!(
         include_str!("../../../../config/cloud-init/network_config.yaml"),
@@ -327,15 +320,15 @@ async fn modify_image(mount_dir: &Path, node_name: &str, ip_address: IpAddr) {
     debug!("Network config:\n{network_config}");
 
     let network_config_path = mount_dir.join("network-config");
-    fs::write(&network_config_path, &network_config).await?;
+    fs::write(&network_config_path, network_config)?;
 }
 
 #[throws(Error)]
-async fn unmount_partition(partition: &DiskPartitionInfo) {
+fn unmount_partition(partition: &DiskPartitionInfo) {
     progress!("Unmounting partition");
 
-    process!("sync").await?;
-    process!("diskutil unmount {}", partition.id).await?;
+    process!("sync").run()?;
+    process!("diskutil unmount {}", partition.id).run()?;
 }
 
 fn report(node_name: &str) {
@@ -453,8 +446,8 @@ mod macos {
     use super::*;
 
     #[throws(Error)]
-    pub async fn get_attached_disks() -> impl Iterator<Item = DiskInfo> {
-        let output = process!("diskutil list -plist external physical").await?;
+    pub fn get_attached_disks() -> impl Iterator<Item = DiskInfo> {
+        let output = process!("diskutil list -plist external physical").run()?;
         let diskutil_output: DiskutilOutput = plist::from_bytes(output.stdout.as_bytes())?;
         diskutil_output
             .all_disks_and_partitions

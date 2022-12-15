@@ -431,14 +431,6 @@ impl Item {
     }
 
     #[throws(as Option)]
-    pub fn as_bool(&self) -> bool {
-        match self {
-            Self::Value(Value::Bool(b)) => *b,
-            _ => throw!(),
-        }
-    }
-
-    #[throws(as Option)]
     pub fn get<K>(&self, key: &K) -> &Self
     where
         K: AsRef<Key> + ?Sized,

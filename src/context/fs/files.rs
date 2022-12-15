@@ -1,8 +1,12 @@
-use std::{borrow::Cow, fs::File as BlockingFile, future::Future, io, path::PathBuf};
+use std::{
+    borrow::Cow,
+    fs::{self, File},
+    io,
+    path::{Path, PathBuf},
+};
 
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
-use tokio::fs::{self, File, OpenOptions};
 
 use crate::{
     context::{
@@ -35,19 +39,14 @@ impl Files {
     }
 
     #[throws(Error)]
-    pub async fn create_file<K, F, Fut>(
-        &mut self,
-        key: K,
-        on_overwrite: F,
-    ) -> (bool, (File, PathBuf))
+    pub fn create_file<K, F>(&mut self, key: K, on_overwrite: F) -> (bool, (File, PathBuf))
     where
         K: Into<KeyOwned>,
-        F: FnOnce(PathBuf) -> Fut,
-        Fut: Future<Output = Result<(), Error>>,
+        F: FnOnce(&Path) -> Result<(), Error>,
     {
         let key = key.into();
 
-        let mut file_options = OpenOptions::new();
+        let mut file_options = File::options();
         file_options.read(true).write(true);
 
         let mut had_previous_file = false;
@@ -63,14 +62,11 @@ impl Files {
             should_overwrite = opt == Opt::Overwrite;
             if !should_overwrite {
                 warn!("Creating file: {key} (skipping)");
-                return (
-                    had_previous_file,
-                    (file_options.open(path).await?, path.clone()),
-                );
+                return (had_previous_file, (file_options.open(path)?, path.clone()));
             }
 
             file_options.truncate(true).create(true);
-            on_overwrite(path.clone()).await?;
+            on_overwrite(&path)?;
         } else {
             file_options.create_new(true);
         }
@@ -78,10 +74,10 @@ impl Files {
         let path = self.files_dir.join(key.as_str());
 
         if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).await?;
+            fs::create_dir_all(parent)?;
         }
 
-        let file = match file_options.open(&path).await {
+        let file = match file_options.open(&path) {
             Ok(file) => file,
             Err(err) if err.kind() == io::ErrorKind::AlreadyExists => {
                 error!("File at path {path:?} already exists");
@@ -94,9 +90,9 @@ impl Files {
                 should_overwrite = opt == Opt::Overwrite;
                 if !should_overwrite {
                     warn!("Creating file: {key} (skipping)");
-                    return (had_previous_file, (file_options.open(&path).await?, path));
+                    return (had_previous_file, (file_options.open(&path)?, path));
                 } else {
-                    file_options.truncate(true).open(&path).await?
+                    file_options.truncate(true).open(&path)?
                 }
             }
             Err(err) => throw!(err),
@@ -122,19 +118,19 @@ impl Files {
 
         debug!("Getting file for key: {key}");
 
-        let mut file_options = BlockingFile::options();
+        let mut file_options = File::options();
         file_options.write(true).read(true);
 
         if let Some(path) = self.map.get(&*key) {
             let file = file_options.open(path)?;
-            return (File::from_std(file), PathBuf::from(path));
+            return (file, PathBuf::from(path));
         }
 
         throw!(key::Error::KeyDoesNotExist(key.into_owned()));
     }
 
     #[throws(Error)]
-    pub async fn remove_file<K>(&mut self, key: &K, force: bool)
+    pub fn remove_file<K>(&mut self, key: &K, force: bool)
     where
         K: AsRef<Key> + ?Sized,
     {
@@ -143,7 +139,7 @@ impl Files {
         match self.map.remove(key) {
             Some(path) => {
                 debug!("Remove file: {key}");
-                fs::remove_file(path).await?;
+                fs::remove_file(path)?;
             }
             None if !force => {
                 error!("Key {key} does not exist.");
@@ -160,10 +156,7 @@ impl Files {
 }
 
 pub mod ledger {
-    use std::{borrow::Cow, path::PathBuf};
-
-    use async_trait::async_trait;
-    use tokio::fs;
+    use std::{borrow::Cow, fs, path::PathBuf};
 
     use crate::{
         context::{key::KeyOwned, Context},
@@ -187,7 +180,6 @@ pub mod ledger {
         }
     }
 
-    #[async_trait]
     impl Transaction for Create {
         fn description(&self) -> Cow<'static, str> {
             "Create file".into()
@@ -197,19 +189,17 @@ pub mod ledger {
             format!("File to revert: {:?}", self.current_file).into()
         }
 
-        async fn revert(mut self: Box<Self>) -> anyhow::Result<()> {
+        fn revert(mut self: Box<Self>) -> anyhow::Result<()> {
             let current_file = self.current_file;
             match self.previous_file.take() {
                 Some(previous_file) => {
                     debug!("Move temporary file: {previous_file:?} => {current_file:?}");
-                    fs::rename(previous_file, current_file).await?;
+                    fs::rename(previous_file, current_file)?;
                 }
                 None => {
                     Context::get_or_init()
                         .files_mut()
-                        .await
-                        .remove_file(&self.key, true)
-                        .await?;
+                        .remove_file(&self.key, true)?;
                 }
             }
             Ok(())

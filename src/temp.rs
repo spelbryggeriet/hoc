@@ -1,6 +1,8 @@
-use std::{io, path::PathBuf};
-
-use tokio::fs::{self, File, OpenOptions};
+use std::{
+    fs::{self, File},
+    io,
+    path::PathBuf,
+};
 
 use crate::{context::Error, prelude::*, util};
 
@@ -13,12 +15,12 @@ fn get_temp_dir() -> PathBuf {
 }
 
 #[throws(Error)]
-pub async fn create_file() -> (File, PathBuf) {
-    let mut file_options = OpenOptions::new();
+pub fn create_file() -> (File, PathBuf) {
+    let mut file_options = File::options();
     file_options.write(true).truncate(true).read(true);
 
     let mut path = get_temp_dir();
-    fs::create_dir_all(&path).await?;
+    fs::create_dir_all(&path)?;
 
     let mut attempt = 1;
     let file = loop {
@@ -34,7 +36,6 @@ pub async fn create_file() -> (File, PathBuf) {
             .write(true)
             .create_new(true)
             .open(&path)
-            .await
         {
             Ok(file) => break file,
             Err(err) if err.kind() == io::ErrorKind::AlreadyExists => path.pop(),
@@ -48,16 +49,17 @@ pub async fn create_file() -> (File, PathBuf) {
 }
 
 #[throws(Error)]
-pub async fn clean() {
-    let mut read_dir = match fs::read_dir(get_temp_dir()).await {
+pub fn clean() {
+    let read_dir = match fs::read_dir(get_temp_dir()) {
         Ok(read_dir) => read_dir,
         Err(err) if err.kind() == io::ErrorKind::NotFound => return,
         Err(err) => throw!(err),
     };
 
-    while let Some(entry) = read_dir.next_entry().await? {
-        if entry.file_type().await?.is_file() {
-            fs::remove_file(entry.path()).await?;
+    for entry in read_dir {
+        let entry = entry?;
+        if entry.file_type()?.is_file() {
+            fs::remove_file(entry.path())?;
         }
     }
 }

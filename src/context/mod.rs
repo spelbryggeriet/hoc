@@ -1,20 +1,19 @@
 use std::{
-    borrow::Cow, fmt::Display, fs::File as BlockingFile, future::Future, future::IntoFuture, io,
-    marker::PhantomData, os::unix::fs::PermissionsExt, pin::Pin,
+    borrow::Cow,
+    fmt::Display,
+    fs::File,
+    io,
+    marker::PhantomData,
+    os::unix::fs::PermissionsExt,
+    sync::{RwLock, RwLockReadGuard, RwLockWriteGuard},
 };
 
 use once_cell::sync::OnceCell;
 use serde::{ser::SerializeMap, Deserialize, Deserializer, Serialize};
 use thiserror::Error;
-use tokio::{
-    fs::{File, OpenOptions},
-    runtime::Handle,
-    sync::{RwLock, RwLockReadGuard, RwLockWriteGuard},
-    task,
-};
 
 use self::{
-    fs::{cache::Cache, files::Files, CachedFileFn},
+    fs::{cache::Cache, files::Files},
     key::Key,
     kv::{Item, Kv, PutOptions, Value},
 };
@@ -62,45 +61,46 @@ impl Context {
     }
 
     #[throws(anyhow::Error)]
-    pub async fn load(&self) {
+    pub fn load(&self) {
         debug!("Loading context");
 
         let data_dir = crate::data_dir();
         let cache_dir = crate::cache_dir();
 
         debug!("Creating data directory");
-        tokio::fs::create_dir_all(&data_dir).await?;
+        std::fs::create_dir_all(&data_dir)?;
 
         debug!("Creating cache directory");
-        tokio::fs::create_dir_all(&cache_dir).await?;
+        std::fs::create_dir_all(&cache_dir)?;
 
         debug!("Setting data directory permissions");
         let mut data_permissions = data_dir.metadata()?.permissions();
         data_permissions.set_mode(0o700);
-        tokio::fs::set_permissions(&data_dir, data_permissions).await?;
+        std::fs::set_permissions(&data_dir, data_permissions)?;
 
         debug!("Setting cache directory permissions");
         let mut cache_permissions = cache_dir.metadata()?.permissions();
         cache_permissions.set_mode(0o700);
-        tokio::fs::set_permissions(&cache_dir, cache_permissions).await?;
+        std::fs::set_permissions(&cache_dir, cache_permissions)?;
 
         let context_path = data_dir.join(Self::CONTEXT_FILENAME);
 
         debug!("Opening context file");
-        match OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open(&context_path)
-            .await
-        {
+        match File::options().read(true).write(true).open(&context_path) {
             Ok(file) => {
                 trace!("Using pre-existing context file: {context_path:?}");
 
                 debug!("Deserializing context from file");
-                let context: Self = serde_yaml::from_reader(File::into_std(file).await)?;
-                *self.kv.write().await = context.kv.into_inner();
-                *self.files.write().await = context.files.into_inner();
-                *self.cache.write().await = context.cache.into_inner();
+                let context: Self = serde_yaml::from_reader(file)?;
+                *self.kv_mut() = context.kv.into_inner().expect(EXPECT_THREAD_NOT_POSIONED);
+                *self.files_mut() = context
+                    .files
+                    .into_inner()
+                    .expect(EXPECT_THREAD_NOT_POSIONED);
+                *self.cache_mut() = context
+                    .cache
+                    .into_inner()
+                    .expect(EXPECT_THREAD_NOT_POSIONED);
             }
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
                 debug!("No context file found");
@@ -109,35 +109,39 @@ impl Context {
         }
     }
 
-    pub async fn kv(&self) -> RwLockReadGuard<Kv> {
-        self.kv.read().await
+    pub fn kv(&self) -> RwLockReadGuard<Kv> {
+        self.kv.read().expect(EXPECT_THREAD_NOT_POSIONED)
     }
 
-    pub async fn kv_mut(&self) -> RwLockWriteGuard<Kv> {
-        self.kv.write().await
+    pub fn kv_mut(&self) -> RwLockWriteGuard<Kv> {
+        self.kv.write().expect(EXPECT_THREAD_NOT_POSIONED)
     }
 
-    pub async fn files(&self) -> RwLockReadGuard<Files> {
-        self.files.read().await
+    pub fn files(&self) -> RwLockReadGuard<Files> {
+        self.files.read().expect(EXPECT_THREAD_NOT_POSIONED)
     }
 
-    pub async fn files_mut(&self) -> RwLockWriteGuard<Files> {
-        self.files.write().await
+    pub fn files_mut(&self) -> RwLockWriteGuard<Files> {
+        self.files.write().expect(EXPECT_THREAD_NOT_POSIONED)
     }
 
-    pub async fn cache_mut(&self) -> RwLockWriteGuard<Cache> {
-        self.cache.write().await
+    pub fn cache(&self) -> RwLockReadGuard<Cache> {
+        self.cache.read().expect(EXPECT_THREAD_NOT_POSIONED)
+    }
+
+    pub fn cache_mut(&self) -> RwLockWriteGuard<Cache> {
+        self.cache.write().expect(EXPECT_THREAD_NOT_POSIONED)
     }
 
     #[throws(anyhow::Error)]
-    pub async fn persist(&self) {
+    pub fn persist(&self) {
         progress!("Persisting context");
 
         debug!("Dropping temporary values");
-        self.kv.write().await.drop_temporary_values();
+        self.kv_mut().drop_temporary_values();
 
         debug!("Opening context file for writing");
-        let file = BlockingFile::options()
+        let file = File::options()
             .write(true)
             .truncate(true)
             .create(true)
@@ -153,15 +157,11 @@ impl Serialize for Context {
     where
         S: serde::Serializer,
     {
-        task::block_in_place(|| {
-            Handle::current().block_on(async {
-                let mut context = serializer.serialize_map(Some(3))?;
-                context.serialize_entry("kv", &*self.kv.read().await)?;
-                context.serialize_entry("files", &*self.files.read().await)?;
-                context.serialize_entry("cache", &*self.cache.read().await)?;
-                context.end()
-            })
-        })
+        let mut context = serializer.serialize_map(Some(3))?;
+        context.serialize_entry("kv", &*self.kv())?;
+        context.serialize_entry("files", &*self.files())?;
+        context.serialize_entry("cache", &*self.cache())?;
+        context.end()
     }
 }
 
@@ -192,18 +192,18 @@ impl<'a> KvBuilder<'a, All> {
     }
 
     #[throws(kv::Error)]
-    pub async fn get(self) -> Item {
-        Context::get_or_init().kv().await.get_item(&self.key)?
+    pub fn get(self) -> Item {
+        Context::get_or_init().kv().get_item(&self.key)?
     }
 }
 
 impl<'a, O> KvBuilder<'a, O> {
     #[throws(kv::Error)]
-    pub async fn put<V>(self, value: V)
+    pub fn put<V>(self, value: V)
     where
         V: Into<Value> + Clone + Display + Send + 'static,
     {
-        let previous_value = Context::get_or_init().kv_mut().await.put_value(
+        let previous_value = Context::get_or_init().kv_mut().put_value(
             &self.key,
             value.clone(),
             PutOptions {
@@ -213,23 +213,12 @@ impl<'a, O> KvBuilder<'a, O> {
         )?;
 
         if !self.temporary && previous_value != Some(None) {
-            Ledger::get_or_init().lock().await.add(ledger::Put::new(
+            Ledger::get_or_init().add(ledger::Put::new(
                 self.key.into_owned(),
                 value,
                 previous_value.flatten().map(Secret::new),
             ));
         }
-    }
-}
-
-type KvBuilderFuture<'a> = Pin<Box<dyn Future<Output = Result<Item, kv::Error>> + Send + 'a>>;
-
-impl<'a> IntoFuture for KvBuilder<'a, All> {
-    type IntoFuture = KvBuilderFuture<'a>;
-    type Output = <KvBuilderFuture<'a> as Future>::Output;
-
-    fn into_future(self) -> Self::IntoFuture {
-        Box::pin(self.get())
     }
 }
 
@@ -245,13 +234,11 @@ pub enum Error {
     Prompt(#[from] prompt::Error),
 
     #[error(transparent)]
-    _Custom(#[from] anyhow::Error),
+    Custom(#[from] anyhow::Error),
 }
 
 pub mod ledger {
     use std::{borrow::Cow, fmt::Display};
-
-    use async_trait::async_trait;
 
     use crate::{
         context::{
@@ -279,7 +266,6 @@ pub mod ledger {
         }
     }
 
-    #[async_trait]
     impl<V: Into<Value> + Display + Send + 'static> Transaction for Put<V> {
         fn description(&self) -> Cow<'static, str> {
             "Put value".into()
@@ -297,8 +283,8 @@ pub mod ledger {
             detail.into()
         }
 
-        async fn revert(mut self: Box<Self>) -> anyhow::Result<()> {
-            let mut kv = Context::get_or_init().kv_mut().await;
+        fn revert(mut self: Box<Self>) -> anyhow::Result<()> {
+            let mut kv = Context::get_or_init().kv_mut();
             match self.previous_value.take() {
                 Some(previous_value) => {
                     kv.put_value(

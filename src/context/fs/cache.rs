@@ -1,18 +1,17 @@
-use std::path::PathBuf;
+use std::{
+    fs::{self, File},
+    io,
+    path::{Path, PathBuf},
+};
 
-use futures::Future;
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
-use tokio::{
-    fs::{self, File, OpenOptions},
-    io,
-};
 
 use crate::{
     context::{
         self,
         key::{Key, KeyOwned},
-        CachedFileFn, Error,
+        Error,
     },
     prelude::*,
     util::Opt,
@@ -40,7 +39,7 @@ impl Cache {
     }
 
     #[throws(Error)]
-    pub async fn get_or_create_file<K, C, O, Fut>(
+    pub fn get_or_create_file<K, C, O>(
         &mut self,
         key: K,
         on_cache: C,
@@ -48,18 +47,17 @@ impl Cache {
     ) -> (bool, (File, PathBuf))
     where
         K: Into<KeyOwned>,
-        C: for<'a> CachedFileFn<'a>,
-        O: FnOnce(PathBuf) -> Fut,
-        Fut: Future<Output = Result<(), Error>>,
+        C: Fn(&mut File, &Path, bool) -> Result<(), Error>,
+        O: FnOnce(&Path) -> Result<(), Error>,
     {
         let key = key.into();
 
         let mut had_previous_file = false;
-        let mut file_options = OpenOptions::new();
+        let mut file_options = File::options();
         file_options.write(true).read(true);
 
         if let Some(path) = self.map.get(&*key) {
-            match file_options.open(path).await {
+            match file_options.open(path) {
                 Ok(file) => {
                     had_previous_file = true;
                     debug!("Getting cached file: {key}");
@@ -77,11 +75,11 @@ impl Cache {
         let path = self.cache_dir.join(key.as_str());
 
         if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).await?;
+            fs::create_dir_all(parent)?;
         }
 
         let mut should_overwrite = false;
-        let mut file = match file_options.open(&path).await {
+        let mut file = match file_options.open(&path) {
             Ok(file) => file,
             Err(err) if err.kind() == io::ErrorKind::AlreadyExists => {
                 error!("Cached file at path {path:?} already exists");
@@ -95,18 +93,18 @@ impl Cache {
                 should_overwrite = opt == Opt::Overwrite;
                 if !should_overwrite {
                     debug!("Creating cached file: {key} (skipping)");
-                    let file = file_options.open(&path).await?;
+                    let file = file_options.open(&path)?;
                     self.map.insert(key, path.clone());
                     return (had_previous_file, (file, path));
                 }
 
-                on_overwrite(path.clone()).await?;
-                file_options.truncate(true).open(&path).await?
+                on_overwrite(&path)?;
+                file_options.truncate(true).open(&path)?
             }
             Err(err) => throw!(err),
         };
 
-        context::util::cache_loop(&key, &mut file, &path, on_cache).await?;
+        context::util::cache_loop(&key, &mut file, &path, on_cache)?;
 
         if !should_overwrite {
             debug!("Creating cached file: {key}");
@@ -120,7 +118,7 @@ impl Cache {
     }
 
     #[throws(Error)]
-    pub async fn _create_or_overwrite_file<K, C, O, Fut>(
+    pub fn _create_or_overwrite_file<K, C, O>(
         &mut self,
         key: K,
         on_cache: C,
@@ -128,36 +126,35 @@ impl Cache {
     ) -> (bool, (File, PathBuf))
     where
         K: Into<KeyOwned>,
-        C: for<'a> CachedFileFn<'a>,
-        O: FnOnce(PathBuf) -> Fut,
-        Fut: Future<Output = Result<(), Error>>,
+        C: Fn(&mut File, &Path, bool) -> Result<(), Error>,
+        O: FnOnce(&Path) -> Result<(), Error>,
     {
         let key = key.into();
         let path = self.cache_dir.join(key.as_str());
 
         if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).await?;
+            fs::create_dir_all(parent)?;
         }
 
         let mut had_previous_file = false;
-        let mut file_options = OpenOptions::new();
+        let mut file_options = File::options();
         file_options
             .write(true)
             .read(true)
             .create(true)
             .truncate(true)
             .create_new(true);
-        let mut file = match file_options.open(&path).await {
+        let mut file = match file_options.open(&path) {
             Ok(file) => file,
             Err(err) if err.kind() == io::ErrorKind::AlreadyExists => {
                 had_previous_file = true;
-                on_overwrite(path.clone()).await?;
-                file_options.create_new(false).open(&path).await?
+                on_overwrite(&path)?;
+                file_options.create_new(false).open(&path)?
             }
             Err(err) => throw!(err),
         };
 
-        context::util::cache_loop(&key, &mut file, &path, on_cache).await?;
+        context::util::cache_loop(&key, &mut file, &path, on_cache)?;
 
         if !had_previous_file {
             debug!("Creating cached file: {key}");
@@ -171,7 +168,7 @@ impl Cache {
     }
 
     #[throws(Error)]
-    pub async fn remove_file<K>(&mut self, key: &K, force: bool)
+    pub fn remove_file<K>(&mut self, key: &K, force: bool)
     where
         K: AsRef<Key> + ?Sized,
     {
@@ -180,7 +177,7 @@ impl Cache {
         match self.map.remove(key) {
             Some(path) => {
                 debug!("Remove cached file: {key}");
-                match fs::remove_file(path).await {
+                match fs::remove_file(path) {
                     Ok(()) => (),
                     Err(err) if force && err.kind() == io::ErrorKind::NotFound => (),
                     Err(err) => throw!(err),
@@ -201,10 +198,7 @@ impl Cache {
 }
 
 pub mod ledger {
-    use std::{borrow::Cow, path::PathBuf};
-
-    use async_trait::async_trait;
-    use tokio::fs;
+    use std::{borrow::Cow, fs, path::PathBuf};
 
     use crate::{
         context::{key::KeyOwned, Context},
@@ -228,7 +222,6 @@ pub mod ledger {
         }
     }
 
-    #[async_trait]
     impl Transaction for Create {
         fn description(&self) -> Cow<'static, str> {
             "Create cached file".into()
@@ -238,22 +231,20 @@ pub mod ledger {
             format!("File to revert: {:?}", self.current_file).into()
         }
 
-        async fn revert(mut self: Box<Self>) -> anyhow::Result<()> {
+        #[throws(anyhow::Error)]
+        fn revert(mut self: Box<Self>) {
             let current_file = self.current_file;
             match self.previous_file.take() {
                 Some(previous_file) => {
                     debug!("Move temporary file: {previous_file:?} => {current_file:?}");
-                    fs::rename(previous_file, current_file).await?;
+                    fs::rename(previous_file, current_file)?;
                 }
                 None => {
                     Context::get_or_init()
                         .cache_mut()
-                        .await
-                        .remove_file(&self.key, true)
-                        .await?;
+                        .remove_file(&self.key, true)?;
                 }
             }
-            Ok(())
         }
     }
 }

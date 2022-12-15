@@ -1,22 +1,18 @@
 use std::{
     borrow::Cow,
     env,
-    fs::File as BlockingFile,
-    io::{self as blocking_io, SeekFrom},
+    fs::File,
+    io::{self, Seek, SeekFrom},
     path::{Path, PathBuf},
 };
 
 use anyhow::Error;
 use crossterm::style::Stylize;
 use reqwest::{
+    blocking::Client,
     header::{HeaderMap, HeaderValue, USER_AGENT},
-    Client,
 };
 use serde::Deserialize;
-use tokio::{
-    fs::File,
-    io::{AsyncSeekExt, AsyncWriteExt},
-};
 use zip::ZipArchive;
 
 use crate::{prelude::*, temp};
@@ -28,11 +24,11 @@ const GITHUB_API_LATEST: &str = "https://api.github.com/repos/spelbryggeriet/hoc
 const GITHUB_API_RELEASE_DOWNLOAD_TEMPLATE: &str = "https://github.com/spelbryggeriet/hoc/releases/download/#version/hoc_macos-x86_64_#version.zip";
 
 #[throws(Error)]
-pub async fn run(from_ref: Option<String>) {
+pub fn run(from_ref: Option<String>) {
     let version = if let Some(from_ref) = from_ref {
-        compile_from_source(&from_ref).await?;
+        compile_from_source(&from_ref)?;
         from_ref
-    } else if let Some(latest_version) = download_latest().await? {
+    } else if let Some(latest_version) = download_latest()? {
         latest_version
     } else {
         return;
@@ -42,21 +38,21 @@ pub async fn run(from_ref: Option<String>) {
 }
 
 #[throws(Error)]
-async fn compile_from_source(from_ref: &str) {
+fn compile_from_source(from_ref: &str) {
     let source_path = get_source_path();
     if !git_path_exists(&source_path)? {
-        fetch_source(&source_path).await?;
+        fetch_source(&source_path)?;
     }
 
-    checkout_ref(&source_path, from_ref).await?;
-    let executable_path = build(&source_path).await?;
-    install_by_path(executable_path).await?;
+    checkout_ref(&source_path, from_ref)?;
+    let executable_path = build(&source_path)?;
+    install_by_path(executable_path)?;
 }
 
 #[throws(Error)]
-async fn download_latest() -> Option<String> {
+fn download_latest() -> Option<String> {
     let client = get_github_client()?;
-    let latest_version = determine_latest_version(&client).await?;
+    let latest_version = determine_latest_version(&client)?;
 
     debug!("Found latest version: {latest_version}");
 
@@ -65,8 +61,8 @@ async fn download_latest() -> Option<String> {
         return None;
     }
 
-    let file = download(&client, &latest_version).await?;
-    install_by_file(file).await?;
+    let file = download(&client, &latest_version)?;
+    install_by_file(file)?;
 
     Some(latest_version)
 }
@@ -86,7 +82,7 @@ fn git_path_exists(source_path: &Path) -> bool {
 }
 
 #[throws(Error)]
-async fn fetch_source(dest_path: &Path) {
+fn fetch_source(dest_path: &Path) {
     progress!("Fetching source");
 
     let repo_url = env::var("HOC_REPO")
@@ -95,41 +91,41 @@ async fn fetch_source(dest_path: &Path) {
 
     info!("Repository URL: {repo_url}");
 
-    process!("git clone --depth=1 {repo_url} {dest_path:?}").await?;
+    process!("git clone --depth=1 {repo_url} {dest_path:?}").run()?;
 }
 
 #[throws(Error)]
-async fn checkout_ref(source_path: &Path, from_ref: &str) {
+fn checkout_ref(source_path: &Path, from_ref: &str) {
     progress!("Checking out source");
 
     let source_path_string = source_path.to_string_lossy().into_owned();
 
     process!("git fetch --force origin {from_ref}")
         .current_dir(source_path_string.clone())
-        .await?;
+        .run()?;
     process!("git reset --hard FETCH_HEAD")
         .current_dir(source_path_string.clone())
-        .await?;
+        .run()?;
 }
 
 #[throws(Error)]
-async fn build(source_path: &Path) -> PathBuf {
+fn build(source_path: &Path) -> PathBuf {
     progress!("Building");
 
     process!("cargo build --release")
         .current_dir(source_path.to_string_lossy().into_owned())
-        .await?;
+        .run()?;
 
     source_path.join("target/release/hoc")
 }
 
 #[throws(Error)]
-async fn install_by_path(executable_source_path: PathBuf) {
+fn install_by_path(executable_source_path: PathBuf) {
     progress!("Installing");
 
     let executable_destination_path = get_executable_destination_path();
 
-    process!("cp {executable_source_path:?} {executable_destination_path:?}").await?;
+    process!("cp {executable_source_path:?} {executable_destination_path:?}").run()?;
 }
 
 #[throws(Error)]
@@ -140,47 +136,43 @@ fn get_github_client() -> Client {
 }
 
 #[throws(Error)]
-async fn determine_latest_version(client: &Client) -> String {
+fn determine_latest_version(client: &Client) -> String {
     #[derive(Deserialize)]
     struct Latest {
         tag_name: String,
     }
 
-    let latest: Latest = client.get(GITHUB_API_LATEST).send().await?.json().await?;
+    let latest: Latest = client.get(GITHUB_API_LATEST).send()?.json()?;
 
     latest.tag_name
 }
 
 #[throws(Error)]
-async fn download(client: &Client, version: &str) -> File {
+fn download(client: &Client, version: &str) -> File {
     progress!("Downloading {version}");
 
-    let mut data = client
+    let (mut file, _) = temp::create_file()?;
+
+    client
         .get(GITHUB_API_RELEASE_DOWNLOAD_TEMPLATE.replace("#version", version))
-        .send()
-        .await?;
+        .send()?
+        .copy_to(&mut file)?;
 
-    let (mut file, _) = temp::create_file().await?;
-
-    while let Some(chunk) = data.chunk().await? {
-        file.write_all(&chunk).await?;
-    }
-
-    file.seek(SeekFrom::Start(0)).await?;
+    file.seek(SeekFrom::Start(0))?;
     file
 }
 
 #[throws(Error)]
-async fn install_by_file(file: File) {
+fn install_by_file(file: File) {
     progress!("Installing");
 
-    let mut archive = ZipArchive::new(file.into_std().await)?;
+    let mut archive = ZipArchive::new(file)?;
     let mut executable_file = archive.by_name("hoc")?;
 
-    let mut destination_file = BlockingFile::options()
+    let mut destination_file = File::options()
         .create(true)
         .write(true)
         .open(get_executable_destination_path())?;
 
-    blocking_io::copy(&mut executable_file, &mut destination_file)?;
+    io::copy(&mut executable_file, &mut destination_file)?;
 }
