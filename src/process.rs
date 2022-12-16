@@ -18,8 +18,9 @@ use crate::{
 };
 
 fn current_ssh_session() -> MutexGuard<'static, Option<(Cow<'static, str>, ssh2::Session)>> {
-    static CURRENT_SSH_SESSION: OnceCell<Mutex<Option<(Cow<'static, str>, ssh2::Session)>>> =
-        OnceCell::new();
+    type NodeSession = (Cow<'static, str>, ssh2::Session);
+
+    static CURRENT_SSH_SESSION: OnceCell<Mutex<Option<NodeSession>>> = OnceCell::new();
 
     CURRENT_SSH_SESSION
         .get_or_init(|| Mutex::new(None))
@@ -40,6 +41,7 @@ pub fn global_settings<'a>() -> MutexGuard<'a, Settings> {
 pub struct ProcessBuilder<C> {
     handler: C,
     settings: Settings,
+    success_codes: Vec<i32>,
 }
 
 trait ProcessHandler {
@@ -117,6 +119,7 @@ impl RevertibleProcessHandler {
                     Box::new(self.revert_process.handler),
                     &self.revert_process_settings,
                     None,
+                    &self.revert_process.success_codes,
                 )?;
             }
         }
@@ -162,6 +165,7 @@ impl ProcessBuilder<RegularProcessHandler> {
                 raw_forward_process: process,
             },
             settings: Settings::new(),
+            success_codes: vec![0],
         }
     }
 
@@ -172,13 +176,14 @@ impl ProcessBuilder<RegularProcessHandler> {
                 revert_process,
             },
             settings: self.settings,
+            success_codes: self.success_codes,
         }
     }
 
     #[throws(Error)]
     pub fn run(self) -> Output {
         let settings: Settings = self.get_current_settings();
-        util::run_loop(Box::new(self.handler), &settings, None)?
+        util::run_loop(Box::new(self.handler), &settings, None, &self.success_codes)?
     }
 }
 
@@ -191,6 +196,7 @@ impl ProcessBuilder<RevertibleProcessHandler> {
             Box::new(self.handler),
             &forward_process_settings,
             Some(revert_process_settings),
+            &self.success_codes,
         )?
     }
 }
@@ -213,8 +219,13 @@ impl<C> ProcessBuilder<C> {
         self
     }
 
-    pub fn remote_mode<S: Into<Cow<'static, str>>>(mut self, node_name: S) -> Self {
+    pub fn _remote_mode<S: Into<Cow<'static, str>>>(mut self, node_name: S) -> Self {
         self.settings.remote_mode(node_name);
+        self
+    }
+
+    pub fn success_codes<I: IntoIterator<Item = i32>>(mut self, success_codes: I) -> Self {
+        self.success_codes = success_codes.into_iter().collect();
         self
     }
 }
@@ -347,6 +358,7 @@ mod util {
         mut process_handler: Box<dyn ProcessHandler>,
         forward_process_settings: &Settings,
         mut revert_process_settings: Option<Settings>,
+        success_codes: &[i32],
     ) -> Output {
         let maybe_sudo = if forward_process_settings.is_sudo() {
             "sudo -kSp '' "
@@ -387,9 +399,12 @@ mod util {
             debug!("Host: this computer");
 
             let result = match forward_process_settings.get_mode() {
-                ProcessMode::Local => {
-                    exec_local(&runnable_process, &mut pipe_input, forward_process_settings)
-                }
+                ProcessMode::Local => exec_local(
+                    &runnable_process,
+                    &mut pipe_input,
+                    success_codes,
+                    forward_process_settings,
+                ),
                 ProcessMode::Remote(node_name) => {
                     let mut current_session = current_ssh_session();
                     match &*current_session {
@@ -397,6 +412,7 @@ mod util {
                             session,
                             &runnable_process,
                             &mut pipe_input,
+                            success_codes,
                             forward_process_settings,
                         ),
                         _ => {
@@ -413,7 +429,7 @@ mod util {
                             let (_, pub_key_path) = files!("admin/ssh/pub").get()?;
                             let (_, priv_key_path) = files!("admin/ssh/priv").get()?;
                             let password: Cow<str> = if let Some(password) = &password_to_cache {
-                                Cow::Borrowed(&*password)
+                                Cow::Borrowed(&**password)
                             } else {
                                 Cow::Owned(kv!("admin/password").get()?.convert()?)
                             };
@@ -429,6 +445,7 @@ mod util {
                                 &session,
                                 &runnable_process,
                                 &mut pipe_input,
+                                success_codes,
                                 forward_process_settings,
                             );
 
@@ -466,10 +483,14 @@ mod util {
                         output.code,
                     );
                     if !output.stdout.is_empty() {
-                        info!("[stdout]\n{}", output.stdout);
+                        for line in output.stdout.lines() {
+                            info!("[stdout] {line}");
+                        }
                     }
                     if !output.stderr.is_empty() {
-                        info!("[stderr]\n{}", output.stderr);
+                        for line in output.stderr.lines() {
+                            info!("[err] {line}");
+                        }
                     }
 
                     let revert_modify = Opt::Custom("Revert and modify");
@@ -548,6 +569,7 @@ mod util {
     fn exec_local(
         raw_process: &str,
         pipe_input: &mut Vec<Cow<'_, str>>,
+        success_codes: &[i32],
         settings: &Settings,
     ) -> Output {
         let mut cmd = Command::new("sh");
@@ -596,7 +618,7 @@ mod util {
         };
         output.code = code;
 
-        if status.success() {
+        if success_codes.contains(&output.code) {
             output
         } else {
             throw!(Error::Failed(output))
@@ -608,9 +630,51 @@ mod util {
         session: &ssh2::Session,
         raw_process: &str,
         pipe_input: &mut Vec<Cow<'_, str>>,
+        success_codes: &[i32],
         settings: &Settings,
     ) -> Output {
-        todo!()
+        let mut channel = session.channel_session()?;
+
+        let raw_process: Cow<_> = if let Some(current_dir) = &settings.get_current_dir() {
+            format!("cd {current_dir} ; {raw_process}").into()
+        } else {
+            raw_process.into()
+        };
+
+        channel.exec(&raw_process)?;
+
+        if !pipe_input.is_empty() {
+            for input in pipe_input {
+                channel.write_all(input.as_bytes())?;
+                channel.write_all(b"\n")?;
+            }
+
+            channel.send_eof()?;
+        }
+
+        let mut output = Output::new();
+        thread::scope(|s| -> Result<(), Error> {
+            let stdout_handle =
+                s.spawn(|| read_lines(channel.stream(0), |line| debug!("[stdout] {line}")));
+            let stderr_handle =
+                s.spawn(|| read_lines(channel.stderr(), |line| debug!("[stderr] {line}")));
+
+            output.stdout = stdout_handle.join().expect(EXPECT_THREAD_NOT_POSIONED)?;
+            output.stderr = stderr_handle.join().expect(EXPECT_THREAD_NOT_POSIONED)?;
+
+            Ok(())
+        })?;
+
+        channel.close()?;
+        channel.wait_close()?;
+
+        output.code = channel.exit_status()?;
+
+        if success_codes.contains(&output.code) {
+            output
+        } else {
+            throw!(Error::Failed(output))
+        }
     }
 
     pub fn sudo_string(is_sudo: bool) -> Cow<'static, str> {

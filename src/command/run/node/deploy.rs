@@ -2,16 +2,20 @@ use std::net::IpAddr;
 
 use anyhow::{anyhow, Error};
 
-use crate::{prelude::*, util::Opt};
+use crate::{prelude::*, process, util::Opt};
 
 #[throws(Error)]
 pub fn run(node_name: String) {
     check_not_initialized(&node_name)?;
 
     let ip_address = get_node_ip_address(&node_name)?;
-    if ping_endpoint(ip_address, 1).is_err() {
-        await_node(&node_name, ip_address)?;
+    if ping_endpoint(ip_address)? == 2 {
+        await_node_startup(&node_name, ip_address)?;
     }
+
+    process::global_settings().remote_mode(node_name);
+
+    await_node_preinitialization()?;
 }
 
 #[throws(Error)]
@@ -28,33 +32,45 @@ fn get_node_ip_address(node_name: &str) -> IpAddr {
 }
 
 #[throws(Error)]
-fn ping_endpoint(ip_address: IpAddr, timeout: u32) {
+fn ping_endpoint(ip_address: IpAddr) -> i32 {
     progress!("Pinging node");
 
-    process!("ping -o -t {timeout} -i 5 {ip_address}").run()?;
+    process!("ping -o -t 15 -i 5 {ip_address}")
+        .success_codes([0, 2])
+        .run()?
+        .code
 }
 
 #[throws(Error)]
-fn await_node(node_name: &str, ip_address: IpAddr) {
-    info!(
+fn await_node_startup(node_name: &str, ip_address: IpAddr) {
+    let mut message = format!(
         "{node_name} could not be reached at {ip_address}. Make sure the node hardware has been \
         prepared with a flashed SD card, is plugged into the local network with ethernet, and is \
         turned on."
     );
 
-    let opt = select!("Do you want to continue?")
-        .with_options([Opt::Yes, Opt::No])
-        .get()?;
+    loop {
+        info!("{message}");
 
-    if opt == Opt::No {
-        throw!(inquire::InquireError::OperationCanceled);
+        let opt = select!("Do you want to try again?")
+            .with_options([Opt::Yes, Opt::No])
+            .get()?;
+
+        if opt == Opt::No {
+            throw!(inquire::InquireError::OperationCanceled);
+        }
+
+        if ping_endpoint(ip_address)? == 2 {
+            message = format!("{node_name} could not be reached at {ip_address}.");
+        } else {
+            break;
+        }
     }
+}
 
-    ping_endpoint(ip_address, 300)?;
-
+#[throws(Error)]
+fn await_node_preinitialization() {
     progress!("Waiting for node pre-initialization to finish");
 
-    process!("cloud-init status --wait")
-        .remote_mode(node_name.to_owned())
-        .run()?;
+    process!("cloud-init status --wait").run()?;
 }

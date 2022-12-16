@@ -66,7 +66,7 @@ impl Files {
             }
 
             file_options.truncate(true).create(true);
-            on_overwrite(&path)?;
+            on_overwrite(path)?;
         } else {
             file_options.create_new(true);
         }

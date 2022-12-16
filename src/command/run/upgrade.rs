@@ -104,7 +104,7 @@ fn checkout_ref(source_path: &Path, from_ref: &str) {
         .current_dir(source_path_string.clone())
         .run()?;
     process!("git reset --hard FETCH_HEAD")
-        .current_dir(source_path_string.clone())
+        .current_dir(source_path_string)
         .run()?;
 }
 
