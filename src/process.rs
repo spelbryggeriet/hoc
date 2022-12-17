@@ -196,7 +196,7 @@ impl ProcessBuilder<RegularProcessHandler> {
         }
     }
 
-    pub fn _revertible(self, revert_process: Self) -> ProcessBuilder<RevertibleProcessHandler> {
+    pub fn revertible(self, revert_process: Self) -> ProcessBuilder<RevertibleProcessHandler> {
         ProcessBuilder {
             handler: RevertibleProcessHandler {
                 raw_forward_process: self.handler.raw_forward_process,
@@ -255,7 +255,8 @@ impl<C> ProcessBuilder<C> {
         self
     }
 
-    pub fn _remote_mode<S: Into<Cow<'static, str>>>(mut self, node_name: S) -> Self {
+    #[allow(unused)]
+    pub fn remote_mode<S: Into<Cow<'static, str>>>(mut self, node_name: S) -> Self {
         self.settings.remote_mode(node_name);
         self
     }
