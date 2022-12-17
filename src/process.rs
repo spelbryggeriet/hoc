@@ -377,17 +377,10 @@ mod util {
                 if let Ok(Item::Value(Value::String(password))) = kv!("admin/password").get() {
                     pipe_input.push(Cow::Owned(password));
                 } else {
-                    let password: Secret<String> = prompt!(
-                        "[sudo] Password for command {}",
-                        raw_process
-                            .split_once(' ')
-                            .map(|opt| opt.0)
-                            .unwrap_or(&raw_process)
-                            .yellow()
-                    )
-                    .without_verification()
-                    .hidden()
-                    .get()?;
+                    let password: Secret<String> = prompt!("[sudo] Password",)
+                        .without_verification()
+                        .hidden()
+                        .get()?;
                     password_to_cache.replace(password.clone());
                     pipe_input.push(Cow::Owned(password.into_non_secret()));
                 }

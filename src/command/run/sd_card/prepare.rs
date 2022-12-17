@@ -235,7 +235,7 @@ fn generate_node_name() -> String {
 }
 
 #[throws(Error)]
-fn assign_ip_address(node_name: &str) -> IpAddr {
+fn assign_ip_address(node_name: &str) -> Cidr {
     progress!("Assigning IP address");
 
     let start_address: IpAddr = kv!("network/start_address").get()?.convert()?;
@@ -264,7 +264,10 @@ fn assign_ip_address(node_name: &str) -> IpAddr {
         if !used_addresses.contains(&next_address) {
             kv!("nodes/{node_name}/network/address").put(next_address.to_string())?;
             info!("Assigned IP Address: {next_address}");
-            break next_address;
+            break Cidr {
+                ip_addr: next_address,
+                prefix_len,
+            };
         }
 
         step += 1;
@@ -272,7 +275,7 @@ fn assign_ip_address(node_name: &str) -> IpAddr {
 }
 
 #[throws(Error)]
-fn modify_image(mount_dir: &Path, node_name: &str, ip_address: IpAddr) {
+fn modify_image(mount_dir: &Path, node_name: &str, ip_address: Cidr) {
     let opt = select!("Do you want to modify the partition mounted at {mount_dir:?}?")
         .with_options([Opt::Yes, Opt::No])
         .get()?;
@@ -296,12 +299,7 @@ fn modify_image(mount_dir: &Path, node_name: &str, ip_address: IpAddr) {
         ssh_pub_key = pub_key,
     ))?;
     let data = serde_yaml::to_string(&data_map)?;
-    let data = "#cloud-config\n".to_owned()
-        + data
-            .strip_prefix("---")
-            .unwrap_or(&data)
-            .strip_prefix("\n")
-            .unwrap_or(&data);
+    let data = "#cloud-config\n".to_owned() + data.strip_prefix("---\n").unwrap_or(&data);
 
     debug!("User data:\n{data}");
 
