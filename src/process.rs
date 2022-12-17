@@ -223,6 +223,7 @@ impl ProcessBuilder<RegularProcessHandler> {
 
 impl ProcessBuilder<RevertibleProcessHandler> {
     #[throws(Error)]
+    #[allow(unused)]
     pub fn run(self) -> Output {
         let forward_process_settings = self.get_current_settings();
         let revert_process_settings = self.handler.revert_process.get_current_settings();

@@ -13,7 +13,7 @@ use crate::{
     cidr::Cidr,
     context::{self, key, kv},
     prelude::*,
-    util::{self, Opt},
+    util::{self, DiskInfo, DiskPartitionInfo, Opt},
 };
 
 const UBUNTU_VERSION: UbuntuVersion = UbuntuVersion {
@@ -135,7 +135,7 @@ fn choose_sd_card() -> DiskInfo {
     progress!("Choosing SD card");
 
     loop {
-        let disks = macos::get_attached_disks()?;
+        let disks = util::get_attached_disks()?;
         let select = select!("Which disk is your SD card?").with_options(disks);
         if select.option_count() > 0 {
             break select.get()?;
@@ -177,7 +177,7 @@ fn mount_sd_card() -> DiskPartitionInfo {
     progress!("Mounting SD card");
 
     let partition = loop {
-        let partitions = macos::get_attached_disks()?.flat_map(|disk| {
+        let partitions = util::get_attached_disks()?.into_iter().flat_map(|disk| {
             disk.partitions
                 .into_iter()
                 .filter(|part| part.name == "system-boot")
@@ -308,7 +308,7 @@ fn modify_image(mount_dir: &Path, node_name: &str, ip_address: Cidr) {
     debug!("User data:\n{data}");
 
     let user_data_path = mount_dir.join("user-data");
-    fs::write(&user_data_path, &data)?;
+    fs::write(user_data_path, &data)?;
 
     // Deserialize and serialize to check for syntax errors.
     let gateway: IpAddr = kv!("network/gateway").get()?.convert()?;
@@ -327,7 +327,7 @@ fn modify_image(mount_dir: &Path, node_name: &str, ip_address: Cidr) {
     debug!("Network config:\n{network_config}");
 
     let network_config_path = mount_dir.join("network-config");
-    fs::write(&network_config_path, network_config)?;
+    fs::write(network_config_path, network_config)?;
 }
 
 #[throws(Error)]
@@ -360,14 +360,6 @@ fn wants_to_flash() -> bool {
     opt == flash_anyway
 }
 
-fn unnamed_if_empty<S: AsRef<str> + ?Sized>(name: &S) -> String {
-    if name.as_ref().trim().is_empty() {
-        "<unnamed>".to_owned()
-    } else {
-        format!(r#""{}""#, name.as_ref())
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct UbuntuVersion {
     major: u32,
@@ -385,129 +377,5 @@ impl Display for UbuntuVersion {
             minor = self.minor,
             patch = self.patch,
         )?;
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct DiskInfo {
-    pub id: String,
-    pub part_type: String,
-    pub name: String,
-    pub size: usize,
-    pub partitions: Vec<DiskPartitionInfo>,
-}
-
-#[derive(Debug, Clone)]
-pub struct DiskPartitionInfo {
-    pub id: String,
-    pub size: usize,
-    pub name: String,
-}
-
-impl DiskInfo {
-    pub fn description(&self) -> String {
-        let mut desc = format!("{}: ", self.id);
-        desc += &unnamed_if_empty(&self.name);
-        if !self.partitions.is_empty() {
-            desc += &format!(
-                " ({} partition{}: {})",
-                self.partitions.len(),
-                if self.partitions.len() == 1 { "" } else { "s" },
-                self.partitions
-                    .iter()
-                    .map(|p| unnamed_if_empty(&p.name))
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            );
-        }
-        desc + &format!(", {:.2} GB", self.size as f64 / 1e9)
-    }
-}
-
-impl Display for DiskInfo {
-    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
-        self.description().fmt(f)
-    }
-}
-
-impl DiskPartitionInfo {
-    fn description(&self) -> String {
-        format!(
-            "{}: {} ({:.2} GB)",
-            self.id,
-            unnamed_if_empty(&self.name),
-            self.size as f64 / 1e9,
-        )
-    }
-}
-
-impl Display for DiskPartitionInfo {
-    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
-        self.description().fmt(f)
-    }
-}
-
-mod macos {
-    use serde::Deserialize;
-
-    use super::*;
-
-    #[throws(Error)]
-    pub fn get_attached_disks() -> impl Iterator<Item = DiskInfo> {
-        let output = process!("diskutil list -plist external physical").run()?;
-        let diskutil_output: DiskutilOutput = plist::from_bytes(output.stdout.as_bytes())?;
-        diskutil_output
-            .all_disks_and_partitions
-            .into_iter()
-            .map(Into::into)
-    }
-
-    #[derive(Deserialize)]
-    #[serde(rename_all = "PascalCase")]
-    struct DiskutilOutput {
-        all_disks_and_partitions: Vec<DiskutilDisk>,
-    }
-
-    #[derive(Debug, Clone, Deserialize)]
-    #[serde(rename_all = "PascalCase")]
-    pub struct DiskutilDisk {
-        pub device_identifier: String,
-        #[serde(default = "String::new")]
-        pub volume_name: String,
-        pub size: usize,
-        pub content: String,
-        #[serde(default = "Vec::new")]
-        pub partitions: Vec<DiskutilPartition>,
-    }
-
-    #[derive(Debug, Clone, Deserialize)]
-    #[serde(rename_all = "PascalCase")]
-    pub struct DiskutilPartition {
-        pub device_identifier: String,
-        #[serde(default = "String::new")]
-        pub volume_name: String,
-        pub size: usize,
-    }
-
-    impl From<DiskutilDisk> for DiskInfo {
-        fn from(disk: DiskutilDisk) -> Self {
-            Self {
-                id: disk.device_identifier,
-                name: disk.volume_name,
-                size: disk.size,
-                part_type: disk.content,
-                partitions: disk.partitions.into_iter().map(Into::into).collect(),
-            }
-        }
-    }
-
-    impl From<DiskutilPartition> for DiskPartitionInfo {
-        fn from(partition: DiskutilPartition) -> Self {
-            Self {
-                id: partition.device_identifier,
-                name: partition.volume_name,
-                size: partition.size,
-            }
-        }
     }
 }

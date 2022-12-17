@@ -1,15 +1,20 @@
 use std::net::IpAddr;
 
 use anyhow::{anyhow, Error};
+use lazy_regex::regex;
 
-use crate::{prelude::*, process, util::Opt};
+use crate::{
+    prelude::*,
+    process::{self, Output},
+    util::{self, DiskPartitionInfo, Opt},
+};
 
 #[throws(Error)]
 pub fn run(node_name: String) {
     check_not_initialized(&node_name)?;
 
     let ip_address = get_node_ip_address(&node_name)?;
-    if ping_endpoint(ip_address)? == 2 {
+    if ping_endpoint(ip_address)?.code == 2 {
         await_node_startup(&node_name, ip_address)?;
     }
 
@@ -17,6 +22,10 @@ pub fn run(node_name: String) {
 
     await_node_preinitialization()?;
     change_password()?;
+    let partitions = find_attached_storage()?;
+    if !partitions.is_empty() {
+        mount_storage(partitions)?;
+    }
 }
 
 #[throws(Error)]
@@ -33,13 +42,12 @@ fn get_node_ip_address(node_name: &str) -> IpAddr {
 }
 
 #[throws(Error)]
-fn ping_endpoint(ip_address: IpAddr) -> i32 {
+fn ping_endpoint(ip_address: IpAddr) -> Output {
     progress!("Pinging node");
 
     process!("ping -o -t 15 -i 5 {ip_address}")
         .success_codes([0, 2])
         .run()?
-        .code
 }
 
 #[throws(Error)]
@@ -61,7 +69,7 @@ fn await_node_startup(node_name: &str, ip_address: IpAddr) {
             throw!(inquire::InquireError::OperationCanceled);
         }
 
-        if ping_endpoint(ip_address)? == 2 {
+        if ping_endpoint(ip_address)?.code == 2 {
             message = format!("{node_name} could not be reached at {ip_address}.");
         } else {
             break;
@@ -82,4 +90,47 @@ fn change_password() {
     let username: String = kv!("admin/username").get()?.convert()?;
     let password = process::get_remote_password()?.into_non_secret();
     process!(sudo "chpasswd" <("{username}:{password}")).run()?
+}
+
+#[throws(Error)]
+fn find_attached_storage() -> Vec<DiskPartitionInfo> {
+    progress!("Finding attached storage");
+
+    util::get_attached_disks()?
+        .into_iter()
+        .filter(|disk| {
+            disk.partitions
+                .iter()
+                .all(|part| part.name != "system-boot")
+        })
+        .flat_map(|disk| disk.partitions)
+        .collect()
+}
+
+#[throws(Error)]
+fn mount_storage(partitions: Vec<DiskPartitionInfo>) {
+    progress!("Mounting permanent storage");
+
+    let opt = select!("Which storage do you want to mount?")
+        .with_options(partitions)
+        .get()?;
+
+    let output = process!("blkid /dev/{id}", id = opt.id).run()?;
+    let uuid = regex!(r#"^.*UUID="([^"]*)".*$"#)
+        .captures(&output.stdout)
+        .context("output should contain UUID")?
+        .get(1)
+        .context("UUID should be first match")?
+        .as_str();
+
+    let fstab_line = format!("UUID={uuid} /media auto nosuid,nodev,nofail 0 0");
+    let fstab_line = fstab_line.replace('/', r"\/");
+    let fstab_sed = format!(
+        "/^UUID={uuid}/{{h;s/^UUID={uuid}.*$/{fstab_line}/}};${{x;/^$/{{s//{fstab_line}/;H}};x}}"
+    );
+
+    process!(sudo "sed -i {fstab_sed} /etc/fstab").run()?;
+    let output = process!("cat /etc/fstab").run()?;
+
+    debug!("{}", output.stdout);
 }

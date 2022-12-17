@@ -415,6 +415,7 @@ impl RenderThread {
     }
 
     #[throws(Error)]
+    #[allow(unused)]
     fn terminal_reset_cursor(previous_height: Option<usize>) {
         if let Some(height) = previous_height.filter(|h| *h > 1) {
             io::stdout().execute(cursor::MoveToPreviousLine(height as u16 - 1))?;
