@@ -296,7 +296,12 @@ fn modify_image(mount_dir: &Path, node_name: &str, ip_address: IpAddr) {
         ssh_pub_key = pub_key,
     ))?;
     let data = serde_yaml::to_string(&data_map)?;
-    let data = "#cloud-config".to_owned() + data.strip_prefix("---").unwrap_or(&data);
+    let data = "#cloud-config\n".to_owned()
+        + data
+            .strip_prefix("---")
+            .unwrap_or(&data)
+            .strip_prefix("\n")
+            .unwrap_or(&data);
 
     debug!("User data:\n{data}");
 
