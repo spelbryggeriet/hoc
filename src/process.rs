@@ -28,6 +28,30 @@ fn current_ssh_session() -> MutexGuard<'static, Option<(Cow<'static, str>, ssh2:
         .expect(EXPECT_THREAD_NOT_POSIONED)
 }
 
+#[throws(Error)]
+pub fn get_local_password() -> Secret<String> {
+    if let Ok(Item::Value(Value::String(password))) = kv!("admin/passwords/local").get() {
+        Secret::new(password)
+    } else {
+        prompt!("[sudo] Password")
+            .without_verification()
+            .hidden()
+            .get()?
+    }
+}
+
+#[throws(Error)]
+pub fn get_remote_password() -> Secret<String> {
+    if let Ok(Item::Value(Value::String(password))) = kv!("admin/passwords/remote").get() {
+        Secret::new(password)
+    } else {
+        prompt!("[remote] Administrator password")
+            .without_verification()
+            .hidden()
+            .get()?
+    }
+}
+
 pub fn global_settings<'a>() -> MutexGuard<'a, Settings> {
     static SETTINGS: OnceCell<Mutex<Settings>> = OnceCell::new();
 
@@ -374,16 +398,12 @@ mod util {
         return loop {
             let mut password_to_cache = None;
             if forward_process_settings.is_sudo() {
-                if let Ok(Item::Value(Value::String(password))) = kv!("admin/password").get() {
-                    pipe_input.push(Cow::Owned(password));
-                } else {
-                    let password: Secret<String> = prompt!("[sudo] Password",)
-                        .without_verification()
-                        .hidden()
-                        .get()?;
-                    password_to_cache.replace(password.clone());
-                    pipe_input.push(Cow::Owned(password.into_non_secret()));
-                }
+                let password = match forward_process_settings.get_mode() {
+                    ProcessMode::Local => get_local_password()?,
+                    ProcessMode::Remote(_) => get_remote_password()?,
+                };
+                password_to_cache.replace(password.clone());
+                pipe_input.push(password.into_non_secret().into());
             }
 
             let sudo_str = sudo_string(forward_process_settings.is_sudo());
@@ -421,22 +441,14 @@ mod util {
                             let admin_username: String = kv!("admin/username").get()?.convert()?;
                             let (_, pub_key_path) = files!("admin/ssh/pub").get()?;
                             let (_, priv_key_path) = files!("admin/ssh/priv").get()?;
-                            let password: Cow<str> = if let Some(password) = &password_to_cache {
-                                Cow::Borrowed(&**password)
-                            } else {
-                                let password: Secret<String> =
-                                    prompt!("[remote] Administrator password")
-                                        .without_verification()
-                                        .hidden()
-                                        .get()?;
-                                Cow::Owned(password.into_non_secret())
-                            };
+                            let password = get_remote_password()?;
+                            password_to_cache.replace(password.clone());
 
                             session.userauth_pubkey_file(
                                 &admin_username,
                                 Some(&pub_key_path),
                                 &priv_key_path,
-                                Some(&password),
+                                Some(&password.into_non_secret()),
                             )?;
 
                             let result = exec_remote(
@@ -458,7 +470,12 @@ mod util {
             match result {
                 Ok(output) => {
                     if let Some(password) = password_to_cache {
-                        kv!("admin/password").temporary().put(password)?;
+                        match forward_process_settings.get_mode() {
+                            ProcessMode::Local => kv!("admin/passwords/local"),
+                            ProcessMode::Remote(_) => kv!("admin/passwords/remote"),
+                        }
+                        .temporary()
+                        .put(password)?;
                     }
 
                     if let Some(revert_process_settings) = revert_process_settings {

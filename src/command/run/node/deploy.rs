@@ -16,6 +16,7 @@ pub fn run(node_name: String) {
     process::global_settings().remote_mode(node_name);
 
     await_node_preinitialization()?;
+    change_password()?;
 }
 
 #[throws(Error)]
@@ -71,6 +72,14 @@ fn await_node_startup(node_name: &str, ip_address: IpAddr) {
 #[throws(Error)]
 fn await_node_preinitialization() {
     progress!("Waiting for node pre-initialization to finish");
-
     process!("cloud-init status --wait").run()?;
+}
+
+#[throws(Error)]
+fn change_password() {
+    progress!("Changing password");
+
+    let _username: String = kv!("admin/username").get()?.convert()?;
+    let _password = process::get_remote_password()?.into_non_secret();
+    process!(sudo "chpasswd").run()?
 }
