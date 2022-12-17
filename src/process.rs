@@ -424,7 +424,12 @@ mod util {
                             let password: Cow<str> = if let Some(password) = &password_to_cache {
                                 Cow::Borrowed(&**password)
                             } else {
-                                Cow::Owned(kv!("admin/password").get()?.convert()?)
+                                let password: Secret<String> =
+                                    prompt!("[remote] Administrator password")
+                                        .without_verification()
+                                        .hidden()
+                                        .get()?;
+                                Cow::Owned(password.into_non_secret())
                             };
 
                             session.userauth_pubkey_file(
