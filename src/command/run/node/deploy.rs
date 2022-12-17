@@ -79,7 +79,7 @@ fn await_node_preinitialization() {
 fn change_password() {
     progress!("Changing password");
 
-    let _username: String = kv!("admin/username").get()?.convert()?;
-    let _password = process::get_remote_password()?.into_non_secret();
-    process!(sudo "chpasswd").run()?
+    let username: String = kv!("admin/username").get()?.convert()?;
+    let password = process::get_remote_password()?.into_non_secret();
+    process!(sudo "chpasswd" <("{username}:{password}")).run()?
 }

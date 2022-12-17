@@ -50,19 +50,22 @@ macro_rules! _temp_file {
 }
 
 macro_rules! process {
-    ($($sudo:ident)? $fmt:literal $($args:tt)*) => {{
-        let is_sudo = $(if __is_sudo!($sudo) {
-            true
-        } else)? {
-            false
-        };
+    ($($sudo:ident)? $fmt:literal $(<($stdin_fmt:literal))? $(, $arg_name:ident = $arg_val:expr)* $(,)?) => {{
+        $(
+        #[deny(unused)]
+        let $arg_name = &$arg_val;
+        )*
 
-        let process = $crate::util::from_arguments_to_str_cow(format_args!($fmt $($args)*));
+        let process = $crate::util::from_arguments_to_str_cow(format_args!($fmt));
         let mut builder = $crate::process::ProcessBuilder::new(process);
 
-        if is_sudo {
+        if __is_sudo!($($sudo)?) {
             builder = builder.sudo();
         }
+
+        $(
+        builder = builder.write_stdin(&format!($stdin_fmt));
+        )*
 
         builder
     }};
@@ -71,6 +74,10 @@ macro_rules! process {
 macro_rules! __is_sudo {
     (sudo) => {
         true
+    };
+
+    () => {
+        false
     };
 
     ($token:tt) => {{

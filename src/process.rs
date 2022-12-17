@@ -65,6 +65,7 @@ pub fn global_settings<'a>() -> MutexGuard<'a, Settings> {
 pub struct ProcessBuilder<C> {
     handler: C,
     settings: Settings,
+    input_data: String,
     success_codes: Vec<i32>,
 }
 
@@ -141,9 +142,10 @@ impl RevertibleProcessHandler {
             fn revert(self: Box<Self>) {
                 util::run_loop(
                     Box::new(self.revert_process.handler),
-                    &self.revert_process_settings,
+                    self.revert_process_settings,
                     None,
-                    &self.revert_process.success_codes,
+                    self.revert_process.input_data,
+                    self.revert_process.success_codes,
                 )?;
             }
         }
@@ -189,6 +191,7 @@ impl ProcessBuilder<RegularProcessHandler> {
                 raw_forward_process: process,
             },
             settings: Settings::new(),
+            input_data: String::new(),
             success_codes: vec![0],
         }
     }
@@ -200,6 +203,7 @@ impl ProcessBuilder<RegularProcessHandler> {
                 revert_process,
             },
             settings: self.settings,
+            input_data: self.input_data,
             success_codes: self.success_codes,
         }
     }
@@ -207,7 +211,13 @@ impl ProcessBuilder<RegularProcessHandler> {
     #[throws(Error)]
     pub fn run(self) -> Output {
         let settings: Settings = self.get_current_settings();
-        util::run_loop(Box::new(self.handler), &settings, None, &self.success_codes)?
+        util::run_loop(
+            Box::new(self.handler),
+            settings,
+            None,
+            self.input_data,
+            self.success_codes,
+        )?
     }
 }
 
@@ -218,9 +228,10 @@ impl ProcessBuilder<RevertibleProcessHandler> {
         let revert_process_settings = self.handler.revert_process.get_current_settings();
         util::run_loop(
             Box::new(self.handler),
-            &forward_process_settings,
+            forward_process_settings,
             Some(revert_process_settings),
-            &self.success_codes,
+            self.input_data,
+            self.success_codes,
         )?
     }
 }
@@ -245,6 +256,11 @@ impl<C> ProcessBuilder<C> {
 
     pub fn _remote_mode<S: Into<Cow<'static, str>>>(mut self, node_name: S) -> Self {
         self.settings.remote_mode(node_name);
+        self
+    }
+
+    pub fn write_stdin<S: AsRef<str> + ?Sized>(mut self, input: &S) -> Self {
+        self.input_data.push_str(input.as_ref());
         self
     }
 
@@ -380,9 +396,10 @@ mod util {
     #[throws(Error)]
     pub(super) fn run_loop(
         mut process_handler: Box<dyn ProcessHandler>,
-        forward_process_settings: &Settings,
+        forward_process_settings: Settings,
         mut revert_process_settings: Option<Settings>,
-        success_codes: &[i32],
+        mut input_data: String,
+        success_codes: Vec<i32>,
     ) -> Output {
         let maybe_sudo = if forward_process_settings.is_sudo() {
             "sudo -kSp '' "
@@ -392,7 +409,6 @@ mod util {
 
         let mut raw_process = process_handler.as_raw();
         let mut runnable_process = format!("{maybe_sudo}{raw_process}");
-        let mut pipe_input = Vec::new();
         let mut progress_desc = "Running command";
 
         return loop {
@@ -403,7 +419,7 @@ mod util {
                     ProcessMode::Remote(_) => get_remote_password()?,
                 };
                 password_to_cache.replace(password.clone());
-                pipe_input.push(password.into_non_secret().into());
+                input_data = password.into_non_secret() + "\n" + &input_data;
             }
 
             let sudo_str = sudo_string(forward_process_settings.is_sudo());
@@ -414,9 +430,9 @@ mod util {
             let result = match forward_process_settings.get_mode() {
                 ProcessMode::Local => exec_local(
                     &runnable_process,
-                    &mut pipe_input,
-                    success_codes,
-                    forward_process_settings,
+                    &forward_process_settings,
+                    &input_data,
+                    &success_codes,
                 ),
                 ProcessMode::Remote(node_name) => {
                     let mut current_session = current_ssh_session();
@@ -424,9 +440,9 @@ mod util {
                         Some((current_node, session)) if node_name == current_node => exec_remote(
                             session,
                             &runnable_process,
-                            &mut pipe_input,
-                            success_codes,
-                            forward_process_settings,
+                            &forward_process_settings,
+                            &input_data,
+                            &success_codes,
                         ),
                         _ => {
                             let host: IpAddr =
@@ -454,9 +470,9 @@ mod util {
                             let result = exec_remote(
                                 &session,
                                 &runnable_process,
-                                &mut pipe_input,
-                                success_codes,
-                                forward_process_settings,
+                                &forward_process_settings,
+                                &input_data,
+                                &success_codes,
                             );
 
                             current_session.replace((node_name.clone(), session));
@@ -583,9 +599,9 @@ mod util {
     #[throws(Error)]
     fn exec_local(
         raw_process: &str,
-        pipe_input: &mut Vec<Cow<'_, str>>,
-        success_codes: &[i32],
         settings: &Settings,
+        input_data: &str,
+        success_codes: &[i32],
     ) -> Output {
         let mut cmd = Command::new("sh");
         cmd.args(["-c", raw_process])
@@ -599,12 +615,9 @@ mod util {
 
         let mut child = cmd.spawn()?;
 
-        if !pipe_input.is_empty() {
+        if !input_data.is_empty() {
             let mut stdin = child.stdin.take().expect("stdin should not be taken");
-            for input in pipe_input.drain(..) {
-                stdin.write_all(input.as_bytes())?;
-                stdin.write_all(b"\n")?;
-            }
+            stdin.write_all(input_data.as_bytes())?;
         }
 
         let mut output = Output::new();
@@ -644,9 +657,9 @@ mod util {
     pub fn exec_remote(
         session: &ssh2::Session,
         raw_process: &str,
-        pipe_input: &mut Vec<Cow<'_, str>>,
-        success_codes: &[i32],
         settings: &Settings,
+        input_data: &str,
+        success_codes: &[i32],
     ) -> Output {
         let mut channel = session.channel_session()?;
 
@@ -658,12 +671,8 @@ mod util {
 
         channel.exec(&raw_process)?;
 
-        if !pipe_input.is_empty() {
-            for input in pipe_input {
-                channel.write_all(input.as_bytes())?;
-                channel.write_all(b"\n")?;
-            }
-
+        if !input_data.is_empty() {
+            channel.write_all(input_data.as_bytes())?;
             channel.send_eof()?;
         }
 

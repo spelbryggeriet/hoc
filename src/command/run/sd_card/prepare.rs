@@ -84,7 +84,11 @@ fn ubuntu_image_url<T: Display>(version: T) -> String {
 fn validate_os_image(os_image_file_path: &Path) {
     progress!("Validating file type");
 
-    let mut output = process!("file -E {}", os_image_file_path.to_string_lossy()).run()?;
+    let mut output = process!(
+        "file -E {path}",
+        path = &os_image_file_path.to_string_lossy(),
+    )
+    .run()?;
     output.stdout = output.stdout.to_lowercase();
 
     if !output.stdout.contains("xz compressed data") {
@@ -95,7 +99,7 @@ fn validate_os_image(os_image_file_path: &Path) {
             .get()?;
 
         if opt == Opt::Yes {
-            process!("cat {}", os_image_file_path.to_string_lossy()).run()?;
+            process!("cat {path}", path = os_image_file_path.to_string_lossy()).run()?;
         }
 
         bail!("Validation failed");
@@ -192,7 +196,7 @@ fn mount_sd_card() -> DiskPartitionInfo {
             .get()?;
     };
 
-    process!("diskutil mount {}", partition.id).run()?;
+    process!("diskutil mount {id}", id = partition.id).run()?;
 
     partition
 }
@@ -331,7 +335,7 @@ fn unmount_partition(partition: &DiskPartitionInfo) {
     progress!("Unmounting partition");
 
     process!("sync").run()?;
-    process!("diskutil unmount {}", partition.id).run()?;
+    process!("diskutil unmount {id}", id = partition.id).run()?;
 }
 
 fn report(node_name: &str) {
