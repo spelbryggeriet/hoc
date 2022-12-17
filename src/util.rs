@@ -101,7 +101,7 @@ pub fn random_string(source: &str, len: usize) -> String {
 
 #[throws(Error)]
 pub fn get_attached_disks() -> Vec<DiskInfo> {
-    match &*process!("uname").run()?.stdout {
+    match process!("uname").run()?.stdout.trim() {
         "Linux" => {
             let output = process!("lsblk -bOJ").run()?;
             serde_json::from_slice::<linux::LsblkOutput>(output.stdout.as_bytes())?.into()

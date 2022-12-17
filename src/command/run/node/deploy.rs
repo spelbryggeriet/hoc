@@ -119,7 +119,7 @@ fn mount_storage(partitions: Vec<DiskPartitionInfo>) {
 
     let output = process!("blkid /dev/{id}", id = opt.id).run()?;
     let uuid = regex!(r#"^.*UUID="([^"]*)".*$"#)
-        .captures(&output.stdout)
+        .captures(output.stdout.trim())
         .context("output should contain UUID")?
         .get(1)
         .context("UUID should be first match")?
@@ -131,7 +131,10 @@ fn mount_storage(partitions: Vec<DiskPartitionInfo>) {
         "/^UUID={uuid}/{{h;s/^UUID={uuid}.*$/{fstab_line}/}};${{x;/^$/{{s//{fstab_line}/;H}};x}}"
     );
 
-    process!(sudo "sed -i {fstab_sed} /etc/fstab").run()?;
+    let previous_fstab = process!("cat /etc/fstab").run()?.stdout;
+    process!(sudo "sed -i '{fstab_sed}' /etc/fstab")
+        .revertible(process!(sudo "tee /etc/fstab" <("{previous_fstab}")))
+        .run()?;
     let output = process!("cat /etc/fstab").run()?;
 
     debug!("{}", output.stdout);

@@ -515,13 +515,17 @@ mod util {
                         "The command {program} failed with exit code {}",
                         output.code,
                     );
-                    if !output.stdout.is_empty() {
-                        for line in output.stdout.lines() {
+
+                    let stdout = output.stdout.trim();
+                    if !stdout.is_empty() {
+                        for line in stdout.lines() {
                             info!("[stdout] {line}");
                         }
                     }
-                    if !output.stderr.is_empty() {
-                        for line in output.stderr.lines() {
+
+                    let stderr = output.stderr.trim();
+                    if !stderr.is_empty() {
+                        for line in stderr.lines() {
                             info!("[err] {line}");
                         }
                     }
@@ -713,15 +717,17 @@ mod util {
 
     #[throws(Error)]
     fn read_lines(reader: impl Read, print_line: impl Fn(&str)) -> String {
-        let lines = BufReader::new(reader).lines();
+        let mut buf_reader = BufReader::new(reader);
         let mut out = String::new();
 
-        for line in lines {
-            let line = line?;
-            print_line(&line);
-            if !out.is_empty() {
-                out.push('\n');
+        loop {
+            let mut line = String::new();
+            let written = buf_reader.read_line(&mut line)?;
+            if written == 0 {
+                break;
             }
+
+            print_line(line.trim_end_matches('\n'));
             out.push_str(&line);
         }
 
