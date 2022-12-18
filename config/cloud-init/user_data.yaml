@@ -2,18 +2,8 @@ fqdn: {hostname}
 prefer_fqdn_over_hostname: true
 manage_etc_hosts: true
 
-apt:
-  preserve_sources_list: true
-  sources:
-    docker:
-      key: {docker_key_content:?}
-      source: "deb [arch=arm64 signed-by=$KEY_FILE] https://download.docker.com/linux/ubuntu $RELEASE stable"
-
 package_update: true
 package_upgrade: false
-packages:
-  - [docker-ce, 5:20.10.22~3-0~ubuntu-focal]
-  - [docker-ce-cli, 5:20.10.22~3-0~ubuntu-focal]
 
 users:
   - name: {admin_username}

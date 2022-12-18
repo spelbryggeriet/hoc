@@ -299,7 +299,6 @@ fn modify_image(mount_dir: &Path, node_name: &str, ip_address: Cidr) {
     let data_map: serde_yaml::Value = serde_yaml::from_str(&format!(
         include_str!("../../../../config/cloud-init/user_data.yaml"),
         admin_username = admin_username,
-        docker_key_content = include_str!("../../../../config/keys/docker.pgp"),
         hostname = node_name,
         ssh_pub_key = pub_key,
     ))?;
