@@ -299,6 +299,7 @@ fn modify_image(mount_dir: &Path, node_name: &str, ip_address: Cidr) {
     let data_map: serde_yaml::Value = serde_yaml::from_str(&format!(
         include_str!("../../../../config/cloud-init/user_data.yaml"),
         admin_username = admin_username,
+        docker_key_content = include_str!("../../../../config/keys/docker.pgp"),
         hostname = node_name,
         ssh_pub_key = pub_key,
     ))?;
@@ -328,6 +329,9 @@ fn modify_image(mount_dir: &Path, node_name: &str, ip_address: Cidr) {
 
     let network_config_path = mount_dir.join("network-config");
     fs::write(network_config_path, network_config)?;
+
+    let cmdline_path = mount_dir.join("cmdline.txt");
+    process!("sed -i '' -E 's/ *cgroup_(memory|enable)=[^ ]*//g;s/$/ cgroup_memory=1 cgroup_enable=memory/' {cmdline_path:?}");
 }
 
 #[throws(Error)]
