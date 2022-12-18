@@ -27,7 +27,6 @@ pub fn run(node_name: String) {
         mount_storage(partitions)?;
     }
 
-    restart_node(ip_address)?;
     verify_installation()?;
     report(&node_name)?;
 }
@@ -142,17 +141,6 @@ fn mount_storage(partitions: Vec<DiskPartitionInfo>) {
     let output = process!("cat /etc/fstab").run()?;
 
     debug!("{}", output.stdout);
-}
-
-#[throws(Error)]
-fn restart_node(ip_address: IpAddr) {
-    progress!("Restarting node");
-
-    process!(sudo "shutdown -r +1").run()?;
-    process!("ping -o -t 300 -i 5 {ip_address}")
-        .local_mode()
-        .run()?;
-    process!("cloud-init status --wait").run()?;
 }
 
 #[throws(Error)]
