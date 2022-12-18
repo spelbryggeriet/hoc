@@ -62,6 +62,7 @@ pub fn global_settings<'a>() -> MutexGuard<'a, Settings> {
 }
 
 #[derive(Clone)]
+#[must_use]
 pub struct ProcessBuilder<C> {
     handler: C,
     settings: Settings,

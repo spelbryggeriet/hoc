@@ -143,9 +143,13 @@ fn choose_sd_card() -> DiskInfo {
 
         error!("No mounted disk detected");
 
-        select!("How do you want to proceed?")
-            .with_option(Opt::Retry)
+        let opt = select!("Do you want to proceed?")
+            .with_options([Opt::Yes, Opt::No])
             .get()?;
+
+        if opt == Opt::No {
+            throw!(inquire::InquireError::OperationCanceled);
+        }
     }
 }
 
@@ -330,7 +334,7 @@ fn modify_image(mount_dir: &Path, node_name: &str, ip_address: Cidr) {
     fs::write(network_config_path, network_config)?;
 
     let cmdline_path = mount_dir.join("cmdline.txt");
-    process!("sed -i '' -E 's/ *cgroup_(memory|enable)=[^ ]*//g;s/$/ cgroup_memory=1 cgroup_enable=memory/' {cmdline_path:?}");
+    process!("sed -i '' -E 's/ *cgroup_(memory|enable)=[^ ]*//g;s/$/ cgroup_memory=1 cgroup_enable=memory/' {cmdline_path:?}").run()?;
 }
 
 #[throws(Error)]
