@@ -18,7 +18,7 @@ pub fn run(node_name: String) {
         await_node_startup(&node_name, ip_address)?;
     }
 
-    process::global_settings().remote_mode(node_name);
+    process::global_settings().remote_mode(node_name.clone());
 
     await_node_preinitialization()?;
     change_password()?;
@@ -26,6 +26,10 @@ pub fn run(node_name: String) {
     if !partitions.is_empty() {
         mount_storage(partitions)?;
     }
+
+    restart_node(ip_address)?;
+    verify_installation()?;
+    report(&node_name)?;
 }
 
 #[throws(Error)]
@@ -138,4 +142,27 @@ fn mount_storage(partitions: Vec<DiskPartitionInfo>) {
     let output = process!("cat /etc/fstab").run()?;
 
     debug!("{}", output.stdout);
+}
+
+#[throws(Error)]
+fn restart_node(ip_address: IpAddr) {
+    progress!("Restarting node");
+
+    process!(sudo "reboot now").run()?;
+    process!("ping -o -t 300 -i 5 {ip_address}")
+        .local_mode()
+        .run()?;
+    process!("cloud-init status --wait").run()?;
+}
+
+#[throws(Error)]
+fn verify_installation() {
+    progress!("Verifying installation");
+    process!(sudo "k3s kubectl get nodes").run()?;
+}
+
+#[throws(Error)]
+fn report(node_name: &str) {
+    kv!("nodes/{node_name}/initialized").put(true)?;
+    info!("{node_name} has been successfully deployed");
 }

@@ -256,6 +256,11 @@ impl<C> ProcessBuilder<C> {
         self
     }
 
+    pub fn local_mode(mut self) -> Self {
+        self.settings.local_mode();
+        self
+    }
+
     #[allow(unused)]
     pub fn remote_mode<S: Into<Cow<'static, str>>>(mut self, node_name: S) -> Self {
         self.settings.remote_mode(node_name);
@@ -343,6 +348,11 @@ impl Settings {
             .as_ref()
             .map(|opt| opt.as_ref().map(|v| Cow::Borrowed(&**v)))
             .unwrap_or(Self::DEFAULT_CURRENT_DIR)
+    }
+
+    pub fn local_mode(&mut self) -> &mut Self {
+        self.mode.replace(ProcessMode::Local);
+        self
     }
 
     pub fn remote_mode<S: Into<Cow<'static, str>>>(&mut self, node_name: S) -> &mut Self {
