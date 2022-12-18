@@ -11,6 +11,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - The `sd-card-prepare` command now modifies the flashed SD card with
   [cloud-init](https://cloud-init.io) settings.
+- The `node-deploy` command now deploys a node into the cluster. Currently, only a single node
+  cluster is supported.
 
 ### Fixed
 

@@ -20,7 +20,7 @@ pub fn run(node_name: String) {
 
     process::global_settings().remote_mode(node_name.clone());
 
-    await_node_preinitialization()?;
+    await_node_initialization()?;
     change_password()?;
     let partitions = find_attached_storage()?;
     if !partitions.is_empty() {
@@ -81,8 +81,8 @@ fn await_node_startup(node_name: &str, ip_address: IpAddr) {
 }
 
 #[throws(Error)]
-fn await_node_preinitialization() {
-    progress!("Waiting for node pre-initialization to finish");
+fn await_node_initialization() {
+    progress!("Waiting for node initialization to finish");
     process!("cloud-init status --wait").run()?;
 }
 
