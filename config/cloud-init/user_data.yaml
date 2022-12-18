@@ -32,4 +32,4 @@ chpasswd:
     - "{admin_username}:temporary_password"
   expire: false
 runcmd:
-  - curl -sfL https://get.k3s.io | INSTALL_K3S_VERSION=v1.25.4 sh -
+  - curl -sfL https://get.k3s.io | INSTALL_K3S_VERSION=v1.25.4%2Bk3s1 sh -
