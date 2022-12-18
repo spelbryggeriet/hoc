@@ -148,7 +148,7 @@ fn mount_storage(partitions: Vec<DiskPartitionInfo>) {
 fn restart_node(ip_address: IpAddr) {
     progress!("Restarting node");
 
-    process!(sudo "reboot now").run()?;
+    process!(sudo "shutdown -r +1").run()?;
     process!("ping -o -t 300 -i 5 {ip_address}")
         .local_mode()
         .run()?;
