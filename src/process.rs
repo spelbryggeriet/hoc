@@ -256,6 +256,7 @@ impl<C> ProcessBuilder<C> {
         self
     }
 
+    #[allow(unused)]
     pub fn local_mode(mut self) -> Self {
         self.settings.local_mode();
         self

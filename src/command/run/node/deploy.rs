@@ -151,6 +151,6 @@ fn verify_installation() {
 
 #[throws(Error)]
 fn report(node_name: &str) {
-    kv!("nodes/{node_name}/initialized").put(true)?;
+    kv!("nodes/{node_name}/initialized").update(true)?;
     info!("{node_name} has been successfully deployed");
 }

@@ -195,11 +195,19 @@ impl<'a> KvBuilder<'a, All> {
     pub fn get(self) -> Item {
         Context::get_or_init().kv().get_item(&self.key)?
     }
+
+    #[throws(kv::Error)]
+    pub fn update<V>(self, value: V)
+    where
+        V: Into<Value> + Clone + Display + Send + 'static,
+    {
+        self.put_or_update(value, true)?;
+    }
 }
 
 impl<'a, O> KvBuilder<'a, O> {
     #[throws(kv::Error)]
-    pub fn put<V>(self, value: V)
+    fn put_or_update<V>(self, value: V, update: bool)
     where
         V: Into<Value> + Clone + Display + Send + 'static,
     {
@@ -207,8 +215,8 @@ impl<'a, O> KvBuilder<'a, O> {
             &self.key,
             value.clone(),
             PutOptions {
-                force: false,
                 temporary: self.temporary,
+                update,
             },
         )?;
 
@@ -219,6 +227,14 @@ impl<'a, O> KvBuilder<'a, O> {
                 previous_value.flatten().map(Secret::new),
             ));
         }
+    }
+
+    #[throws(kv::Error)]
+    pub fn put<V>(self, value: V)
+    where
+        V: Into<Value> + Clone + Display + Send + 'static,
+    {
+        self.put_or_update(value, false)?;
     }
 }
 
@@ -291,13 +307,13 @@ pub mod ledger {
                         self.key,
                         previous_value,
                         PutOptions {
-                            force: true,
+                            update: true,
                             ..Default::default()
                         },
                     )?;
                 }
                 None => {
-                    kv.drop_value(&self.key, true)?;
+                    kv.drop_value(&self.key)?;
                 }
             }
             Ok(())
