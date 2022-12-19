@@ -31,6 +31,11 @@ commands_summary! {
                 passphrase for the SSH keypair."
         }
     }
+    node_deploy {
+        node_name {
+            help = "The name of the node",
+        }
+    }
 }
 
 /// Hosting on Command
@@ -161,7 +166,11 @@ pub enum NodeCommand {
 
 /// Deploy a node
 #[derive(Parser)]
-pub struct NodeDeployCommand {}
+#[clap(name = "node-deploy")]
+pub struct NodeDeployCommand {
+    #[clap(help = help::node_deploy::node_name())]
+    node_name: String,
+}
 
 impl Command {
     #[cfg(debug_assertions)]
@@ -178,7 +187,7 @@ impl Command {
     }
 
     #[throws(anyhow::Error)]
-    pub async fn run(self) {
+    pub fn run(self) {
         use Command::*;
 
         match self {
@@ -194,7 +203,7 @@ impl Command {
                 let from_ref = upgrade_command.from_ref;
                 arg_diagnostics!(from_ref);
 
-                upgrade::run(from_ref).await?;
+                upgrade::run(from_ref)?;
             }
 
             Init(init_command) => {
@@ -213,18 +222,24 @@ impl Command {
                 let admin_username = get_arg!(init_command.admin_username)?;
                 let admin_password = get_secret_arg!(init_command.admin_password)?;
 
-                init::run(node_addresses, gateway, admin_username, admin_password).await?;
+                init::run(node_addresses, gateway, admin_username, admin_password)?;
             }
 
             SdCard(sd_card_command) => match sd_card_command {
                 SdCardCommand::Prepare(_prepare_command) => {
                     cmd_diagnostics!(SdCardPrepareCommand);
-                    sd_card::prepare::run().await?;
+                    sd_card::prepare::run()?;
                 }
             },
 
             Node(node_command) => match node_command {
-                NodeCommand::Deploy(_deploy_command) => {}
+                NodeCommand::Deploy(deploy_command) => {
+                    cmd_diagnostics!(NodeDeployCommand);
+
+                    arg_diagnostics!(node_name, deploy_command.node_name);
+
+                    node::deploy::run(deploy_command.node_name)?;
+                }
             },
 
             Deploy(_deploy_command) => {}

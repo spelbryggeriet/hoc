@@ -3,7 +3,6 @@ use std::{env, path::PathBuf, process::ExitCode};
 use anyhow::Error;
 use clap::Parser;
 use scopeguard::defer;
-use tokio::{runtime::Handle, task};
 
 use self::{command::Command, context::Context, ledger::Ledger, prelude::*};
 
@@ -16,8 +15,8 @@ mod context;
 mod ledger;
 mod log;
 mod prelude;
+mod process;
 mod prompt;
-mod runner;
 mod temp;
 mod util;
 
@@ -39,56 +38,45 @@ struct App {
 
 impl App {
     #[throws(Error)]
-    async fn run(self) {
-        match self.command.run().await {
+    fn run(self) {
+        match self.command.run() {
             Ok(()) => (),
             Err(err) => {
                 error!("{err}");
-                Ledger::get_or_init().lock().await.rollback().await?;
+                Ledger::get_or_init().rollback()?;
             }
         }
     }
 }
 
 #[throws(Error)]
-#[tokio::main]
-async fn main() -> ExitCode {
+fn main() -> ExitCode {
     let app = App::parse();
 
     log::init()?;
 
     defer! {
+        debug!("Cleaning temporary files");
+        if let Err(err) = temp::clean() {
+            error!("{err}");
+        }
+
         if let Err(err) = log::cleanup() {
             eprintln!("{err}");
         }
     }
 
-    defer! {
-        task::block_in_place(|| {
-            Handle::current().block_on(async {
-                debug!("Cleaning temporary files");
-                if let Err(err) = temp::clean().await {
-                    error!("{err}");
-                }
-            });
-        });
-    }
-
     let res = if app.command.needs_context() {
-        Context::get_or_init().load().await?;
+        Context::get_or_init().load()?;
 
         defer! {
-            task::block_in_place(|| {
-                Handle::current().block_on(async {
-                    if let Err(err) = Context::get_or_init().persist().await {
-                        error!("{err}");
-                    }
-                });
-            });
+            if let Err(err) = Context::get_or_init().persist() {
+                error!("{err}");
+            }
         };
-        app.run().await
+        app.run()
     } else {
-        app.run().await
+        app.run()
     };
 
     let exit_code = match res {

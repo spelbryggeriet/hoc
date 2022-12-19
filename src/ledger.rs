@@ -1,18 +1,18 @@
-use std::borrow::Cow;
+use std::{
+    borrow::Cow,
+    sync::{Mutex, MutexGuard},
+};
 
-use async_trait::async_trait;
 use once_cell::sync::OnceCell;
-use tokio::sync::Mutex;
 
 use crate::{prelude::*, util::Opt};
 
-#[async_trait]
 pub trait Transaction: Send + 'static {
     fn description(&self) -> Cow<'static, str>;
     fn detail(&self) -> Cow<'static, str>;
 
     /// Reverts the transaction.
-    async fn revert(self: Box<Self>) -> anyhow::Result<()>;
+    fn revert(self: Box<Self>) -> anyhow::Result<()>;
 }
 
 pub struct Ledger {
@@ -20,9 +20,12 @@ pub struct Ledger {
 }
 
 impl Ledger {
-    pub fn get_or_init() -> &'static Mutex<Self> {
+    pub fn get_or_init() -> MutexGuard<'static, Self> {
         static LEDGER: OnceCell<Mutex<Ledger>> = OnceCell::new();
-        LEDGER.get_or_init(|| Mutex::new(Self::new()))
+        LEDGER
+            .get_or_init(|| Mutex::new(Self::new()))
+            .lock()
+            .expect(EXPECT_THREAD_NOT_POSIONED)
     }
 
     fn new() -> Self {
@@ -37,7 +40,7 @@ impl Ledger {
     }
 
     #[throws(anyhow::Error)]
-    pub async fn rollback(&mut self) {
+    pub fn rollback(&mut self) {
         if self.transactions.is_empty() {
             return;
         }
@@ -61,7 +64,7 @@ impl Ledger {
                 };
             }
 
-            transaction.revert().await?;
+            transaction.revert()?;
         }
     }
 }

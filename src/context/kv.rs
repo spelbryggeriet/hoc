@@ -226,7 +226,7 @@ impl Kv {
         V: Into<Value> + Clone + Display,
     {
         let key = key.into();
-        let original_value = value.clone();
+        let into_value = value.clone();
         let value = if !options.temporary {
             ValueType::Persistent(value.into())
         } else {
@@ -237,22 +237,24 @@ impl Kv {
         } else {
             "temporary value"
         };
+        let verb = if options.update {
+            "Updating"
+        } else {
+            "Putting"
+        };
 
         let mut should_overwrite = false;
         'get: {
             match self.map.get(&*key) {
                 Some(existing) if **existing != *value => {
-                    if options.force {
-                        should_overwrite = true;
-                        break 'get;
-                    }
-
                     if existing.is_temporary() && value.is_persistent() {
                         error!("Key {key} is already set with a different value and is marked as temporary");
                     } else if existing.is_persistent() && value.is_temporary() {
                         error!("Key {key} is already set with a different value and is marked as persistent");
-                    } else {
+                    } else if !options.update {
                         error!("Key {key} is already set with a different value");
+                    } else {
+                        break 'get;
                     }
 
                     let opt = select!("How do you want to resolve the key conflict?")
@@ -261,22 +263,17 @@ impl Kv {
 
                     should_overwrite = opt == Opt::Overwrite;
                     if !should_overwrite {
-                        warn!("Putting {desc}: {key} => {original_value} (skipping)");
+                        warn!("{verb} {desc}: {key} => {into_value} (skipping)");
                         return Some(None);
                     }
                 }
                 Some(existing) => {
-                    if options.force {
-                        should_overwrite = true;
-                        break 'get;
-                    }
-
                     if existing.is_temporary() && value.is_persistent() {
                         error!("Key {key} is marked as temporary");
                     } else if existing.is_persistent() && value.is_temporary() {
                         error!("Key {key} is marked as persistent");
                     } else {
-                        debug!("Putting {desc}: {key} => {original_value} (no change)");
+                        debug!("{verb} {desc}: {key} => {into_value} (no change)");
                         return Some(None);
                     }
 
@@ -286,7 +283,20 @@ impl Kv {
 
                     should_overwrite = opt == Opt::Overwrite;
                     if !should_overwrite {
-                        warn!("Putting {desc}: {key} => {original_value} (skipping)");
+                        warn!("{verb} {desc}: {key} => {into_value} (skipping)");
+                        return Some(None);
+                    }
+                }
+                None if options.update => {
+                    error!("Key {key} not found for updating");
+
+                    let write_anyway = Opt::Custom("Write anyway");
+                    let opt = select!("How do you want to resolve the key conflict?")
+                        .with_options([Opt::Skip, write_anyway])
+                        .get()?;
+
+                    if opt != write_anyway {
+                        warn!("{verb} {desc}: {key} => {into_value} (skipping)");
                         return Some(None);
                     }
                 }
@@ -295,20 +305,13 @@ impl Kv {
         }
 
         if !should_overwrite {
-            debug!("Putting {desc}: {key} => {original_value}");
+            debug!("{verb} {desc}: {key} => {into_value}");
         } else {
             trace!(
                 "Old item for key {key}: {}",
                 serde_json::to_string(&self.get_item(&*key)?)?
             );
-            log!(
-                if options.force {
-                    Level::Debug
-                } else {
-                    Level::Warn
-                },
-                "Putting {desc}: {key} => {original_value} (overwriting)",
-            );
+            warn!("{verb} {desc}: {key} => {into_value} (overwriting)");
         }
 
         self.map
@@ -318,7 +321,8 @@ impl Kv {
     }
 
     #[throws(Error)]
-    pub fn _put_array<K, V, I>(&mut self, key_prefix: K, array: I, options: PutOptions)
+    #[allow(unused)]
+    pub fn put_array<K, V, I>(&mut self, key_prefix: K, array: I, options: PutOptions)
     where
         K: Into<KeyOwned>,
         V: Into<Value> + Clone + Display,
@@ -331,7 +335,8 @@ impl Kv {
     }
 
     #[throws(Error)]
-    pub fn _put_map<'key, K, V, Q, I>(&mut self, key_prefix: K, map: I, options: PutOptions)
+    #[allow(unused)]
+    pub fn put_map<'key, K, V, Q, I>(&mut self, key_prefix: K, map: I, options: PutOptions)
     where
         K: Into<KeyOwned>,
         V: Into<Value> + Clone + Display,
@@ -346,7 +351,7 @@ impl Kv {
     }
 
     #[throws(Error)]
-    pub fn drop_value<K>(&mut self, key: &K, force: bool) -> Option<Value>
+    pub fn drop_value<K>(&mut self, key: &K) -> Option<Value>
     where
         K: AsRef<Key> + ?Sized,
     {
@@ -356,7 +361,7 @@ impl Kv {
 
         match self.map.remove(key.as_ref()) {
             Some(existing) => Some(existing.into_inner()),
-            None if !force => {
+            None => {
                 error!("Key {key} does not exist");
 
                 select!("How do you want to resolve the key conflict?")
@@ -367,7 +372,6 @@ impl Kv {
 
                 None
             }
-            _ => None,
         }
     }
 
@@ -393,8 +397,8 @@ impl Kv {
 
 #[derive(Default, Clone, Copy)]
 pub struct PutOptions {
-    pub force: bool,
     pub temporary: bool,
+    pub update: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -428,14 +432,6 @@ impl Item {
         T: TryFrom<Self, Error = Error>,
     {
         T::try_from(self)?
-    }
-
-    #[throws(as Option)]
-    pub fn as_bool(&self) -> bool {
-        match self {
-            Self::Value(Value::Bool(b)) => *b,
-            _ => throw!(),
-        }
     }
 
     #[throws(as Option)]
@@ -1110,8 +1106,8 @@ mod tests {
         };
         let two = ["t1", "t2", "t3", "t4", "r1", "r2", "r3", "r4"];
         let options = PutOptions {
-            force: true,
             temporary: true,
+            update: false,
         };
         kv.put_value("unsigned", 1u32, options)?;
         kv.put_value("signed", -1, options)?;
@@ -1125,13 +1121,13 @@ mod tests {
         kv.put_value("nested/two/betsy/beta/token", ttokens[1], options)?;
         kv.put_value("nested/two/betsy/delta/token", ttokens[2], options)?;
         kv.put_value("nested/two/betsy/gamma/token", ttokens[3], options)?;
-        kv._put_array("array/one", ttokens, options)?;
-        kv._put_array("array/two", rtokens, options)?;
-        kv._put_map("map/one/adam/alpha", alpha, options)?;
-        kv._put_array("map/one/adam/beta", rtokens, options)?;
-        kv._put_map("map/one/betsy/alpha", alpha2, options)?;
-        kv._put_map("map/one/betsy/alpha/extra", extra, options)?;
-        kv._put_array("map/two", two, options)?;
+        kv.put_array("array/one", ttokens, options)?;
+        kv.put_array("array/two", rtokens, options)?;
+        kv.put_map("map/one/adam/alpha", alpha, options)?;
+        kv.put_array("map/one/adam/beta", rtokens, options)?;
+        kv.put_map("map/one/betsy/alpha", alpha2, options)?;
+        kv.put_map("map/one/betsy/alpha/extra", extra, options)?;
+        kv.put_array("map/two", two, options)?;
         kv
     }
 
@@ -1329,8 +1325,8 @@ mod tests {
     fn get_array_no_zero_index() {
         let mut kv = kv()?;
         let options = PutOptions {
-            force: true,
             temporary: true,
+            update: false,
         };
         kv.put_value("invalid_array/1", false, options)?;
         kv.get_item("invalid_array/**")?.convert::<Vec<bool>>()?;

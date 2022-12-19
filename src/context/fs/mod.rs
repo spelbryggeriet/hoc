@@ -1,14 +1,11 @@
 use std::{
     borrow::Cow,
-    future::{Future, IntoFuture},
+    fs::{self, File},
     path::{Path, PathBuf},
-    pin::Pin,
 };
 
-use tokio::fs::File;
-
 use crate::{
-    context::{key::Key, Context},
+    context::{key::Key, Context, Error},
     ledger::Ledger,
     prelude::*,
     temp,
@@ -36,42 +33,36 @@ impl FileBuilder<Persisted> {
     }
 
     #[throws(anyhow::Error)]
-    pub async fn get(self) -> (File, PathBuf) {
-        Context::get_or_init().files().await.get_file(self.key)?
+    pub fn get(self) -> (File, PathBuf) {
+        Context::get_or_init().files().get_file(self.key)?
     }
 
     #[throws(anyhow::Error)]
-    pub async fn create(self) -> (File, PathBuf) {
+    pub fn create(self) -> (File, PathBuf) {
         let context = Context::get_or_init();
         let mut previous_path = None;
-        let (had_previous_file, (file, path)) = context
-            .files_mut()
-            .await
-            .create_file(&self.key, |path| async {
-                let (_, temp_path) = temp::create_file().await?;
-                tokio::fs::rename(path, &temp_path).await?;
+        let (had_previous_file, (file, path)) =
+            context.files_mut().create_file(&self.key, |path| {
+                let (_, temp_path) = temp::create_file()?;
+                fs::rename(path, &temp_path)?;
                 previous_path.replace(temp_path);
                 Ok(())
-            })
-            .await?;
+            })?;
 
         if !had_previous_file || previous_path.is_some() {
-            Ledger::get_or_init()
-                .lock()
-                .await
-                .add(files::ledger::Create::new(
-                    self.key.into_owned(),
-                    path.clone(),
-                    previous_path,
-                ));
+            Ledger::get_or_init().add(files::ledger::Create::new(
+                self.key.into_owned(),
+                path.clone(),
+                previous_path,
+            ));
         }
 
         (file, path)
     }
 
-    pub fn cached<F>(self, file_cacher: F) -> FileBuilder<Cached<F>>
+    pub fn cached<'a, F>(self, file_cacher: F) -> FileBuilder<Cached<F>>
     where
-        F: for<'a> CachedFileFn<'a>,
+        F: Fn(&'a mut File, &'a Path, bool) -> Result<(), Error>,
     {
         FileBuilder {
             key: self.key,
@@ -82,101 +73,56 @@ impl FileBuilder<Persisted> {
 
 impl<F> FileBuilder<Cached<F>>
 where
-    F: for<'a> CachedFileFn<'a>,
+    F: Fn(&mut File, &Path, bool) -> Result<(), Error>,
 {
     #[throws(anyhow::Error)]
-    pub async fn get_or_create(self) -> (File, PathBuf) {
+    pub fn get_or_create(self) -> (File, PathBuf) {
         let context = Context::get_or_init();
         let mut previous_path = None;
-        let (had_previous_file, (file, path)) = context
-            .cache_mut()
-            .await
-            .get_or_create_file(&self.key, self.state.file_cacher, |path| async {
-                let (_, temp_path) = temp::create_file().await?;
-                tokio::fs::rename(path, &temp_path).await?;
-                previous_path.replace(temp_path);
-                Ok(())
-            })
-            .await?;
+        let (had_previous_file, (file, path)) =
+            context
+                .cache_mut()
+                .get_or_create_file(&self.key, &self.state.file_cacher, |path| {
+                    let (_, temp_path) = temp::create_file()?;
+                    fs::rename(path, &temp_path)?;
+                    previous_path.replace(temp_path);
+                    Ok(())
+                })?;
 
         if !had_previous_file || previous_path.is_some() {
-            Ledger::get_or_init()
-                .lock()
-                .await
-                .add(cache::ledger::Create::new(
-                    self.key.into_owned(),
-                    path.clone(),
-                    previous_path,
-                ));
+            Ledger::get_or_init().add(cache::ledger::Create::new(
+                self.key.into_owned(),
+                path.clone(),
+                previous_path,
+            ));
         }
 
         (file, path)
     }
 
     #[throws(anyhow::Error)]
-    pub async fn _create_or_overwrite(self) -> (File, PathBuf) {
+    pub fn _create_or_overwrite(self) -> (File, PathBuf) {
         let context = Context::get_or_init();
         let mut previous_path = None;
-        let (had_previous_file, (file, path)) = context
-            .cache_mut()
-            .await
-            ._create_or_overwrite_file(self.key.as_ref(), self.state.file_cacher, |path| async {
-                let (_, temp_path) = temp::create_file().await?;
-                tokio::fs::rename(path, &temp_path).await?;
+        let (had_previous_file, (file, path)) = context.cache_mut()._create_or_overwrite_file(
+            self.key.as_ref(),
+            self.state.file_cacher,
+            |path| {
+                let (_, temp_path) = temp::create_file()?;
+                fs::rename(path, &temp_path)?;
                 previous_path.replace(temp_path);
                 Ok(())
-            })
-            .await?;
+            },
+        )?;
 
         if !had_previous_file || previous_path.is_some() {
-            Ledger::get_or_init()
-                .lock()
-                .await
-                .add(cache::ledger::Create::new(
-                    self.key.into_owned(),
-                    path.clone(),
-                    previous_path,
-                ));
+            Ledger::get_or_init().add(cache::ledger::Create::new(
+                self.key.into_owned(),
+                path.clone(),
+                previous_path,
+            ));
         }
 
         (file, path)
     }
-}
-
-type FileBuilderFuture = Pin<Box<dyn Future<Output = anyhow::Result<(File, PathBuf)>>>>;
-
-impl IntoFuture for FileBuilder<Persisted> {
-    type IntoFuture = FileBuilderFuture;
-    type Output = <FileBuilderFuture as Future>::Output;
-
-    fn into_future(self) -> Self::IntoFuture {
-        Box::pin(self.get())
-    }
-}
-
-impl<F> IntoFuture for FileBuilder<Cached<F>>
-where
-    F: for<'a> CachedFileFn<'a> + 'static,
-{
-    type IntoFuture = FileBuilderFuture;
-    type Output = <FileBuilderFuture as Future>::Output;
-
-    fn into_future(self) -> Self::IntoFuture {
-        Box::pin(self.get_or_create())
-    }
-}
-
-pub trait CachedFileFn<'a>: Fn(&'a mut File, &'a Path, bool) -> Self::Fut {
-    type Fut: Future<Output = Result<(), Self::Error>>;
-    type Error: Into<anyhow::Error> + 'static;
-}
-
-impl<'a, F, Fut, E> CachedFileFn<'a> for F
-where
-    F: Fn(&'a mut File, &'a Path, bool) -> Fut,
-    Fut: Future<Output = Result<(), E>>,
-    E: Into<anyhow::Error> + 'static,
-{
-    type Fut = Fut;
-    type Error = E;
 }
