@@ -7,6 +7,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.0.4] - 2022-12-19
+
 ### Changed
 
 - The `sd-card-prepare` command now modifies the flashed SD card with
