@@ -6,7 +6,7 @@ edition = "2021"
 [dependencies]
 anyhow = "1.0.66"
 chrono = { version = "0.4.23", default-features = false, features = ["clock"] }
-clap = { version = "4.0.29", features = ["derive"] }
+clap = { version = "4.0.30", features = ["derive"] }
 crossterm = "0.25.0"
 fehler = "1.0.0"
 heck = "0.4.0"
