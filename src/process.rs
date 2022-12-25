@@ -111,6 +111,7 @@ impl ProcessBuilder {
         self
     }
 
+    #[allow(unused)]
     pub fn container_mode(mut self) -> Self {
         self.settings.container_mode();
         self
@@ -442,6 +443,7 @@ impl Settings {
         self
     }
 
+    #[allow(unused)]
     pub fn container_mode(&mut self) -> &mut Self {
         self.mode.replace(ProcessMode::Container);
         if let Some(s) = self.sudo.as_mut() {
