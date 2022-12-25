@@ -1,6 +1,6 @@
 use std::{
     borrow::Cow,
-    io,
+    env, io,
     process::Stdio,
     sync::{Mutex, MutexGuard},
 };
@@ -61,6 +61,12 @@ pub fn global_settings<'a>() -> MutexGuard<'a, Settings> {
         .expect(EXPECT_THREAD_NOT_POSIONED)
 }
 
+fn container_image() -> String {
+    env::var("HOC_IMAGE").unwrap_or_else(|_| "ghcr.io/spelbryggeriet/hoc-runtime".to_owned())
+        + ":"
+        + env!("CARGO_PKG_VERSION")
+}
+
 #[derive(Clone)]
 #[must_use]
 pub struct ProcessBuilder<C> {
@@ -116,7 +122,7 @@ impl RevertibleProcessHandler {
 
         impl Transaction for RevertibleTransaction {
             fn description(&self) -> Cow<'static, str> {
-                "Run command".into()
+                "Run process".into()
             }
 
             fn detail(&self) -> Cow<'static, str> {
@@ -176,7 +182,7 @@ impl ProcessHandler for RevertibleProcessHandler {
 
         info!("{}", transaction.detail());
 
-        let opt = select!("Do you want to revert the failed command?")
+        let opt = select!("Do you want to revert the failed process?")
             .with_options([Opt::Yes, Opt::No])
             .get()?;
         if opt == Opt::Yes {
@@ -331,7 +337,9 @@ impl Settings {
     }
 
     pub fn sudo(&mut self) -> &mut Self {
-        self.sudo.replace(true);
+        if self.get_mode() != &ProcessMode::Container {
+            self.sudo.replace(true);
+        }
         self
     }
 
@@ -356,6 +364,14 @@ impl Settings {
         self
     }
 
+    pub fn container_mode(&mut self) -> &mut Self {
+        self.mode.replace(ProcessMode::Container);
+        if let Some(s) = self.sudo.as_mut() {
+            *s = false;
+        }
+        self
+    }
+
     pub fn remote_mode<S: Into<Cow<'static, str>>>(&mut self, node_name: S) -> &mut Self {
         self.mode.replace(ProcessMode::Remote(node_name.into()));
         self
@@ -366,10 +382,11 @@ impl Settings {
     }
 }
 
-#[derive(Default, Clone)]
+#[derive(Default, Clone, PartialEq, Eq)]
 enum ProcessMode {
     #[default]
     Local,
+    Container,
     Remote(Cow<'static, str>),
 }
 
@@ -403,6 +420,7 @@ mod util {
         net::{IpAddr, TcpStream},
         process::Command,
         thread,
+        time::Duration,
     };
 
     use super::*;
@@ -423,31 +441,79 @@ mod util {
 
         let mut raw_process = process_handler.as_raw();
         let mut runnable_process = format!("{maybe_sudo}{raw_process}");
-        let mut progress_desc = "Running command";
+        let mut progress_desc = "Running process";
+        let sudo_str = sudo_string(forward_process_settings.is_sudo());
+        let process_str = raw_process.as_str().yellow().to_string();
 
-        return loop {
+        let result = loop {
             let mut password_to_cache = None;
             if forward_process_settings.is_sudo() {
                 let password = match forward_process_settings.get_mode() {
                     ProcessMode::Local => get_local_password()?,
                     ProcessMode::Remote(_) => get_remote_password()?,
+                    ProcessMode::Container => unreachable!(),
                 };
                 password_to_cache.replace(password.clone());
                 input_data = password.into_non_secret() + "\n" + &input_data;
             }
 
-            let sudo_str = sudo_string(forward_process_settings.is_sudo());
-            let process_str = raw_process.as_str().yellow();
             debug!("{progress_desc}: {sudo_str}{process_str}");
-            debug!("Host: this computer");
+            match forward_process_settings.get_mode() {
+                ProcessMode::Local => debug!("Mode: local"),
+                ProcessMode::Container => debug!("Mode: container"),
+                ProcessMode::Remote(node) => debug!("Mode: remote => {node}"),
+            }
 
             let result = match forward_process_settings.get_mode() {
                 ProcessMode::Local => exec_local(
+                    false,
                     &runnable_process,
                     &forward_process_settings,
                     &input_data,
                     &success_codes,
                 ),
+                ProcessMode::Container => {
+                    const WAIT_SECONDS: u64 = 5;
+                    const TIMEOUT_SECONDS: u64 = 3 * 60;
+
+                    // Ensure Docker is started.
+                    for attempt in 1..=TIMEOUT_SECONDS / WAIT_SECONDS {
+                        let output = util::run_loop(
+                            Box::new(RegularProcessHandler {
+                                raw_forward_process: Cow::from("docker stats --no-stream"),
+                            }),
+                            Settings::new(),
+                            None,
+                            String::new(),
+                            vec![0, 1],
+                        )?;
+
+                        if output.code == 0 {
+                            break;
+                        } else if attempt == 1 {
+                            util::run_loop(
+                                Box::new(RegularProcessHandler {
+                                    raw_forward_process: Cow::from("open -a Docker"),
+                                }),
+                                Settings::new(),
+                                None,
+                                String::new(),
+                                vec![0],
+                            )?;
+                        }
+
+                        debug!("Waiting {WAIT_SECONDS} seconds");
+                        spin_sleep::sleep(Duration::from_secs(WAIT_SECONDS));
+                    }
+
+                    exec_local(
+                        true,
+                        &runnable_process,
+                        &forward_process_settings,
+                        &input_data,
+                        &success_codes,
+                    )
+                }
                 ProcessMode::Remote(node_name) => {
                     let mut current_session = current_ssh_session();
                     match &*current_session {
@@ -503,6 +569,7 @@ mod util {
                         match forward_process_settings.get_mode() {
                             ProcessMode::Local => kv!("admin/passwords/local"),
                             ProcessMode::Remote(_) => kv!("admin/passwords/remote"),
+                            ProcessMode::Container => unreachable!(),
                         }
                         .temporary()
                         .put(password)?;
@@ -524,7 +591,7 @@ mod util {
                         .unwrap_or(&raw_process);
 
                     error!(
-                        "The command {program} failed with exit code {}",
+                        "The program {program} failed with exit code {}",
                         output.code,
                     );
 
@@ -538,13 +605,13 @@ mod util {
                     let stderr = output.stderr.trim();
                     if !stderr.is_empty() {
                         for line in stderr.lines() {
-                            info!("[err] {line}");
+                            info!("[stderr] {line}");
                         }
                     }
 
                     let revert_modify = Opt::Custom("Revert and modify");
                     let revert_rerun = Opt::Custom("Revert and rerun");
-                    let mut select = select!("How do you want to resolve the command error?");
+                    let mut select = select!("How do you want to resolve the process error?");
 
                     if revert_process_settings.is_some() {
                         select = select.with_option(revert_modify).with_option(revert_rerun);
@@ -579,11 +646,11 @@ mod util {
                     }
 
                     if [Opt::Modify, revert_modify].contains(&opt) {
-                        let mut prompt = prompt!("New command").with_initial_input(&raw_process);
+                        let mut prompt = prompt!("New process").with_initial_input(&raw_process);
 
                         if revert_process_settings.is_some() {
                             prompt = prompt.with_help_message(
-                                "Modifying the command will make it non-revertible",
+                                "Modifying the process will make it non-revertible",
                             );
                         }
 
@@ -599,37 +666,57 @@ mod util {
                             opt = Opt::Rerun;
                         }
                     } else if opt == Opt::Skip {
-                        warn!("Skipping to resolve command error");
+                        warn!("Skipping to resolve process error");
                         break output;
                     }
 
                     progress_desc = if opt == Opt::Rerun {
-                        "Re-running command"
+                        "Re-running process"
                     } else {
-                        "Running modified command"
+                        "Running modified process"
                     };
                 }
                 Err(err) => throw!(err),
             }
         };
+
+        debug!("Finished process: {sudo_str}{process_str}");
+        result
     }
 
     #[throws(Error)]
     fn exec_local(
+        in_container: bool,
         raw_process: &str,
         settings: &Settings,
         input_data: &str,
         success_codes: &[i32],
     ) -> Output {
-        let mut cmd = Command::new("sh");
-        cmd.args(["-c", raw_process])
+        let raw_process: Cow<_> = if in_container {
+            if let Some(current_dir) = &settings.get_current_dir() {
+                format!("cd {current_dir} ; {raw_process}").into()
+            } else {
+                raw_process.into()
+            }
+        } else {
+            raw_process.into()
+        };
+
+        let mut cmd = if in_container {
+            let mut cmd = Command::new("docker");
+            cmd.arg("run");
+            if !input_data.is_empty() {
+                cmd.arg("-i");
+            }
+            cmd.args([&container_image(), "sh"]);
+            cmd
+        } else {
+            Command::new("sh")
+        };
+        cmd.args(["-c", &*raw_process])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-
-        if let Some(current_dir) = &settings.get_current_dir() {
-            cmd.current_dir(&**current_dir);
-        }
 
         let mut child = cmd.spawn()?;
 
