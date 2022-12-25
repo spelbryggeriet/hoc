@@ -1,8 +1,10 @@
 use std::{
     borrow::Cow,
     env, io,
+    net::{IpAddr, TcpStream},
     process::Stdio,
     sync::{Mutex, MutexGuard},
+    time::Duration,
 };
 
 use crossterm::style::Stylize;
@@ -69,187 +71,28 @@ fn container_image() -> String {
 
 #[derive(Clone)]
 #[must_use]
-pub struct ProcessBuilder<C> {
-    handler: C,
+pub struct ProcessBuilder {
+    raw: Cow<'static, str>,
     settings: Settings,
     input_data: String,
     success_codes: Vec<i32>,
+    revert_process: Option<Box<Self>>,
 }
 
-trait ProcessHandler {
-    fn as_raw(&self) -> String;
-
-    fn on_finished(&self, _is_forward_process_sudo: bool, _revert_process_settings: Settings) {}
-
-    fn on_revert(
-        &self,
-        _is_forward_process_sudo: bool,
-        _revert_process_settings: Settings,
-    ) -> Result<(), Error> {
-        Ok(())
-    }
-}
-
-#[derive(Clone)]
-pub struct RegularProcessHandler {
-    raw_forward_process: Cow<'static, str>,
-}
-
-impl ProcessHandler for RegularProcessHandler {
-    fn as_raw(&self) -> String {
-        self.raw_forward_process.clone().into_owned()
-    }
-}
-
-#[derive(Clone)]
-pub struct RevertibleProcessHandler {
-    raw_forward_process: Cow<'static, str>,
-    revert_process: ProcessBuilder<RegularProcessHandler>,
-}
-
-impl RevertibleProcessHandler {
-    fn get_transaction(
-        &self,
-        is_forward_process_sudo: bool,
-        revert_process_settings: Settings,
-    ) -> impl Transaction {
-        struct RevertibleTransaction {
-            raw_forward_process: Cow<'static, str>,
-            is_forward_process_sudo: bool,
-            revert_process: ProcessBuilder<RegularProcessHandler>,
-            revert_process_settings: Settings,
-        }
-
-        impl Transaction for RevertibleTransaction {
-            fn description(&self) -> Cow<'static, str> {
-                "Run process".into()
-            }
-
-            fn detail(&self) -> Cow<'static, str> {
-                let sudo_str = util::sudo_string(
-                    self.is_forward_process_sudo || self.revert_process_settings.is_sudo(),
-                );
-
-                format!(
-                    "Command to revert: {}{}\nCommand used to revert: {}{}",
-                    self.is_forward_process_sudo
-                        .then_some(&*sudo_str)
-                        .unwrap_or_default(),
-                    self.raw_forward_process.yellow(),
-                    self.revert_process_settings
-                        .is_sudo()
-                        .then_some(&*sudo_str)
-                        .unwrap_or_default(),
-                    self.revert_process.handler.raw_forward_process.yellow(),
-                )
-                .into()
-            }
-
-            #[throws(anyhow::Error)]
-            fn revert(self: Box<Self>) {
-                util::run_loop(
-                    Box::new(self.revert_process.handler),
-                    self.revert_process_settings,
-                    None,
-                    self.revert_process.input_data,
-                    self.revert_process.success_codes,
-                )?;
-            }
-        }
-
-        RevertibleTransaction {
-            raw_forward_process: self.raw_forward_process.clone(),
-            is_forward_process_sudo,
-            revert_process: self.revert_process.clone(),
-            revert_process_settings,
-        }
-    }
-}
-
-impl ProcessHandler for RevertibleProcessHandler {
-    fn as_raw(&self) -> String {
-        self.raw_forward_process.clone().into_owned()
-    }
-
-    fn on_finished(&self, is_forward_process_sudo: bool, revert_process_settings: Settings) {
-        let transaction = self.get_transaction(is_forward_process_sudo, revert_process_settings);
-        Ledger::get_or_init().add(transaction);
-    }
-
-    #[throws(Error)]
-    fn on_revert(&self, is_forward_process_sudo: bool, revert_process_settings: Settings) {
-        let transaction = self.get_transaction(is_forward_process_sudo, revert_process_settings);
-
-        info!("{}", transaction.detail());
-
-        let opt = select!("Do you want to revert the failed process?")
-            .with_options([Opt::Yes, Opt::No])
-            .get()?;
-        if opt == Opt::Yes {
-            Box::new(transaction).revert()?;
-        }
-    }
-}
-
-impl ProcessBuilder<RegularProcessHandler> {
-    pub fn new(process: Cow<'static, str>) -> Self {
+impl ProcessBuilder {
+    pub fn new(process: impl Into<Cow<'static, str>>) -> Self {
         Self {
-            handler: RegularProcessHandler {
-                raw_forward_process: process,
-            },
+            raw: process.into(),
             settings: Settings::new(),
             input_data: String::new(),
             success_codes: vec![0],
+            revert_process: None,
         }
     }
 
-    pub fn revertible(self, revert_process: Self) -> ProcessBuilder<RevertibleProcessHandler> {
-        ProcessBuilder {
-            handler: RevertibleProcessHandler {
-                raw_forward_process: self.handler.raw_forward_process,
-                revert_process,
-            },
-            settings: self.settings,
-            input_data: self.input_data,
-            success_codes: self.success_codes,
-        }
-    }
-
-    #[throws(Error)]
-    pub fn run(self) -> Output {
-        let settings: Settings = self.get_current_settings();
-        util::run_loop(
-            Box::new(self.handler),
-            settings,
-            None,
-            self.input_data,
-            self.success_codes,
-        )?
-    }
-}
-
-impl ProcessBuilder<RevertibleProcessHandler> {
-    #[throws(Error)]
-    #[allow(unused)]
-    pub fn run(self) -> Output {
-        let forward_process_settings = self.get_current_settings();
-        let revert_process_settings = self.handler.revert_process.get_current_settings();
-        util::run_loop(
-            Box::new(self.handler),
-            forward_process_settings,
-            Some(revert_process_settings),
-            self.input_data,
-            self.success_codes,
-        )?
-    }
-}
-
-impl<C> ProcessBuilder<C> {
-    fn get_current_settings(&self) -> Settings {
-        let mut derived_settings = Settings::new();
-        derived_settings.apply(&global_settings());
-        derived_settings.apply(&self.settings);
-        derived_settings
+    pub fn revertible(mut self, revert_process: Self) -> Self {
+        self.revert_process.replace(Box::new(revert_process));
+        self
     }
 
     pub fn sudo(mut self) -> Self {
@@ -282,6 +125,236 @@ impl<C> ProcessBuilder<C> {
     pub fn success_codes<I: IntoIterator<Item = i32>>(mut self, success_codes: I) -> Self {
         self.success_codes = success_codes.into_iter().collect();
         self
+    }
+
+    #[throws(Error)]
+    #[allow(unused)]
+    pub fn run(mut self) -> Output {
+        self.update_settings();
+        if let Some(process) = self.revert_process.as_mut() {
+            process.update_settings();
+        }
+        self.run_no_settings_update()?
+    }
+
+    #[throws(Error)]
+    fn run_no_settings_update(mut self) -> Output {
+        let maybe_sudo = if self.settings.is_sudo() {
+            "sudo -kSp '' "
+        } else {
+            ""
+        };
+
+        let mut original_raw = self.raw;
+        self.raw = format!("{maybe_sudo}{original_raw}").into();
+        let mut progress_desc = "Running process";
+        let sudo_str = util::sudo_string(self.settings.is_sudo());
+        let process_str = original_raw.yellow().to_string();
+
+        let result = loop {
+            let mut password_to_cache = None;
+            if self.settings.is_sudo() {
+                let password = match self.settings.get_mode() {
+                    ProcessMode::Local => get_local_password()?,
+                    ProcessMode::Remote(_) => get_remote_password()?,
+                    ProcessMode::Container => unreachable!(),
+                };
+                password_to_cache.replace(password.clone());
+                self.input_data = password.into_non_secret() + "\n" + &self.input_data;
+            }
+
+            debug!("{progress_desc}: {sudo_str}{process_str}");
+            match self.settings.get_mode() {
+                ProcessMode::Local => debug!("Mode: local"),
+                ProcessMode::Container => debug!("Mode: container"),
+                ProcessMode::Remote(node) => debug!("Mode: remote => {node}"),
+            }
+
+            let result = match self.settings.get_mode() {
+                ProcessMode::Local => util::exec_local_or_container(&self),
+                ProcessMode::Container => {
+                    const WAIT_SECONDS: u64 = 5;
+                    const TIMEOUT_SECONDS: u64 = 3 * 60;
+
+                    // Ensure Docker is started.
+                    for attempt in 1..=TIMEOUT_SECONDS / WAIT_SECONDS {
+                        let output = ProcessBuilder::new("docker stats --no-stream")
+                            .success_codes([0, 1])
+                            .run_no_settings_update()?;
+
+                        if output.code == 0 {
+                            break;
+                        } else if attempt == 1 {
+                            ProcessBuilder::new("open -a Docker").run_no_settings_update()?;
+                        }
+
+                        debug!("Waiting {WAIT_SECONDS} seconds");
+                        spin_sleep::sleep(Duration::from_secs(WAIT_SECONDS));
+                    }
+
+                    util::exec_local_or_container(&self)
+                }
+                ProcessMode::Remote(node_name) => {
+                    let mut current_session = current_ssh_session();
+                    match &*current_session {
+                        Some((current_node, session)) if node_name == current_node => {
+                            util::exec_remote(session, &self)
+                        }
+                        _ => {
+                            let host: IpAddr =
+                                kv!("nodes/{node_name}/network/address").get()?.convert()?;
+                            let port = 22;
+                            let stream = TcpStream::connect(format!("{host}:{port}"))?;
+
+                            let mut session = ssh2::Session::new()?;
+                            session.set_tcp_stream(stream);
+                            session.handshake()?;
+
+                            let admin_username: String = kv!("admin/username").get()?.convert()?;
+                            let (_, pub_key_path) = files!("admin/ssh/pub").get()?;
+                            let (_, priv_key_path) = files!("admin/ssh/priv").get()?;
+                            let password = get_remote_password()?;
+                            password_to_cache.replace(password.clone());
+
+                            session.userauth_pubkey_file(
+                                &admin_username,
+                                Some(&pub_key_path),
+                                &priv_key_path,
+                                Some(&password.into_non_secret()),
+                            )?;
+
+                            let result = util::exec_remote(&session, &self);
+
+                            current_session.replace((node_name.clone(), session));
+
+                            result
+                        }
+                    }
+                }
+            };
+
+            match result {
+                Ok(output) => {
+                    if let Some(password) = password_to_cache {
+                        match self.settings.get_mode() {
+                            ProcessMode::Local => kv!("admin/passwords/local"),
+                            ProcessMode::Remote(_) => kv!("admin/passwords/remote"),
+                            ProcessMode::Container => unreachable!(),
+                        }
+                        .temporary()
+                        .put(password)?;
+                    }
+
+                    if let Some(revert_process) = self.revert_process {
+                        let transaction = ledger::RevertibleTransaction::new(
+                            original_raw,
+                            self.settings.is_sudo(),
+                            *revert_process,
+                        );
+                        Ledger::get_or_init().add(transaction);
+                    }
+
+                    break output;
+                }
+                Err(Error::Failed(output)) => {
+                    let program = original_raw
+                        .split_once(' ')
+                        .map(|opt| opt.0)
+                        .unwrap_or(&original_raw);
+
+                    error!(
+                        "The program {program} failed with exit code {}",
+                        output.code,
+                    );
+
+                    let stdout = output.stdout.trim();
+                    if !stdout.is_empty() {
+                        for line in stdout.lines() {
+                            info!("[stdout] {line}");
+                        }
+                    }
+
+                    let stderr = output.stderr.trim();
+                    if !stderr.is_empty() {
+                        for line in stderr.lines() {
+                            info!("[stderr] {line}");
+                        }
+                    }
+
+                    let revert_modify = Opt::Custom("Revert and modify");
+                    let revert_rerun = Opt::Custom("Revert and rerun");
+                    let mut select = select!("How do you want to resolve the process error?");
+
+                    if self.revert_process.is_some() {
+                        select = select.with_option(revert_modify).with_option(revert_rerun);
+                    }
+
+                    let mut opt = select
+                        .with_option(Opt::Modify)
+                        .with_option(Opt::Rerun)
+                        .with_option(Opt::Skip)
+                        .get()?;
+
+                    if [revert_modify, revert_rerun].contains(&opt) {
+                        if let Some(revert_process) = &self.revert_process {
+                            let transaction = ledger::RevertibleTransaction::new(
+                                original_raw.clone(),
+                                self.settings.is_sudo(),
+                                *revert_process.clone(),
+                            );
+
+                            info!("{}", transaction.detail());
+
+                            let opt = select!("Do you want to revert the failed process?")
+                                .with_options([Opt::Yes, Opt::No])
+                                .get()?;
+                            if opt == Opt::Yes {
+                                Box::new(transaction).revert()?;
+                            }
+                        }
+                    }
+
+                    if [Opt::Modify, revert_modify].contains(&opt) {
+                        let mut prompt = prompt!("New process").with_initial_input(&original_raw);
+
+                        if self.revert_process.is_some() {
+                            prompt = prompt.with_help_message(
+                                "Modifying the process will make it non-revertible",
+                            );
+                        }
+
+                        let new_raw_process: String = prompt.get()?;
+                        if new_raw_process != original_raw {
+                            original_raw = new_raw_process.into();
+                            self.raw = format!("{maybe_sudo}{original_raw}").into();
+                            self.revert_process.take();
+                        } else {
+                            opt = Opt::Rerun;
+                        }
+                    } else if opt == Opt::Skip {
+                        warn!("Skipping to resolve process error");
+                        break output;
+                    }
+
+                    progress_desc = if opt == Opt::Rerun {
+                        "Re-running process"
+                    } else {
+                        "Running modified process"
+                    };
+                }
+                Err(err) => throw!(err),
+            }
+        };
+
+        debug!("Finished process: {sudo_str}{process_str}");
+        result
+    }
+
+    fn update_settings(&mut self) {
+        let mut derived_settings = Settings::new();
+        derived_settings.apply(&global_settings());
+        derived_settings.apply(&self.settings);
+        self.settings = derived_settings;
     }
 }
 
@@ -417,295 +490,29 @@ pub enum Error {
 mod util {
     use std::{
         io::{BufRead, BufReader, Read, Write},
-        net::{IpAddr, TcpStream},
         process::Command,
         thread,
-        time::Duration,
     };
 
     use super::*;
 
     #[throws(Error)]
-    pub(super) fn run_loop(
-        mut process_handler: Box<dyn ProcessHandler>,
-        forward_process_settings: Settings,
-        mut revert_process_settings: Option<Settings>,
-        mut input_data: String,
-        success_codes: Vec<i32>,
-    ) -> Output {
-        let maybe_sudo = if forward_process_settings.is_sudo() {
-            "sudo -kSp '' "
-        } else {
-            ""
-        };
-
-        let mut raw_process = process_handler.as_raw();
-        let mut runnable_process = format!("{maybe_sudo}{raw_process}");
-        let mut progress_desc = "Running process";
-        let sudo_str = sudo_string(forward_process_settings.is_sudo());
-        let process_str = raw_process.as_str().yellow().to_string();
-
-        let result = loop {
-            let mut password_to_cache = None;
-            if forward_process_settings.is_sudo() {
-                let password = match forward_process_settings.get_mode() {
-                    ProcessMode::Local => get_local_password()?,
-                    ProcessMode::Remote(_) => get_remote_password()?,
-                    ProcessMode::Container => unreachable!(),
-                };
-                password_to_cache.replace(password.clone());
-                input_data = password.into_non_secret() + "\n" + &input_data;
-            }
-
-            debug!("{progress_desc}: {sudo_str}{process_str}");
-            match forward_process_settings.get_mode() {
-                ProcessMode::Local => debug!("Mode: local"),
-                ProcessMode::Container => debug!("Mode: container"),
-                ProcessMode::Remote(node) => debug!("Mode: remote => {node}"),
-            }
-
-            let result = match forward_process_settings.get_mode() {
-                ProcessMode::Local => exec_local(
-                    false,
-                    &runnable_process,
-                    &forward_process_settings,
-                    &input_data,
-                    &success_codes,
-                ),
-                ProcessMode::Container => {
-                    const WAIT_SECONDS: u64 = 5;
-                    const TIMEOUT_SECONDS: u64 = 3 * 60;
-
-                    // Ensure Docker is started.
-                    for attempt in 1..=TIMEOUT_SECONDS / WAIT_SECONDS {
-                        let output = util::run_loop(
-                            Box::new(RegularProcessHandler {
-                                raw_forward_process: Cow::from("docker stats --no-stream"),
-                            }),
-                            Settings::new(),
-                            None,
-                            String::new(),
-                            vec![0, 1],
-                        )?;
-
-                        if output.code == 0 {
-                            break;
-                        } else if attempt == 1 {
-                            util::run_loop(
-                                Box::new(RegularProcessHandler {
-                                    raw_forward_process: Cow::from("open -a Docker"),
-                                }),
-                                Settings::new(),
-                                None,
-                                String::new(),
-                                vec![0],
-                            )?;
-                        }
-
-                        debug!("Waiting {WAIT_SECONDS} seconds");
-                        spin_sleep::sleep(Duration::from_secs(WAIT_SECONDS));
-                    }
-
-                    exec_local(
-                        true,
-                        &runnable_process,
-                        &forward_process_settings,
-                        &input_data,
-                        &success_codes,
-                    )
-                }
-                ProcessMode::Remote(node_name) => {
-                    let mut current_session = current_ssh_session();
-                    match &*current_session {
-                        Some((current_node, session)) if node_name == current_node => exec_remote(
-                            session,
-                            &runnable_process,
-                            &forward_process_settings,
-                            &input_data,
-                            &success_codes,
-                        ),
-                        _ => {
-                            let host: IpAddr =
-                                kv!("nodes/{node_name}/network/address").get()?.convert()?;
-                            let port = 22;
-                            let stream = TcpStream::connect(format!("{host}:{port}"))?;
-
-                            let mut session = ssh2::Session::new()?;
-                            session.set_tcp_stream(stream);
-                            session.handshake()?;
-
-                            let admin_username: String = kv!("admin/username").get()?.convert()?;
-                            let (_, pub_key_path) = files!("admin/ssh/pub").get()?;
-                            let (_, priv_key_path) = files!("admin/ssh/priv").get()?;
-                            let password = get_remote_password()?;
-                            password_to_cache.replace(password.clone());
-
-                            session.userauth_pubkey_file(
-                                &admin_username,
-                                Some(&pub_key_path),
-                                &priv_key_path,
-                                Some(&password.into_non_secret()),
-                            )?;
-
-                            let result = exec_remote(
-                                &session,
-                                &runnable_process,
-                                &forward_process_settings,
-                                &input_data,
-                                &success_codes,
-                            );
-
-                            current_session.replace((node_name.clone(), session));
-
-                            result
-                        }
-                    }
-                }
-            };
-
-            match result {
-                Ok(output) => {
-                    if let Some(password) = password_to_cache {
-                        match forward_process_settings.get_mode() {
-                            ProcessMode::Local => kv!("admin/passwords/local"),
-                            ProcessMode::Remote(_) => kv!("admin/passwords/remote"),
-                            ProcessMode::Container => unreachable!(),
-                        }
-                        .temporary()
-                        .put(password)?;
-                    }
-
-                    if let Some(revert_process_settings) = revert_process_settings {
-                        process_handler.on_finished(
-                            forward_process_settings.is_sudo(),
-                            revert_process_settings,
-                        );
-                    }
-
-                    break output;
-                }
-                Err(Error::Failed(output)) => {
-                    let program = raw_process
-                        .split_once(' ')
-                        .map(|opt| opt.0)
-                        .unwrap_or(&raw_process);
-
-                    error!(
-                        "The program {program} failed with exit code {}",
-                        output.code,
-                    );
-
-                    let stdout = output.stdout.trim();
-                    if !stdout.is_empty() {
-                        for line in stdout.lines() {
-                            info!("[stdout] {line}");
-                        }
-                    }
-
-                    let stderr = output.stderr.trim();
-                    if !stderr.is_empty() {
-                        for line in stderr.lines() {
-                            info!("[stderr] {line}");
-                        }
-                    }
-
-                    let revert_modify = Opt::Custom("Revert and modify");
-                    let revert_rerun = Opt::Custom("Revert and rerun");
-                    let mut select = select!("How do you want to resolve the process error?");
-
-                    if revert_process_settings.is_some() {
-                        select = select.with_option(revert_modify).with_option(revert_rerun);
-                    }
-
-                    let mut opt = match select
-                        .with_option(Opt::Modify)
-                        .with_option(Opt::Rerun)
-                        .with_option(Opt::Skip)
-                        .get()
-                    {
-                        Ok(opt) => opt,
-                        Err(err) => {
-                            if let Some(revert_process_settings) = revert_process_settings {
-                                process_handler.on_finished(
-                                    forward_process_settings.is_sudo(),
-                                    revert_process_settings,
-                                );
-                            }
-
-                            throw!(err);
-                        }
-                    };
-
-                    if [revert_modify, revert_rerun].contains(&opt) {
-                        if let Some(revert_process_settings) = revert_process_settings.clone() {
-                            process_handler.on_revert(
-                                forward_process_settings.is_sudo(),
-                                revert_process_settings,
-                            )?;
-                        }
-                    }
-
-                    if [Opt::Modify, revert_modify].contains(&opt) {
-                        let mut prompt = prompt!("New process").with_initial_input(&raw_process);
-
-                        if revert_process_settings.is_some() {
-                            prompt = prompt.with_help_message(
-                                "Modifying the process will make it non-revertible",
-                            );
-                        }
-
-                        let new_raw_process = prompt.get()?;
-                        if new_raw_process != raw_process {
-                            raw_process = new_raw_process;
-                            runnable_process = format!("{maybe_sudo}{raw_process}");
-                            revert_process_settings.take();
-                            process_handler = Box::new(RegularProcessHandler {
-                                raw_forward_process: raw_process.clone().into(),
-                            });
-                        } else {
-                            opt = Opt::Rerun;
-                        }
-                    } else if opt == Opt::Skip {
-                        warn!("Skipping to resolve process error");
-                        break output;
-                    }
-
-                    progress_desc = if opt == Opt::Rerun {
-                        "Re-running process"
-                    } else {
-                        "Running modified process"
-                    };
-                }
-                Err(err) => throw!(err),
-            }
-        };
-
-        debug!("Finished process: {sudo_str}{process_str}");
-        result
-    }
-
-    #[throws(Error)]
-    fn exec_local(
-        in_container: bool,
-        raw_process: &str,
-        settings: &Settings,
-        input_data: &str,
-        success_codes: &[i32],
-    ) -> Output {
-        let raw_process: Cow<_> = if in_container {
-            if let Some(current_dir) = &settings.get_current_dir() {
-                format!("cd {current_dir} ; {raw_process}").into()
+    pub fn exec_local_or_container(process: &ProcessBuilder) -> Output {
+        let in_container = process.settings.get_mode() == &ProcessMode::Container;
+        let raw: Cow<_> = if in_container {
+            if let Some(current_dir) = &process.settings.get_current_dir() {
+                format!("cd {current_dir} ; {}", process.raw).into()
             } else {
-                raw_process.into()
+                Cow::Borrowed(&process.raw)
             }
         } else {
-            raw_process.into()
+            Cow::Borrowed(&process.raw)
         };
 
         let mut cmd = if in_container {
             let mut cmd = Command::new("docker");
             cmd.arg("run");
-            if !input_data.is_empty() {
+            if !process.input_data.is_empty() {
                 cmd.arg("-i");
             }
             cmd.args([&container_image(), "sh"]);
@@ -713,16 +520,16 @@ mod util {
         } else {
             Command::new("sh")
         };
-        cmd.args(["-c", &*raw_process])
+        cmd.args(["-c", &*raw])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
 
         let mut child = cmd.spawn()?;
 
-        if !input_data.is_empty() {
+        if !process.input_data.is_empty() {
             let mut stdin = child.stdin.take().expect("stdin should not be taken");
-            stdin.write_all(input_data.as_bytes())?;
+            stdin.write_all(process.input_data.as_bytes())?;
         }
 
         let mut output = Output::new();
@@ -751,7 +558,7 @@ mod util {
         };
         output.code = code;
 
-        if success_codes.contains(&output.code) {
+        if process.success_codes.contains(&output.code) {
             output
         } else {
             throw!(Error::Failed(output))
@@ -759,25 +566,19 @@ mod util {
     }
 
     #[throws(Error)]
-    pub fn exec_remote(
-        session: &ssh2::Session,
-        raw_process: &str,
-        settings: &Settings,
-        input_data: &str,
-        success_codes: &[i32],
-    ) -> Output {
+    pub fn exec_remote(session: &ssh2::Session, process: &ProcessBuilder) -> Output {
         let mut channel = session.channel_session()?;
 
-        let raw_process: Cow<_> = if let Some(current_dir) = &settings.get_current_dir() {
-            format!("cd {current_dir} ; {raw_process}").into()
+        let raw: Cow<_> = if let Some(current_dir) = &process.settings.get_current_dir() {
+            format!("cd {current_dir} ; {}", process.raw).into()
         } else {
-            raw_process.into()
+            Cow::Borrowed(&process.raw)
         };
 
-        channel.exec(&raw_process)?;
+        channel.exec(&raw)?;
 
-        if !input_data.is_empty() {
-            channel.write_all(input_data.as_bytes())?;
+        if !process.input_data.is_empty() {
+            channel.write_all(process.input_data.as_bytes())?;
             channel.send_eof()?;
         }
 
@@ -799,7 +600,7 @@ mod util {
 
         output.code = channel.exit_status()?;
 
-        if success_codes.contains(&output.code) {
+        if process.success_codes.contains(&output.code) {
             output
         } else {
             throw!(Error::Failed(output))
@@ -831,5 +632,61 @@ mod util {
         }
 
         out
+    }
+}
+
+mod ledger {
+    use super::*;
+
+    pub struct RevertibleTransaction {
+        raw_forward_process: Cow<'static, str>,
+        is_forward_process_sudo: bool,
+        revert_process: ProcessBuilder,
+    }
+
+    impl RevertibleTransaction {
+        pub fn new(
+            raw_forward_process: Cow<'static, str>,
+            is_forward_process_sudo: bool,
+            revert_process: ProcessBuilder,
+        ) -> Self {
+            RevertibleTransaction {
+                raw_forward_process,
+                is_forward_process_sudo,
+                revert_process,
+            }
+        }
+    }
+
+    impl Transaction for RevertibleTransaction {
+        fn description(&self) -> Cow<'static, str> {
+            "Run process".into()
+        }
+
+        fn detail(&self) -> Cow<'static, str> {
+            let sudo_str = util::sudo_string(
+                self.is_forward_process_sudo || self.revert_process.settings.is_sudo(),
+            );
+
+            format!(
+                "Command to revert: {}{}\nCommand used to revert: {}{}",
+                self.is_forward_process_sudo
+                    .then_some(&*sudo_str)
+                    .unwrap_or_default(),
+                self.raw_forward_process.yellow(),
+                self.revert_process
+                    .settings
+                    .is_sudo()
+                    .then_some(&*sudo_str)
+                    .unwrap_or_default(),
+                self.revert_process.raw.yellow(),
+            )
+            .into()
+        }
+
+        #[throws(anyhow::Error)]
+        fn revert(self: Box<Self>) {
+            self.revert_process.run()?;
+        }
     }
 }
