@@ -3,7 +3,7 @@ use std::{
     env,
     fs::File,
     io::{self, Seek, SeekFrom},
-    path::{Path, PathBuf},
+    path::PathBuf,
 };
 
 use anyhow::Error;
@@ -42,13 +42,12 @@ pub fn run(from_ref: Option<String>) {
 
 #[throws(Error)]
 fn compile_from_source(from_ref: &str) {
-    let source_path = get_source_path();
-    if !git_path_exists(&source_path)? {
-        fetch_source(&source_path)?;
+    if !git_path_exists()? {
+        fetch_source()?;
     }
 
-    checkout_ref(&source_path, from_ref)?;
-    let executable_path = build(&source_path)?;
+    checkout_ref(from_ref)?;
+    let executable_path = build()?;
     install_by_path(executable_path)?;
 }
 
@@ -70,22 +69,21 @@ fn download_latest() -> Option<String> {
     Some(latest_version)
 }
 
-fn get_source_path() -> PathBuf {
-    crate::local_cache_dir().join("source")
-}
-
 fn get_executable_destination_path() -> PathBuf {
     let home_dir = env::var("HOME").expect(EXPECT_HOME_ENV_VAR);
     PathBuf::from(home_dir).join(EXECUTABLE_HOME_DESTINATION_PATH)
 }
 
 #[throws(Error)]
-fn git_path_exists(source_path: &Path) -> bool {
-    source_path.join(".git").try_exists()?
+fn git_path_exists() -> bool {
+    crate::local_cache_dir()
+        .join("source")
+        .join(".git")
+        .try_exists()?
 }
 
 #[throws(Error)]
-fn fetch_source(dest_path: &Path) {
+fn fetch_source() {
     progress!("Fetching source");
 
     let repo_url = env::var("HOC_REPO")
@@ -94,32 +92,35 @@ fn fetch_source(dest_path: &Path) {
 
     info!("Repository URL: {repo_url}");
 
+    let dest_path = crate::container_source_dir();
     process!("git clone --depth=1 {repo_url} {dest_path:?}").run()?;
 }
 
 #[throws(Error)]
-fn checkout_ref(source_path: &Path, from_ref: &str) {
+fn checkout_ref(from_ref: &str) {
     progress!("Checking out source");
 
-    let source_path_string = source_path.to_string_lossy().into_owned();
+    let source_path = crate::container_source_dir().to_string_lossy();
 
     process!("git fetch --force origin {from_ref}")
-        .current_dir(source_path_string.clone())
+        .current_dir(source_path.clone())
         .run()?;
     process!("git reset --hard FETCH_HEAD")
-        .current_dir(source_path_string)
+        .current_dir(source_path)
         .run()?;
 }
 
 #[throws(Error)]
-fn build(source_path: &Path) -> PathBuf {
+fn build() -> PathBuf {
     progress!("Building");
 
+    let source_path = crate::container_source_dir().to_string_lossy();
+
     process!("cargo build --release")
-        .current_dir(source_path.to_string_lossy().into_owned())
+        .current_dir(source_path)
         .run()?;
 
-    source_path.join("target/release/hoc")
+    crate::container_source_dir().join("target/release/hoc")
 }
 
 #[throws(Error)]

@@ -38,6 +38,10 @@ fn local_cache_dir() -> PathBuf {
     PathBuf::from(format!("{home_dir}/.cache/hoc"))
 }
 
+fn container_hoc_dir() -> &'static Path {
+    Path::new("/hoc")
+}
+
 fn container_files_dir() -> &'static Path {
     Path::new("/hoc/files")
 }
@@ -48,6 +52,10 @@ fn container_cache_dir() -> &'static Path {
 
 fn container_temp_dir() -> &'static Path {
     Path::new("/hoc/temp")
+}
+
+fn container_source_dir() -> &'static Path {
+    Path::new("/hoc/source")
 }
 
 #[derive(Parser)]
