@@ -1,10 +1,19 @@
-use std::{env, path::PathBuf, process::ExitCode};
+use std::{
+    env,
+    path::{Path, PathBuf},
+    process::ExitCode,
+};
 
 use anyhow::Error;
 use clap::Parser;
 use scopeguard::defer;
 
-use self::{command::Command, context::Context, ledger::Ledger, prelude::*};
+use self::{
+    command::Command,
+    context::{fs::temp, Context},
+    ledger::Ledger,
+    prelude::*,
+};
 
 #[macro_use]
 mod macros;
@@ -17,17 +26,28 @@ mod log;
 mod prelude;
 mod process;
 mod prompt;
-mod temp;
 mod util;
 
-fn data_dir() -> PathBuf {
+fn local_data_dir() -> PathBuf {
     let home_dir = env::var("HOME").expect(EXPECT_HOME_ENV_VAR);
     PathBuf::from(format!("{home_dir}/.local/share/hoc"))
 }
 
-fn cache_dir() -> PathBuf {
+fn local_cache_dir() -> PathBuf {
     let home_dir = env::var("HOME").expect(EXPECT_HOME_ENV_VAR);
     PathBuf::from(format!("{home_dir}/.cache/hoc"))
+}
+
+fn container_files_dir() -> &'static Path {
+    Path::new("/hoc/files")
+}
+
+fn container_cache_dir() -> &'static Path {
+    Path::new("/hoc/cache")
+}
+
+fn container_temp_dir() -> &'static Path {
+    Path::new("/hoc/temp")
 }
 
 #[derive(Parser)]

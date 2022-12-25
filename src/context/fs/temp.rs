@@ -4,27 +4,33 @@ use std::{
     path::PathBuf,
 };
 
-use crate::{context::Error, prelude::*, util};
+use crate::{
+    context::{fs::ContextFile, Error},
+    prelude::*,
+    util,
+};
 
 const RAND_CHARS: &str = "ABCDEFGHIJKLMNOPQRSTUVXYZ\
                               abcdefghijklmnopqrstuvxyz\
                               0123456789";
 
 fn get_temp_dir() -> PathBuf {
-    crate::cache_dir().join("temp")
+    crate::local_cache_dir().join("temp")
 }
 
 #[throws(Error)]
-pub fn create_file() -> (File, PathBuf) {
+pub fn create_file() -> ContextFile {
     let mut file_options = File::options();
     file_options.write(true).truncate(true).read(true);
 
     let mut path = get_temp_dir();
     fs::create_dir_all(&path)?;
 
+    let mut random_key;
     let mut attempt = 1;
     let file = loop {
-        path.push(util::random_string(RAND_CHARS, 10));
+        random_key = util::random_string(RAND_CHARS, 10);
+        path.push(&random_key);
         if attempt == 1 {
             debug!("Creating temporary file: {path:?}");
         } else {
@@ -45,7 +51,7 @@ pub fn create_file() -> (File, PathBuf) {
         attempt += 1;
     };
 
-    (file, path)
+    ContextFile::new(file, path, crate::container_temp_dir().join(random_key))
 }
 
 #[throws(Error)]

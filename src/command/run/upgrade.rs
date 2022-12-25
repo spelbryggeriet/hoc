@@ -15,7 +15,10 @@ use reqwest::{
 use serde::Deserialize;
 use zip::ZipArchive;
 
-use crate::{prelude::*, temp};
+use crate::{
+    context::fs::{temp, ContextFile},
+    prelude::*,
+};
 
 const DEFAULT_REPO_URL: &str = "https://github.com/spelbryggeriet/hoc.git";
 const EXECUTABLE_HOME_DESTINATION_PATH: &str = ".local/bin/hoc";
@@ -68,7 +71,7 @@ fn download_latest() -> Option<String> {
 }
 
 fn get_source_path() -> PathBuf {
-    crate::cache_dir().join("source")
+    crate::local_cache_dir().join("source")
 }
 
 fn get_executable_destination_path() -> PathBuf {
@@ -148,10 +151,10 @@ fn determine_latest_version(client: &Client) -> String {
 }
 
 #[throws(Error)]
-fn download(client: &Client, version: &str) -> File {
+fn download(client: &Client, version: &str) -> ContextFile {
     progress!("Downloading {version}");
 
-    let (mut file, _) = temp::create_file()?;
+    let mut file = temp::create_file()?;
 
     client
         .get(GITHUB_API_RELEASE_DOWNLOAD_TEMPLATE.replace("#version", version))
@@ -163,7 +166,7 @@ fn download(client: &Client, version: &str) -> File {
 }
 
 #[throws(Error)]
-fn install_by_file(file: File) {
+fn install_by_file(file: ContextFile) {
     progress!("Installing");
 
     let mut archive = ZipArchive::new(file)?;

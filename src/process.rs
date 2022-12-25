@@ -111,6 +111,11 @@ impl ProcessBuilder {
         self
     }
 
+    pub fn container_mode(mut self) -> Self {
+        self.settings.container_mode();
+        self
+    }
+
     #[allow(unused)]
     pub fn remote_mode<S: Into<Cow<'static, str>>>(mut self, node_name: S) -> Self {
         self.settings.remote_mode(node_name);
@@ -211,15 +216,15 @@ impl ProcessBuilder {
                             session.handshake()?;
 
                             let admin_username: String = kv!("admin/username").get()?.convert()?;
-                            let (_, pub_key_path) = files!("admin/ssh/pub").get()?;
-                            let (_, priv_key_path) = files!("admin/ssh/priv").get()?;
+                            let pub_key_file = files!("admin/ssh/pub").get()?;
+                            let priv_key_file = files!("admin/ssh/priv").get()?;
                             let password = get_remote_password()?;
                             password_to_cache.replace(password.clone());
 
                             session.userauth_pubkey_file(
                                 &admin_username,
-                                Some(&pub_key_path),
-                                &priv_key_path,
+                                Some(&pub_key_file.local_path),
+                                &priv_key_file.local_path,
                                 Some(&password.into_non_secret()),
                             )?;
 
@@ -457,8 +462,8 @@ impl Settings {
 
 #[derive(Default, Clone, PartialEq, Eq)]
 enum ProcessMode {
-    #[default]
     Local,
+    #[default]
     Container,
     Remote(Cow<'static, str>),
 }

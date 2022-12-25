@@ -11,8 +11,9 @@ use xz2::read::XzDecoder;
 
 use crate::{
     cidr::Cidr,
-    context::{self, key, kv},
+    context::{self, fs::ContextFile, key, kv},
     prelude::*,
+    process,
     util::{self, DiskInfo, DiskPartitionInfo, Opt},
 };
 
@@ -24,6 +25,8 @@ const UBUNTU_VERSION: UbuntuVersion = UbuntuVersion {
 
 #[throws(Error)]
 pub fn run() {
+    process::global_settings().local_mode();
+
     let disk = choose_sd_card()?;
     if !has_system_boot_partition(&disk) || wants_to_flash()? {
         unmount_sd_card(&disk)?;
@@ -45,19 +48,21 @@ pub fn run() {
 
 #[throws(Error)]
 fn get_os_image_path() -> PathBuf {
-    let (_, os_image_path) = files!("images/os").cached(get_os_image).get_or_create()?;
-    os_image_path
+    files!("images/os")
+        .cached(get_os_image)
+        .get_or_create()?
+        .local_path
 }
 
 #[throws(context::Error)]
-fn get_os_image(file: &mut File, path: &Path, retrying: bool) {
+fn get_os_image(file: &mut ContextFile, retrying: bool) {
     download_os_image(file, retrying)?;
-    validate_os_image(path)?;
-    decompress_xz_file(file, path)?;
+    validate_os_image(file)?;
+    decompress_xz_file(file)?;
 }
 
 #[throws(Error)]
-fn download_os_image(file: &mut File, prompt_url: bool) {
+fn download_os_image(file: &mut ContextFile, prompt_url: bool) {
     progress!("Downloading OS image");
 
     let os_image_url = if prompt_url {
@@ -81,12 +86,12 @@ fn ubuntu_image_url<T: Display>(version: T) -> String {
 }
 
 #[throws(Error)]
-fn validate_os_image(os_image_file_path: &Path) {
+fn validate_os_image(os_image_file_path: &ContextFile) {
     progress!("Validating file type");
 
     let mut output = process!(
         "file -E {path}",
-        path = &os_image_file_path.to_string_lossy(),
+        path = &os_image_file_path.local_path.to_string_lossy(),
     )
     .run()?;
     output.stdout = output.stdout.to_lowercase();
@@ -99,7 +104,11 @@ fn validate_os_image(os_image_file_path: &Path) {
             .get()?;
 
         if opt == Opt::Yes {
-            process!("cat {path}", path = os_image_file_path.to_string_lossy()).run()?;
+            process!(
+                "cat {path}",
+                path = os_image_file_path.local_path.to_string_lossy()
+            )
+            .run()?;
         }
 
         bail!("Validation failed");
@@ -109,10 +118,10 @@ fn validate_os_image(os_image_file_path: &Path) {
 }
 
 #[throws(Error)]
-fn decompress_xz_file(os_image_file: &mut File, os_image_path: &Path) {
+fn decompress_xz_file(os_image_file: &mut ContextFile) {
     let decompress_progress = progress_with_handle!("Decompressing image");
 
-    let os_image_file_ro = File::options().read(true).open(os_image_path)?;
+    let os_image_file_ro = File::options().read(true).open(&os_image_file.local_path)?;
     let mut decompressor = XzDecoder::new(os_image_file_ro);
     let mut image_data = Vec::new();
     decompressor
@@ -294,7 +303,7 @@ fn modify_image(mount_dir: &Path, node_name: &str, ip_address: Cidr) {
 
     progress!("Modifying image");
 
-    let (mut pub_key_file, _) = files!("admin/ssh/pub").get()?;
+    let mut pub_key_file = files!("admin/ssh/pub").get()?;
     let mut pub_key = String::new();
     pub_key_file.read_to_string(&mut pub_key)?;
 

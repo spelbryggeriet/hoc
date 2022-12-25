@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     context::{
+        fs::ContextFile,
         key::{self, Key, KeyOwned},
         Error,
     },
@@ -35,11 +36,11 @@ impl Files {
     }
 
     fn files_dir() -> PathBuf {
-        crate::data_dir().join("files")
+        crate::local_data_dir().join("files")
     }
 
     #[throws(Error)]
-    pub fn create_file<K, F>(&mut self, key: K, on_overwrite: F) -> (bool, (File, PathBuf))
+    pub fn create_file<K, F>(&mut self, key: K, on_overwrite: F) -> (bool, ContextFile)
     where
         K: Into<KeyOwned>,
         F: FnOnce(&Path) -> Result<(), Error>,
@@ -62,7 +63,12 @@ impl Files {
             should_overwrite = opt == Opt::Overwrite;
             if !should_overwrite {
                 warn!("Creating file: {key} (skipping)");
-                return (had_previous_file, (file_options.open(path)?, path.clone()));
+                let file = ContextFile::new(
+                    file_options.open(path)?,
+                    path.clone(),
+                    crate::container_files_dir().join(key.as_str()),
+                );
+                return (had_previous_file, file);
             }
 
             file_options.truncate(true).create(true);
@@ -90,7 +96,12 @@ impl Files {
                 should_overwrite = opt == Opt::Overwrite;
                 if !should_overwrite {
                     warn!("Creating file: {key} (skipping)");
-                    return (had_previous_file, (file_options.open(&path)?, path));
+                    let file = ContextFile::new(
+                        file_options.open(&path)?,
+                        path,
+                        crate::container_files_dir().join(key.as_str()),
+                    );
+                    return (had_previous_file, file);
                 } else {
                     file_options.truncate(true).open(&path)?
                 }
@@ -104,13 +115,18 @@ impl Files {
             warn!("Creating file: {key} (overwriting)");
         }
 
-        self.map.insert(key, path.clone());
+        let file = ContextFile::new(
+            file,
+            path.clone(),
+            crate::container_files_dir().join(key.as_str()),
+        );
+        self.map.insert(key, path);
 
-        (had_previous_file, (file, path))
+        (had_previous_file, file)
     }
 
     #[throws(Error)]
-    pub fn get_file<'key, K>(&self, key: K) -> (File, PathBuf)
+    pub fn get_file<'key, K>(&self, key: K) -> ContextFile
     where
         K: Into<Cow<'key, Key>>,
     {
@@ -123,7 +139,7 @@ impl Files {
 
         if let Some(path) = self.map.get(&*key) {
             let file = file_options.open(path)?;
-            return (file, PathBuf::from(path));
+            return ContextFile::new(file, path, crate::container_files_dir().join(key.as_str()));
         }
 
         throw!(key::Error::KeyDoesNotExist(key.into_owned()));

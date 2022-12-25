@@ -64,8 +64,8 @@ impl Context {
     pub fn load(&self) {
         debug!("Loading context");
 
-        let data_dir = crate::data_dir();
-        let cache_dir = crate::cache_dir();
+        let data_dir = crate::local_data_dir();
+        let cache_dir = crate::local_cache_dir();
 
         debug!("Creating data directory");
         std::fs::create_dir_all(&data_dir)?;
@@ -145,7 +145,7 @@ impl Context {
             .write(true)
             .truncate(true)
             .create(true)
-            .open(crate::data_dir().join(Self::CONTEXT_FILENAME))?;
+            .open(crate::local_data_dir().join(Self::CONTEXT_FILENAME))?;
 
         debug!("Serializing context to file");
         serde_yaml::to_writer(file, self)?;
