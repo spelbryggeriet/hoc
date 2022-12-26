@@ -522,27 +522,27 @@ mod util {
                 "run",
                 "--mount",
                 &format!(
-                    "type=bind,source={}/files,target={}/files",
-                    crate::local_data_dir().to_string_lossy(),
-                    crate::container_hoc_dir().to_string_lossy(),
+                    "type=bind,source={},target={}",
+                    crate::local_files_dir().to_string_lossy(),
+                    crate::container_files_dir().to_string_lossy(),
                 ),
                 "--mount",
                 &format!(
-                    "type=bind,source={}/cache,target={}/cache",
+                    "type=bind,source={},target={}",
                     crate::local_cache_dir().to_string_lossy(),
-                    crate::container_hoc_dir().to_string_lossy(),
+                    crate::container_cache_dir().to_string_lossy(),
                 ),
                 "--mount",
                 &format!(
-                    "type=bind,source={}/temp,target={}/temp",
-                    crate::local_cache_dir().to_string_lossy(),
-                    crate::container_hoc_dir().to_string_lossy(),
+                    "type=bind,source={},target={}",
+                    crate::local_temp_dir().to_string_lossy(),
+                    crate::container_temp_dir().to_string_lossy(),
                 ),
                 "--mount",
                 &format!(
-                    "type=bind,source={}/source,target={}/source",
-                    crate::local_cache_dir().to_string_lossy(),
-                    crate::container_hoc_dir().to_string_lossy(),
+                    "type=bind,source={},target={}",
+                    crate::local_source_dir().to_string_lossy(),
+                    crate::container_source_dir().to_string_lossy(),
                 ),
             ]);
             if !process.input_data.is_empty() {

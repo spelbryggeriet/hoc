@@ -23,7 +23,7 @@ pub struct Cache {
     #[serde(flatten)]
     map: IndexMap<KeyOwned, PathBuf>,
 
-    #[serde(skip, default = "Cache::cache_dir")]
+    #[serde(skip, default = "crate::local_cache_dir")]
     cache_dir: PathBuf,
 }
 
@@ -31,12 +31,8 @@ impl Cache {
     pub(in crate::context) fn new() -> Self {
         Self {
             map: IndexMap::new(),
-            cache_dir: Self::cache_dir(),
+            cache_dir: crate::local_cache_dir(),
         }
-    }
-
-    fn cache_dir() -> PathBuf {
-        crate::local_cache_dir().join("cache")
     }
 
     #[throws(Error)]

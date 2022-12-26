@@ -173,19 +173,6 @@ pub struct NodeDeployCommand {
 }
 
 impl Command {
-    #[cfg(debug_assertions)]
-    pub fn needs_context(&self) -> bool {
-        !matches!(
-            self,
-            Command::Debug(_) | Command::Version(_) | Command::Upgrade(_)
-        )
-    }
-
-    #[cfg(not(debug_assertions))]
-    pub fn needs_context(&self) -> bool {
-        !matches!(self, Command::Version(_) | Command::Upgrade(_))
-    }
-
     #[throws(anyhow::Error)]
     pub fn run(self) {
         use Command::*;

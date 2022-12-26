@@ -43,7 +43,7 @@ impl FileBuilder<Persisted> {
         let context = Context::get_or_init();
         let mut previous_path = None;
         let (had_previous_file, file) = context.files_mut().create_file(&self.key, |path| {
-            let temp_file = temp::create_file()?;
+            let temp_file = temp_file!()?;
             fs::rename(path, &temp_file.local_path)?;
             previous_path.replace(temp_file.local_path);
             Ok(())
@@ -83,7 +83,7 @@ where
             context
                 .cache_mut()
                 .get_or_create_file(&self.key, &self.state.file_cacher, |path| {
-                    let temp_file = temp::create_file()?;
+                    let temp_file = temp_file!()?;
                     fs::rename(path, &temp_file.local_path)?;
                     previous_path.replace(temp_file.local_path);
                     Ok(())
@@ -109,7 +109,7 @@ where
             self.key.as_ref(),
             self.state.file_cacher,
             |path| {
-                let temp_file = temp::create_file()?;
+                let temp_file = temp_file!()?;
                 fs::rename(path, &temp_file.local_path)?;
                 previous_path.replace(temp_file.local_path);
                 Ok(())

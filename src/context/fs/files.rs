@@ -23,7 +23,7 @@ pub struct Files {
     #[serde(flatten)]
     map: IndexMap<KeyOwned, PathBuf>,
 
-    #[serde(skip, default = "Files::files_dir")]
+    #[serde(skip, default = "crate::local_files_dir")]
     files_dir: PathBuf,
 }
 
@@ -31,12 +31,8 @@ impl Files {
     pub(in crate::context) fn new() -> Self {
         Self {
             map: IndexMap::new(),
-            files_dir: Self::files_dir(),
+            files_dir: crate::local_files_dir(),
         }
-    }
-
-    fn files_dir() -> PathBuf {
-        crate::local_data_dir().join("files")
     }
 
     #[throws(Error)]
