@@ -36,16 +36,14 @@ def get_next_version(bump_comp_idx, current_version):
     return f"{major}.{minor}.{patch}"
 
 
-def update_manifest(bump_comp_idx):
-    manifest_path = os.path.join(REPO_DIR, "Cargo.toml")
+def update_manifest(bump_comp_idx, path):
+    manifest_path = os.path.join(REPO_DIR, path)
     with open(manifest_path, "r") as f:
         content = f.read()
 
     current_version = get_current_version(content)
     next_version = get_next_version(bump_comp_idx, current_version)
-    content = content.replace(
-        f'version = "{current_version}"',
-        f'version = "{next_version}"')
+    content = content.replace(f'version = "{current_version}"', f'version = "{next_version}"', 1)
 
     with open(manifest_path, "w") as f:
         f.write(content)
@@ -53,18 +51,20 @@ def update_manifest(bump_comp_idx):
     return next_version
 
 
-def update_changelog(next_version):
+def update_changelog(next_version, repository_owner):
     HEADER_KEY = "## [Unreleased]"
     CHANGELOG_NAME = "CHANGELOG.md"
 
     changelog_path = os.path.join(REPO_DIR, CHANGELOG_NAME)
     last_version, _ = run("git", "-C", REPO_DIR, "rev-list", "--date-order", "--tags", "--max-count=1")
-    stdout, stderr = run("git", "-C", REPO_DIR, "diff", last_version, "HEAD", "--", CHANGELOG_NAME)
 
-    if len(stderr) > 0:
-        error(stderr.strip())
-    if len(stdout) == 0:
-        error("no changes have been made to the changelog")
+    if len(last_version) > 0:
+        stdout, stderr = run("git", "-C", REPO_DIR, "diff", last_version, "HEAD", "--", CHANGELOG_NAME)
+
+        if len(stderr) > 0:
+            error(stderr.strip())
+        if len(stdout) == 0:
+            error("no changes have been made to the changelog")
 
     with open(changelog_path, "r") as f:
         content = f.read()
@@ -79,13 +79,13 @@ def update_changelog(next_version):
     if new_content != new_content.replace(HEADER_KEY, replacement):
         error("multiple unreleased version sections found")
 
-    new_content = new_content.replace(replacement, f"{HEADER_KEY}\n\n{replacement}")
+    new_content = new_content.replace(replacement, f"{HEADER_KEY}\n\nImage tag: ghcr.io/{repository_owner}/game-box-backend:{next_version}\n\n{replacement}")
     with open(changelog_path, "w") as f:
         f.write(new_content)
 
 
 def bump_version(bump_comp_idx):
-    next_version = update_manifest(bump_comp_idx)
+    next_version = update_manifest(bump_comp_idx, "Cargo.toml")
     update_changelog(next_version)
     return next_version
 
@@ -93,6 +93,8 @@ def bump_version(bump_comp_idx):
 if __name__ == "__main__":
     if len(sys.argv) < 2:
         error("component argument missing")
+    if len(sys.argv) < 3:
+        error("repository owner argument missing")
 
     component = sys.argv[1]
     if component == "major":
@@ -104,4 +106,4 @@ if __name__ == "__main__":
     else:
         error(f'"major", "minor" or "patch" expected')
 
-    print(bump_version(bump_comp_idx))
+    print(bump_version(bump_comp_idx, sys.argv[2]))
