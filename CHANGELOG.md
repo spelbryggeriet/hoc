@@ -9,6 +9,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [0.0.5] - 2022-12-26
 
+Image tag: ghcr.io/spelbryggeriet/game-box-backend:0.0.5
+
 ### Changed
 
 - Processes (system commands) are now run in a container (using Docker) by default. This requires
