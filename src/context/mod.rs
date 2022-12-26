@@ -13,7 +13,7 @@ use serde::{ser::SerializeMap, Deserialize, Deserializer, Serialize};
 use thiserror::Error;
 
 use self::{
-    fs::{cache::Cache, files::Files},
+    fs::{cache::Cache, files::Files, temp::Temp},
     key::Key,
     kv::{Item, Kv, PutOptions, Value},
 };
@@ -41,11 +41,11 @@ pub struct Context {
     files: RwLock<Files>,
     #[serde(deserialize_with = "deserialize_rw_lock")]
     cache: RwLock<Cache>,
+    #[serde(skip)]
+    temp: RwLock<Temp>,
 }
 
 impl Context {
-    const CONTEXT_FILENAME: &str = "context.yaml";
-
     pub fn get_or_init() -> &'static Context {
         static CONTEXT: OnceCell<Context> = OnceCell::new();
 
@@ -57,6 +57,7 @@ impl Context {
             kv: RwLock::new(Kv::new()),
             files: RwLock::new(Files::new()),
             cache: RwLock::new(Cache::new()),
+            temp: RwLock::new(Temp::new()),
         }
     }
 
@@ -64,26 +65,44 @@ impl Context {
     pub fn load(&self) {
         debug!("Loading context");
 
-        let data_dir = crate::data_dir();
-        let cache_dir = crate::cache_dir();
+        let context_path = crate::local_context_file_path();
 
-        debug!("Creating data directory");
-        std::fs::create_dir_all(&data_dir)?;
+        let files_dir = crate::local_files_dir();
+        let cache_dir = crate::local_cache_dir();
+        let temp_dir = crate::local_temp_dir();
+        let source_dir = crate::local_source_dir();
+
+        debug!("Creating files directory");
+        std::fs::create_dir_all(&files_dir)?;
 
         debug!("Creating cache directory");
         std::fs::create_dir_all(&cache_dir)?;
 
-        debug!("Setting data directory permissions");
-        let mut data_permissions = data_dir.metadata()?.permissions();
-        data_permissions.set_mode(0o700);
-        std::fs::set_permissions(&data_dir, data_permissions)?;
+        debug!("Creating temp directory");
+        std::fs::create_dir_all(&temp_dir)?;
+
+        debug!("Creating source directory");
+        std::fs::create_dir_all(&source_dir)?;
+
+        debug!("Setting files directory permissions");
+        let mut permissions = files_dir.metadata()?.permissions();
+        permissions.set_mode(0o700);
+        std::fs::set_permissions(&files_dir, permissions)?;
 
         debug!("Setting cache directory permissions");
-        let mut cache_permissions = cache_dir.metadata()?.permissions();
-        cache_permissions.set_mode(0o700);
-        std::fs::set_permissions(&cache_dir, cache_permissions)?;
+        let mut permissions = cache_dir.metadata()?.permissions();
+        permissions.set_mode(0o700);
+        std::fs::set_permissions(&cache_dir, permissions)?;
 
-        let context_path = data_dir.join(Self::CONTEXT_FILENAME);
+        debug!("Setting temp directory permissions");
+        let mut permissions = temp_dir.metadata()?.permissions();
+        permissions.set_mode(0o700);
+        std::fs::set_permissions(&temp_dir, permissions)?;
+
+        debug!("Setting source directory permissions");
+        let mut permissions = source_dir.metadata()?.permissions();
+        permissions.set_mode(0o700);
+        std::fs::set_permissions(&source_dir, permissions)?;
 
         debug!("Opening context file");
         match File::options().read(true).write(true).open(&context_path) {
@@ -133,6 +152,10 @@ impl Context {
         self.cache.write().expect(EXPECT_THREAD_NOT_POSIONED)
     }
 
+    pub fn temp(&self) -> RwLockReadGuard<Temp> {
+        self.temp.read().expect(EXPECT_THREAD_NOT_POSIONED)
+    }
+
     #[throws(anyhow::Error)]
     pub fn persist(&self) {
         progress!("Persisting context");
@@ -145,10 +168,16 @@ impl Context {
             .write(true)
             .truncate(true)
             .create(true)
-            .open(crate::data_dir().join(Self::CONTEXT_FILENAME))?;
+            .open(crate::local_context_file_path())?;
 
         debug!("Serializing context to file");
         serde_yaml::to_writer(file, self)?;
+    }
+
+    #[throws(anyhow::Error)]
+    pub fn cleanup(&self) {
+        debug!("Clean temporary files");
+        self.temp().cleanup()?;
     }
 }
 

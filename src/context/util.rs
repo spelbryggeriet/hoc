@@ -1,25 +1,21 @@
-use std::{
-    fs::File,
-    io::{Seek, SeekFrom},
-    path::Path,
-};
+use std::io::{Seek, SeekFrom};
 
 use crate::{
-    context::{self, key::Key},
+    context::{self, fs::ContextFile, key::Key},
     prelude::*,
     util::Opt,
 };
 
 #[throws(context::Error)]
-pub fn cache_loop<C>(key: &Key, file: &mut File, path: &Path, on_cache: C)
+pub fn cache_loop<C>(key: &Key, file: &mut ContextFile, on_cache: C)
 where
-    C: Fn(&mut File, &Path, bool) -> Result<(), context::Error>,
+    C: Fn(&mut ContextFile, bool) -> Result<(), context::Error>,
 {
     progress!("Caching file for key {key}");
 
     let mut retrying = false;
     loop {
-        if let Err(err) = on_cache(file, path, retrying) {
+        if let Err(err) = on_cache(file, retrying) {
             error!("{err}");
             select!("How do you want to resolve the error?")
                 .with_option(Opt::Retry)
@@ -30,8 +26,8 @@ where
         };
 
         if retrying {
-            file.set_len(0)?;
-            file.seek(SeekFrom::Start(0))?;
+            file.file.set_len(0)?;
+            file.file.seek(SeekFrom::Start(0))?;
         }
     }
 }

@@ -11,7 +11,6 @@ use std::{
 use crossterm::{cursor, execute, style, terminal, ExecutableCommand};
 use log_facade::Level;
 use once_cell::sync::OnceCell;
-use spin_sleep::{SpinSleeper, SpinStrategy};
 
 use self::view::{Position, RootView, View};
 use super::{Log, LogType, PauseLog, ProgressLog, SimpleLog};
@@ -66,8 +65,6 @@ impl RenderThread {
         let thread_handle = thread::spawn(move || {
             io::stdout().execute(cursor::Hide)?;
 
-            let spin_sleeper =
-                SpinSleeper::new(100_000).with_spin_strategy(SpinStrategy::YieldThread);
             let mut render_info = RenderInfo::new();
             let mut previous_height = None;
 
@@ -241,7 +238,7 @@ impl RenderThread {
                     }
                 }
 
-                spin_sleeper.sleep(Duration::new(0, 16_666_667));
+                spin_sleep::sleep(Duration::from_nanos(16_666_667));
 
                 render_info.advance_animation();
             }

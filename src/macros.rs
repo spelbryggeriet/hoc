@@ -38,14 +38,9 @@ macro_rules! files {
     }};
 }
 
-macro_rules! _temp_file {
+macro_rules! temp_file {
     () => {
-        async {
-            $crate::context::get_context()
-                .temp_mut()
-                .await
-                .create_file()
-        }
+        $crate::context::Context::get_or_init().temp().create_file()
     };
 }
 

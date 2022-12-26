@@ -9,6 +9,7 @@ on:
         default: patch
         type: choice
         options:
+        - skip
         - patch
         - minor
         - major
@@ -18,73 +19,90 @@ env:
   RUST_VERSION: 1.66.0
 
 jobs:
-  bump_version:
+  prepare_version:
     runs-on: ubuntu-latest
     outputs:
-      new_version: ${{ steps.bv.outputs.new_version }}
+      version: ${{ steps.gv.outputs.version }}
     steps:
     - uses: actions/checkout@v3
-    - name: Prepare branch
+    - name: Check branch
       run: |
         if [[ ! `git branch --show-current` = 'master' ]] ; then
           echo "Releases can only be created from the \`master\` branch" >&2
           exit 1
         fi
+    - name: Prepare branch
+      run: |
         git fetch --tags
         git checkout -b feature
     - name: Bump version
-      id: bv
+      if: inputs.bumpVersion != 'skip'
       run: |
-        new_version=`scripts/bumb_version.py ${{ inputs.bumpVersion }}`
-        echo "new_version=$new_version" >> $GITHUB_OUTPUT
+        scripts/bumb_version.py ${{ inputs.bumpVersion }}
+    - name: Get version
+      id: gv
+      run: |
+        version=`scripts/get_version.py`
+        echo "version=$version" >> $GITHUB_OUTPUT
     - name: Update lock file
+      if: inputs.bumpVersion != 'skip'
       uses: actions-rs/cargo@v1
       with:
         command: update
         args: --package hoc
     - name: Create release branch
+      if: inputs.bumpVersion != 'skip'
       id: crb
       run: |
-        release_branch="release/v${NEW_VERSION}"
+        release_branch="release/v${VERSION}"
         git checkout -b "$release_branch"
         git \
           -c author.name=${{ github.actor }} \
           -c author.email=${{ github.actor }}@users.noreply.github.com \
           -c committer.name=Github \
           -c committer.email=noreply@github.com \
-          commit -a -m "Prepare release v${NEW_VERSION}"
+          commit -a -m "Prepare release v${VERSION}"
         git push --set-upstream origin "$release_branch"
         echo "release_branch=$release_branch" >> $GITHUB_OUTPUT
       env:
-        NEW_VERSION: ${{ steps.bv.outputs.new_version }}
+        VERSION: ${{ steps.gv.outputs.version }}
     - name: Create pull request
+      if: inputs.bumpVersion != 'skip'
       id: cpr
       uses: octokit/request-action@v2.x
       with:
         route: POST /repos/${{ github.repository }}/pulls
-        title: Release v${{ env.NEW_VERSION }}
-        body: Bump to version v${{ env.NEW_VERSION }}.
+        title: Release v${{ env.VERSION }}
+        body: Bump to version v${{ env.VERSION }}.
         base: master
         head: ${{ env.RELEASE_BRANCH }}
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         RELEASE_BRANCH: ${{ steps.crb.outputs.release_branch }}
-        NEW_VERSION: ${{ steps.bv.outputs.new_version }}
+        VERSION: ${{ steps.gv.outputs.version }}
+    - name: Get pull request number
+      id: gprn
+      uses: sergeysova/jq-action@v2
+      with:
+        cmd: echo '${{ steps.cpr.outputs.data }}' | jq .number -r
+      env:
+        JSON_DATA: ${{ steps.cpr.outputs.data }}
     - name: Merge pull request
+      if: inputs.bumpVersion != 'skip'
       uses: octokit/request-action@v2.x
       with:
         route: PUT /repos/${{ github.repository }}/pulls/${{ env.PULL_NUMBER }}/merge
-        commit_title: Prepare release v${{ env.NEW_VERSION }} (#${{ env.PULL_NUMBER }})
+        commit_title: Prepare release v${{ env.VERSION }} (#${{ env.PULL_NUMBER }})
         merge_method: squash
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        PULL_NUMBER: ${{ fromJson(steps.cpr.outputs.data).number }}
-        NEW_VERSION: ${{ steps.bv.outputs.new_version }}
+        PULL_NUMBER: ${{ steps.gprn.outputs.value }}
+        VERSION: ${{ steps.gv.outputs.version }}
 
-  build:
-    needs: bump_version
+  build_app:
+    needs: prepare_version
     env:
-      NEW_VERSION: ${{ needs.bump_version.outputs.new_version }}
+      VERSION: ${{ needs.prepare_version.outputs.version }}
     runs-on: macos-latest
     outputs:
       artifact_name: ${{ steps.za.outputs.artifact_name }}
@@ -118,10 +136,36 @@ jobs:
       env:
         ARTIFACT_NAME: ${{ steps.za.outputs.artifact_name }}
 
-  create_release:
-    needs: [bump_version, build]
+  build_container:
+    needs: prepare_version
     env:
-      NEW_VERSION: ${{ needs.bump_version.outputs.new_version }}
+      VERSION: ${{ needs.prepare_version.outputs.version }}
+    runs-on: ubuntu-latest
+    outputs:
+      artifact_name: ${{ steps.za.outputs.artifact_name }}
+    steps:
+    - uses: actions/checkout@v3
+      with:
+        fetch-depth: 0
+        ref: master
+    - name: Setup Docker
+      uses: docker/setup-buildx-action@v1
+    - name: Login to Github Container registry
+      run: |
+        echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u $ --password-stdin
+    - name: Build and push image
+      uses: docker/build-push-action@v2
+      with:
+        context: container
+        push: true
+        tags: ghcr.io/${{ github.repository_owner }}/hoc-runtime:${{ env.VERSION }}
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+
+  create_release:
+    needs: [prepare_version, build_app, build_container]
+    env:
+      VERSION: ${{ needs.prepare_version.outputs.version }}
       ARTIFACT_NAME: ${{ needs.build.outputs.artifact_name }}
     runs-on: ubuntu-latest
     steps:
@@ -146,9 +190,9 @@ jobs:
       uses: octokit/request-action@v2.x
       with:
         route: POST /repos/${{ github.repository }}/releases
-        tag_name: v${{ env.NEW_VERSION }}
+        tag_name: v${{ env.VERSION }}
         target_commitish: master
-        name: v${{ env.NEW_VERSION }}
+        name: v${{ env.VERSION }}
         body: |-
           ${{ steps.gcb.outputs.changelog_body }}
         draft: true
@@ -166,6 +210,13 @@ jobs:
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         RELEASE_ID: ${{ fromJson(steps.crd.outputs.data).id }}
+    - name: Get release number
+      id: grn
+      uses: sergeysova/jq-action@v2
+      with:
+        cmd: echo '${{ steps.crd.outputs.data }}' | jq .id -r
+      env:
+        JSON_DATA: ${{ steps.cpr.outputs.data }}
     - name: Publish release
       uses: octokit/request-action@v2.x
       with:
@@ -173,4 +224,4 @@ jobs:
         draft: false
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        RELEASE_ID: ${{ fromJson(steps.crd.outputs.data).id }}
+        RELEASE_ID: ${{ steps.grn.outputs.value }}

@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     context::{
         self,
+        fs::ContextFile,
         key::{Key, KeyOwned},
         Error,
     },
@@ -22,7 +23,7 @@ pub struct Cache {
     #[serde(flatten)]
     map: IndexMap<KeyOwned, PathBuf>,
 
-    #[serde(skip, default = "Cache::cache_dir")]
+    #[serde(skip, default = "crate::local_cache_dir")]
     cache_dir: PathBuf,
 }
 
@@ -30,12 +31,8 @@ impl Cache {
     pub(in crate::context) fn new() -> Self {
         Self {
             map: IndexMap::new(),
-            cache_dir: Self::cache_dir(),
+            cache_dir: crate::local_cache_dir(),
         }
-    }
-
-    fn cache_dir() -> PathBuf {
-        crate::cache_dir().join("cache")
     }
 
     #[throws(Error)]
@@ -44,10 +41,10 @@ impl Cache {
         key: K,
         on_cache: C,
         on_overwrite: O,
-    ) -> (bool, (File, PathBuf))
+    ) -> (bool, ContextFile)
     where
         K: Into<KeyOwned>,
-        C: Fn(&mut File, &Path, bool) -> Result<(), Error>,
+        C: Fn(&mut ContextFile, bool) -> Result<(), Error>,
         O: FnOnce(&Path) -> Result<(), Error>,
     {
         let key = key.into();
@@ -61,7 +58,12 @@ impl Cache {
                 Ok(file) => {
                     had_previous_file = true;
                     debug!("Getting cached file: {key}");
-                    return (had_previous_file, (file, path.clone()));
+                    let file = ContextFile::new(
+                        file,
+                        path,
+                        crate::container_cache_dir().join(key.as_str()),
+                    );
+                    return (had_previous_file, file);
                 }
                 Err(err) if err.kind() == io::ErrorKind::NotFound => (),
                 Err(err) => throw!(err),
@@ -79,7 +81,7 @@ impl Cache {
         }
 
         let mut should_overwrite = false;
-        let mut file = match file_options.open(&path) {
+        let file = match file_options.open(&path) {
             Ok(file) => file,
             Err(err) if err.kind() == io::ErrorKind::AlreadyExists => {
                 error!("Cached file at path {path:?} already exists");
@@ -94,8 +96,13 @@ impl Cache {
                 if !should_overwrite {
                     debug!("Creating cached file: {key} (skipping)");
                     let file = file_options.open(&path)?;
-                    self.map.insert(key, path.clone());
-                    return (had_previous_file, (file, path));
+                    let file = ContextFile::new(
+                        file,
+                        path.clone(),
+                        crate::container_cache_dir().join(key.as_str()),
+                    );
+                    self.map.insert(key, path);
+                    return (had_previous_file, file);
                 }
 
                 on_overwrite(&path)?;
@@ -104,7 +111,12 @@ impl Cache {
             Err(err) => throw!(err),
         };
 
-        context::util::cache_loop(&key, &mut file, &path, on_cache)?;
+        let mut file = ContextFile::new(
+            file,
+            path.clone(),
+            crate::container_cache_dir().join(key.as_str()),
+        );
+        context::util::cache_loop(&key, &mut file, on_cache)?;
 
         if !should_overwrite {
             debug!("Creating cached file: {key}");
@@ -112,21 +124,22 @@ impl Cache {
             warn!("Creating cached file: {key} (overwriting)");
         }
 
-        self.map.insert(key, path.clone());
+        self.map.insert(key, path);
 
-        (had_previous_file, (file, path))
+        (had_previous_file, file)
     }
 
+    #[allow(unused)]
     #[throws(Error)]
-    pub fn _create_or_overwrite_file<K, C, O>(
+    pub fn create_or_overwrite_file<K, C, O>(
         &mut self,
         key: K,
         on_cache: C,
         on_overwrite: O,
-    ) -> (bool, (File, PathBuf))
+    ) -> (bool, ContextFile)
     where
         K: Into<KeyOwned>,
-        C: Fn(&mut File, &Path, bool) -> Result<(), Error>,
+        C: Fn(&mut ContextFile, bool) -> Result<(), Error>,
         O: FnOnce(&Path) -> Result<(), Error>,
     {
         let key = key.into();
@@ -154,7 +167,12 @@ impl Cache {
             Err(err) => throw!(err),
         };
 
-        context::util::cache_loop(&key, &mut file, &path, on_cache)?;
+        let mut file = ContextFile::new(
+            file,
+            path.clone(),
+            crate::container_cache_dir().join(key.as_str()),
+        );
+        context::util::cache_loop(&key, &mut file, on_cache)?;
 
         if !had_previous_file {
             debug!("Creating cached file: {key}");
@@ -162,9 +180,9 @@ impl Cache {
             debug!("Creating cached file: {key} (overwriting)");
         }
 
-        self.map.insert(key, path.clone());
+        self.map.insert(key, path);
 
-        (had_previous_file, (file, path))
+        (had_previous_file, file)
     }
 
     #[throws(Error)]
