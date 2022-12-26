@@ -7,6 +7,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.0.5] - 2022-12-26
+
 ### Changed
 
 - Processes (system commands) are now run in a container (using Docker) by default. This requires
