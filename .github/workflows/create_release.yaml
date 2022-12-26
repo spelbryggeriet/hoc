@@ -38,7 +38,7 @@ jobs:
     - name: Bump version
       if: inputs.bumpVersion != 'skip'
       run: |
-        scripts/bumb_version.py ${{ inputs.bumpVersion }}
+        scripts/bump_version.py ${{ inputs.bumpVersion }} ${{ github.repository_owner }}
     - name: Get version
       id: gv
       run: |
