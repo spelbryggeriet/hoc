@@ -1,4 +1,4 @@
-use std::net::IpAddr;
+use std::{io::Write, net::IpAddr};
 
 use anyhow::{anyhow, Error};
 use lazy_regex::regex;
@@ -26,6 +26,7 @@ pub fn run(node_name: String) {
     if !partitions.is_empty() {
         mount_storage(partitions)?;
     }
+    copy_kubeconfig()?;
 
     verify_installation()?;
     report(&node_name)?;
@@ -92,7 +93,7 @@ fn change_password() {
 
     let username: String = kv!("admin/username").get()?.convert()?;
     let password = process::get_remote_password()?.into_non_secret();
-    process!("sudo -kSp '' chpasswd" < ("temporary_password\n{username}:{password}"))
+    process!(sudo "chpasswd" < ("temporary_password\n{username}:{password}"))
         .revertible(process!(sudo "chpasswd" < ("{username}:temporary_password")))
         .run()?
 }
@@ -144,9 +145,17 @@ fn mount_storage(partitions: Vec<DiskPartitionInfo>) {
 }
 
 #[throws(Error)]
+fn copy_kubeconfig() {
+    progress!("Copying kubeconfig");
+    let output = process!("cat /etc/rancher/k3s/k3s.yaml").run()?;
+    let mut kubeconfig_file = files!("admin/kube/config").create()?;
+    kubeconfig_file.write_all(output.stdout.as_bytes())?;
+}
+
+#[throws(Error)]
 fn verify_installation() {
     progress!("Verifying installation");
-    process!(sudo "k3s kubectl get nodes").run()?;
+    process!("kubectl get nodes").container_mode().run()?;
 }
 
 #[throws(Error)]

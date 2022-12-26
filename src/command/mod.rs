@@ -229,7 +229,11 @@ impl Command {
                 }
             },
 
-            Deploy(_deploy_command) => {}
+            Deploy(_deploy_command) => {
+                cmd_diagnostics!(DeployCommand);
+
+                deploy::run()?;
+            }
 
             #[cfg(debug_assertions)]
             Debug(debug_command) => match debug_command {

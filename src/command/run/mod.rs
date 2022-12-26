@@ -1,6 +1,7 @@
 #[cfg(debug_assertions)]
 pub mod debug;
 
+pub mod deploy;
 pub mod init;
 pub mod node;
 pub mod sd_card;
