@@ -86,7 +86,7 @@ def update_helm_chart(current_version, next_version, path):
     with open(helm_chart_path, "r") as f:
         content = f.read()
 
-    content = content.replace(f"apiVersion: {current_version}", f"apiVersion: {next_version}", 1)
+    content = content.replace(f"version: {current_version}", f"version: {next_version}", 1)
 
     with open(helm_chart_path, "w") as f:
         f.write(content)
