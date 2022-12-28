@@ -72,39 +72,39 @@ impl Context {
         let temp_dir = crate::local_temp_dir();
         let source_dir = crate::local_source_dir();
 
-        debug!("Creating files directory");
+        trace!("Creating files directory");
         std::fs::create_dir_all(&files_dir)?;
 
-        debug!("Creating cache directory");
+        trace!("Creating cache directory");
         std::fs::create_dir_all(&cache_dir)?;
 
-        debug!("Creating temp directory");
+        trace!("Creating temp directory");
         std::fs::create_dir_all(&temp_dir)?;
 
-        debug!("Creating source directory");
+        trace!("Creating source directory");
         std::fs::create_dir_all(&source_dir)?;
 
-        debug!("Setting files directory permissions");
+        trace!("Setting files directory permissions");
         let mut permissions = files_dir.metadata()?.permissions();
         permissions.set_mode(0o700);
         std::fs::set_permissions(&files_dir, permissions)?;
 
-        debug!("Setting cache directory permissions");
+        trace!("Setting cache directory permissions");
         let mut permissions = cache_dir.metadata()?.permissions();
         permissions.set_mode(0o700);
         std::fs::set_permissions(&cache_dir, permissions)?;
 
-        debug!("Setting temp directory permissions");
+        trace!("Setting temp directory permissions");
         let mut permissions = temp_dir.metadata()?.permissions();
         permissions.set_mode(0o700);
         std::fs::set_permissions(&temp_dir, permissions)?;
 
-        debug!("Setting source directory permissions");
+        trace!("Setting source directory permissions");
         let mut permissions = source_dir.metadata()?.permissions();
         permissions.set_mode(0o700);
         std::fs::set_permissions(&source_dir, permissions)?;
 
-        debug!("Opening context file");
+        trace!("Opening context file");
         match File::options().read(true).write(true).open(&context_path) {
             Ok(file) => {
                 trace!("Using pre-existing context file: {context_path:?}");

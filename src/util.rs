@@ -122,7 +122,7 @@ fn unnamed_if_empty<S: AsRef<str> + ?Sized>(name: &S) -> String {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct Secret<T>(T);
 
 impl<T> Secret<T> {
