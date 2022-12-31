@@ -501,6 +501,7 @@ impl ProcessBuilder {
         stdin_mut.write_all(b"echo '")?;
         stdin_mut.write_all(SHELL_TOKEN_END_PREFIX.as_bytes())?;
         stdin_mut.write_all(token.as_bytes())?;
+        stdin_mut.write_all(b":'$?'")?;
         stdin_mut.write_all(SHELL_TOKEN_SUFFIX.as_bytes())?;
         stdin_mut.write_all(b"' | tee /dev/stderr\n")?;
         drop(stdin_mut);
@@ -684,20 +685,29 @@ impl Handle {
         };
 
         let mut output = Output::new();
+        stdout.rewind();
+        stderr.rewind();
         thread::scope(|s| -> Result<(), Error> {
-            let stdout_handle = s.spawn(|| {
-                stdout.rewind();
-                util::read_lines(stdout, token, |line| debug!("[{}] {line}", "stdout"))
-            });
-            let stderr_handle = s.spawn(|| {
-                stderr.rewind();
-                util::read_lines(stderr, token, |line| {
-                    debug!("{}", format!("[stderr] {line}").red())
-                })
-            });
+            let stdout_printer = |line: &str| debug!("[{}] {line}", "stdout");
+            let stderr_printer = |line: &str| debug!("{}", format!("[stderr] {line}").red());
 
-            output.stdout = stdout_handle.join().expect(EXPECT_THREAD_NOT_POSIONED)?;
-            output.stderr = stderr_handle.join().expect(EXPECT_THREAD_NOT_POSIONED)?;
+            if let Some(token) = token {
+                let stdout_handle =
+                    s.spawn(move || util::read_lines_until_token(stdout, token, stdout_printer));
+                let stderr_handle =
+                    s.spawn(move || util::read_lines_until_token(stderr, token, stderr_printer));
+
+                (output.code, output.stdout) =
+                    stdout_handle.join().expect(EXPECT_THREAD_NOT_POSIONED)?;
+                (output.code, output.stderr) =
+                    stderr_handle.join().expect(EXPECT_THREAD_NOT_POSIONED)?;
+            } else {
+                let stdout_handle = s.spawn(move || util::read_lines(stdout, stdout_printer));
+                let stderr_handle = s.spawn(move || util::read_lines(stderr, stderr_printer));
+
+                output.stdout = stdout_handle.join().expect(EXPECT_THREAD_NOT_POSIONED)?;
+                output.stderr = stderr_handle.join().expect(EXPECT_THREAD_NOT_POSIONED)?;
+            }
 
             Ok(())
         })?;
@@ -1041,6 +1051,9 @@ pub enum Error {
     #[error("The process was terminated by a signal")]
     Terminated,
 
+    #[error("Unexpected end of input")]
+    EndOfInput,
+
     #[error(transparent)]
     Prompt(#[from] prompt::Error),
 
@@ -1087,19 +1100,9 @@ mod util {
     }
 
     #[throws(Error)]
-    pub fn read_lines(reader: impl Read, token: Option<&str>, print_line: impl Fn(&str)) -> String {
+    pub fn read_lines(reader: impl Read, print_line: impl Fn(&str)) -> String {
         let mut buf_reader = BufReader::new(reader);
         let mut out = String::new();
-
-        let mut start_found = false;
-        let mut end_found = false;
-
-        let tokens = token.map(|token| {
-            (
-                format!("{SHELL_TOKEN_START_PREFIX}{token}{SHELL_TOKEN_SUFFIX}"),
-                format!("{SHELL_TOKEN_END_PREFIX}{token}{SHELL_TOKEN_SUFFIX}"),
-            )
-        });
 
         loop {
             let mut line = String::new();
@@ -1108,36 +1111,65 @@ mod util {
                 break;
             }
 
-            let mut line = &*line;
-
-            if let Some((start_token, end_token)) = &tokens {
-                if !start_found && line.contains(start_token) {
-                    start_found = true;
-                    continue;
-                }
-
-                if !end_found {
-                    if let Some((before, _)) = line.split_once(end_token) {
-                        end_found = true;
-                        line = before;
-                    }
-                }
-
-                if start_found && (!end_found || !line.is_empty()) {
-                    print_line(line.trim_end_matches('\n'));
-                    out.push_str(line);
-                }
-
-                if end_found {
-                    break;
-                }
-            } else {
-                print_line(line.trim_end_matches('\n'));
-                out.push_str(line);
-            }
+            print_line(line.trim_end_matches('\n'));
+            out.push_str(&line);
         }
 
         out
+    }
+
+    #[throws(Error)]
+    pub fn read_lines_until_token(
+        reader: impl Read,
+        token: &str,
+        print_line: impl Fn(&str),
+    ) -> (i32, String) {
+        let mut buf_reader = BufReader::new(reader);
+        let mut out = String::new();
+
+        let mut start_found = false;
+        let mut end_found = None;
+
+        let start_marker = format!("{SHELL_TOKEN_START_PREFIX}{token}{SHELL_TOKEN_SUFFIX}");
+        let end_marker_prefix = format!("{SHELL_TOKEN_END_PREFIX}{token}:");
+        let end_marker_suffix = SHELL_TOKEN_SUFFIX;
+
+        let code = loop {
+            let mut line = String::new();
+            let read = buf_reader.read_line(&mut line)?;
+            if read == 0 {
+                throw!(Error::EndOfInput);
+            }
+
+            let mut line = &*line;
+
+            if !start_found && line.contains(&start_marker) {
+                start_found = true;
+                continue;
+            }
+
+            if end_found.is_none() {
+                if let Some((before, rest)) = line.split_once(&end_marker_prefix) {
+                    if let Some((code, _)) = rest.split_once(end_marker_suffix) {
+                        if let Ok(code) = code.parse() {
+                            end_found.replace(code);
+                            line = before;
+                        }
+                    }
+                }
+            }
+
+            if start_found && (end_found.is_none() || !line.is_empty()) {
+                print_line(line.trim_end_matches('\n'));
+                out.push_str(line);
+            }
+
+            if let Some(code) = end_found {
+                break code;
+            }
+        };
+
+        (code, out)
     }
 }
 
