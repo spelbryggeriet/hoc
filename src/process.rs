@@ -185,13 +185,16 @@ impl ProcessBuilder {
                     // Ensure Docker is started.
                     for attempt in 1..=TIMEOUT_SECONDS / WAIT_SECONDS {
                         let output = ProcessBuilder::new("docker stats --no-stream")
+                            .local_mode()
                             .success_codes([0, 1])
                             .run_no_settings_update()?;
 
                         if output.code == 0 {
                             break;
                         } else if attempt == 1 {
-                            ProcessBuilder::new("open -a Docker").run_no_settings_update()?;
+                            ProcessBuilder::new("open -a Docker")
+                                .local_mode()
+                                .run_no_settings_update()?;
                         }
 
                         debug!("Waiting {WAIT_SECONDS} seconds");
@@ -391,7 +394,7 @@ pub struct Settings {
 impl Settings {
     const DEFAULT_SUDO: bool = false;
     const DEFAULT_CURRENT_DIR: Option<Cow<'static, str>> = None;
-    const DEFAULT_MODE: ProcessMode = ProcessMode::Local;
+    const DEFAULT_MODE: ProcessMode = ProcessMode::Container;
 
     fn new() -> Self {
         Self {
