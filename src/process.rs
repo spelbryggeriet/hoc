@@ -1,7 +1,7 @@
 use std::{
     borrow::Cow,
     env,
-    io::{self, Read, Write},
+    io::{self, Cursor, Read, Write},
     net::{IpAddr, TcpStream},
     process::Stdio,
     sync::{Arc, Mutex, MutexGuard},
@@ -20,6 +20,10 @@ use crate::{
     prompt,
     util::Opt,
 };
+
+const SHELL_TOKEN_START_PREFIX: &str = "###[hoc::shell::start=";
+const SHELL_TOKEN_END_PREFIX: &str = "###[hoc::shell::end=";
+const SHELL_TOKEN_SUFFIX: &str = "]###";
 
 fn current_ssh_session() -> MutexGuard<'static, Option<(Cow<'static, str>, ssh2::Session)>> {
     type NodeSession = (Cow<'static, str>, ssh2::Session);
@@ -122,8 +126,14 @@ impl ProcessBuilder {
     }
 
     #[allow(unused)]
-    fn shell_mode(mut self, outer_mode: ProcessMode) -> Self {
-        self.settings.shell_mode(outer_mode);
+    fn shell_mode(
+        mut self,
+        outer_mode: ProcessMode,
+        stdin: Stdin,
+        stdout: Rewindable<Stdout>,
+        stderr: Rewindable<Stderr>,
+    ) -> Self {
+        self.settings.shell_mode(outer_mode, stdin, stdout, stderr);
         self
     }
 
@@ -148,15 +158,6 @@ impl ProcessBuilder {
         self
     }
 
-    #[allow(unused)]
-    fn to_raw(&self) -> Cow<str> {
-        if self.settings.is_sudo() {
-            format!("sudo -kSp '' {}", self.raw).into()
-        } else {
-            Cow::Borrowed(&self.raw)
-        }
-    }
-
     #[throws(Error)]
     fn spawn(mut self) -> Process {
         self.update_settings();
@@ -178,7 +179,7 @@ impl ProcessBuilder {
             let password = match self.settings.get_mode() {
                 ProcessMode::Local => get_local_password()?,
                 ProcessMode::Remote { .. } => get_remote_password()?,
-                ProcessMode::Shell { mode } => match &**mode {
+                ProcessMode::Shell { mode, .. } => match &**mode {
                     ProcessMode::Local => get_local_password()?,
                     ProcessMode::Remote { .. } => get_remote_password()?,
                     ProcessMode::Container => unreachable!(),
@@ -274,7 +275,17 @@ impl ProcessBuilder {
                     }
                 }
             }
-            ProcessMode::Shell { .. } => self.spawn_shell(password_to_cache)?,
+            ProcessMode::Shell {
+                stdin,
+                stdout,
+                stderr,
+                ..
+            } => {
+                let stdin = stdin.clone();
+                let stdout = stdout.clone();
+                let stderr = stderr.clone();
+                self.spawn_in_shell(stdin, stdout, stderr, password_to_cache)?
+            }
         }
     }
 
@@ -286,7 +297,7 @@ impl ProcessBuilder {
     }
 
     #[throws(Error)]
-    pub fn spawn_local(self, password_to_cache: Option<Secret<String>>) -> Process {
+    fn spawn_local(self, password_to_cache: Option<Secret<String>>) -> Process {
         let mut cmd = std::process::Command::new("sh");
         cmd.args(["-c", &*util::get_runnable_raw(&self)])
             .stdin(Stdio::piped())
@@ -299,18 +310,27 @@ impl ProcessBuilder {
 
         let mut child = cmd.spawn()?;
 
+        let mut stdin = child.stdin.take().expect("stdin should not be taken");
+        if !self.input_data.is_empty() {
+            stdin.write_all(self.input_data.as_bytes())?;
+        }
+
         Process {
             builder: self,
-            stdin: Stdin::Cmd(child.stdin.take().expect("stdin should not be taken")),
-            stdout: Stdout::Cmd(child.stdout.take().expect("stdout should not be taken")),
-            stderr: Stderr::Cmd(child.stderr.take().expect("stderr should not be taken")),
+            stdin: Stdin::Std(Arc::new(Mutex::new(stdin))),
+            stdout: Rewindable::new(Stdout::Std(Arc::new(Mutex::new(
+                child.stdout.take().expect("stdout should not be taken"),
+            )))),
+            stderr: Rewindable::new(Stderr::Std(Arc::new(Mutex::new(
+                child.stderr.take().expect("stderr should not be taken"),
+            )))),
             handle: Handle::Cmd(child),
             password_to_cache,
         }
     }
 
     #[throws(Error)]
-    pub fn spawn_container(self, password_to_cache: Option<Secret<String>>) -> Process {
+    fn spawn_container(self, password_to_cache: Option<Secret<String>>) -> Process {
         let raw: Cow<_> = if let Some(current_dir) = &self.settings.get_current_dir() {
             format!("cd {current_dir} ; {}", util::get_runnable_raw(&self)).into()
         } else {
@@ -320,6 +340,7 @@ impl ProcessBuilder {
         let mut cmd = std::process::Command::new("docker");
         cmd.args([
             "run",
+            "-i",
             "--mount",
             &format!(
                 "type=bind,source={},target={}",
@@ -346,10 +367,6 @@ impl ProcessBuilder {
             ),
         ]);
 
-        if !self.input_data.is_empty() {
-            cmd.arg("-i");
-        }
-
         let mut child = cmd
             .args([&container_image(), "sh", "-c", &*raw])
             .stdin(Stdio::piped())
@@ -357,18 +374,27 @@ impl ProcessBuilder {
             .stderr(Stdio::piped())
             .spawn()?;
 
+        let mut stdin = child.stdin.take().expect("stdin should not be taken");
+        if !self.input_data.is_empty() {
+            stdin.write_all(self.input_data.as_bytes())?;
+        }
+
         Process {
             builder: self,
-            stdin: Stdin::Cmd(child.stdin.take().expect("stdin should not be taken")),
-            stdout: Stdout::Cmd(child.stdout.take().expect("stdout should not be taken")),
-            stderr: Stderr::Cmd(child.stderr.take().expect("stderr should not be taken")),
+            stdin: Stdin::Std(Arc::new(Mutex::new(stdin))),
+            stdout: Rewindable::new(Stdout::Std(Arc::new(Mutex::new(
+                child.stdout.take().expect("stdout should not be taken"),
+            )))),
+            stderr: Rewindable::new(Stderr::Std(Arc::new(Mutex::new(
+                child.stderr.take().expect("stderr should not be taken"),
+            )))),
             handle: Handle::Cmd(child),
             password_to_cache,
         }
     }
 
     #[throws(Error)]
-    pub fn spawn_remote(
+    fn spawn_remote(
         self,
         session: &ssh2::Session,
         password_to_cache: Option<Secret<String>>,
@@ -381,18 +407,28 @@ impl ProcessBuilder {
             util::get_runnable_raw(&self)
         };
 
+        let raw = if !self.input_data.is_empty() {
+            if !self.input_data.ends_with('\n') {
+                format!("{raw} <<EOT\n{}\nEOT", self.input_data).into()
+            } else {
+                format!("{raw} <<EOT\n{}EOT", self.input_data).into()
+            }
+        } else {
+            raw
+        };
+
         channel.exec(&raw)?;
 
-        let stdout = channel.stream(0);
-        let stderr = channel.stderr();
+        let stdout = Arc::new(Mutex::new(channel.stream(0)));
+        let stderr = Arc::new(Mutex::new(channel.stderr()));
         let handle = Arc::new(Mutex::new(channel));
         let stdin = Arc::clone(&handle);
 
         Process {
             builder: self,
             stdin: Stdin::Ssh(stdin),
-            stdout: Stdout::Ssh(stdout),
-            stderr: Stderr::Ssh(stderr),
+            stdout: Rewindable::new(Stdout::Ssh(stdout)),
+            stderr: Rewindable::new(Stderr::Ssh(stderr)),
             handle: Handle::Ssh(handle),
             password_to_cache,
         }
@@ -400,16 +436,91 @@ impl ProcessBuilder {
 
     #[allow(unused)]
     #[throws(Error)]
-    pub fn spawn_shell(self, password_to_cache: Option<Secret<String>>) -> Process {
-        todo!()
+    fn spawn_in_shell(
+        self,
+        stdin: Stdin,
+        stdout: Rewindable<Stdout>,
+        stderr: Rewindable<Stderr>,
+        password_to_cache: Option<Secret<String>>,
+    ) -> Process {
+        enum StdinLock<'a> {
+            Std(MutexGuard<'a, std::process::ChildStdin>),
+            Ssh(MutexGuard<'a, ssh2::Channel>),
+        }
+
+        impl Write for StdinLock<'_> {
+            #[throws(io::Error)]
+            fn write(&mut self, buf: &[u8]) -> usize {
+                match self {
+                    Self::Std(stdin) => stdin.write(buf)?,
+                    Self::Ssh(channel) => channel.write(buf)?,
+                }
+            }
+
+            #[throws(io::Error)]
+            fn flush(&mut self) {
+                match self {
+                    Self::Std(stdin) => stdin.flush()?,
+                    Self::Ssh(channel) => channel.flush()?,
+                }
+            }
+        }
+
+        let mut stdin_mut = match &stdin {
+            Stdin::Std(stdin) => StdinLock::Std(stdin.lock().expect(EXPECT_THREAD_NOT_POSIONED)),
+            Stdin::Ssh(channel) => {
+                StdinLock::Ssh(channel.lock().expect(EXPECT_THREAD_NOT_POSIONED))
+            }
+        };
+
+        let token = crate::util::random_string(crate::util::RAND_CHARS, 10);
+
+        if let Some(current_dir) = &self.settings.get_current_dir() {
+            stdin_mut.write_all(b"cd ")?;
+            stdin_mut.write_all(current_dir.as_bytes())?;
+            stdin_mut.write_all(b"\n")?;
+        };
+
+        stdin_mut.write_all(b"echo '")?;
+        stdin_mut.write_all(SHELL_TOKEN_START_PREFIX.as_bytes())?;
+        stdin_mut.write_all(token.as_bytes())?;
+        stdin_mut.write_all(SHELL_TOKEN_SUFFIX.as_bytes())?;
+        stdin_mut.write_all(b"' | tee /dev/stderr\n")?;
+
+        stdin_mut.write_all(util::get_runnable_raw(&self).as_bytes())?;
+        if !self.input_data.is_empty() {
+            stdin_mut.write_all(b" <<EOT\n")?;
+            stdin_mut.write_all(self.input_data.as_bytes())?;
+            if !self.input_data.ends_with('\n') {
+                stdin_mut.write_all(b"\n")?;
+            }
+            stdin_mut.write_all(b"EOT")?;
+        }
+        stdin_mut.write_all(b"\n")?;
+
+        stdin_mut.write_all(b"echo '")?;
+        stdin_mut.write_all(SHELL_TOKEN_END_PREFIX.as_bytes())?;
+        stdin_mut.write_all(token.as_bytes())?;
+        stdin_mut.write_all(SHELL_TOKEN_SUFFIX.as_bytes())?;
+        stdin_mut.write_all(b"' | tee /dev/stderr\n")?;
+        drop(stdin_mut);
+
+        Process {
+            builder: self,
+            stdin,
+            stdout,
+            stderr,
+            handle: Handle::Shell(token),
+            password_to_cache,
+        }
     }
 }
 
 pub struct Process {
     builder: ProcessBuilder,
     stdin: Stdin,
-    stdout: Stdout,
-    stderr: Stderr,
+    stdout: Rewindable<Stdout>,
+    stderr: Rewindable<Stderr>,
     handle: Handle,
     password_to_cache: Option<Secret<String>>,
 }
@@ -420,19 +531,14 @@ impl Process {
         let raw = self.builder.raw.clone();
         let is_sudo = self.builder.settings.is_sudo();
 
-        let mut output = self.handle.join(
-            self.stdin,
-            self.stdout,
-            self.stderr,
-            self.builder.input_data.as_bytes(),
-        )?;
+        let mut output = self.handle.join(self.stdin, self.stdout, self.stderr)?;
 
         if self.builder.success_codes.contains(&output.code) {
             if let Some(password) = self.password_to_cache {
                 match self.builder.settings.get_mode() {
                     ProcessMode::Local => kv!("admin/passwords/local"),
                     ProcessMode::Remote { .. } => kv!("admin/passwords/remote"),
-                    ProcessMode::Shell { mode } => match &**mode {
+                    ProcessMode::Shell { mode, .. } => match &**mode {
                         ProcessMode::Local => kv!("admin/passwords/local"),
                         ProcessMode::Remote { .. } => kv!("admin/passwords/remote"),
                         ProcessMode::Container => unreachable!(),
@@ -558,21 +664,35 @@ impl Process {
 enum Handle {
     Cmd(std::process::Child),
     Ssh(Arc<Mutex<ssh2::Channel>>),
+    Shell(String),
 }
 
 impl Handle {
     #[throws(Error)]
-    fn join(self, mut stdin: Stdin, stdout: Stdout, stderr: Stderr, input_data: &[u8]) -> Output {
-        if !input_data.is_empty() {
-            stdin.write_all(input_data)?;
-        }
+    fn join(
+        self,
+        stdin: Stdin,
+        mut stdout: Rewindable<Stdout>,
+        mut stderr: Rewindable<Stderr>,
+    ) -> Output {
+        drop(stdin);
+
+        let token = if let Self::Shell(token) = &self {
+            Some(token.as_str())
+        } else {
+            None
+        };
 
         let mut output = Output::new();
         thread::scope(|s| -> Result<(), Error> {
-            let stdout_handle =
-                s.spawn(|| util::read_lines(stdout, |line| debug!("[stdout] {line}")));
-            let stderr_handle =
-                s.spawn(|| util::read_lines(stderr, |line| debug!("[stderr] {line}")));
+            let stdout_handle = s.spawn(|| {
+                stdout.rewind();
+                util::read_lines(stdout, token, |line| debug!("[stdout] {line}"))
+            });
+            let stderr_handle = s.spawn(|| {
+                stderr.rewind();
+                util::read_lines(stderr, token, |line| debug!("[stderr] {line}"))
+            });
 
             output.stdout = stdout_handle.join().expect(EXPECT_THREAD_NOT_POSIONED)?;
             output.stderr = stderr_handle.join().expect(EXPECT_THREAD_NOT_POSIONED)?;
@@ -594,14 +714,16 @@ impl Handle {
                 channel.wait_close()?;
                 output.code = channel.exit_status()?;
             }
+            _ => (),
         }
 
         output
     }
 }
 
+#[derive(Clone)]
 enum Stdin {
-    Cmd(std::process::ChildStdin),
+    Std(Arc<Mutex<std::process::ChildStdin>>),
     Ssh(Arc<Mutex<ssh2::Channel>>),
 }
 
@@ -609,7 +731,7 @@ impl Write for Stdin {
     #[throws(io::Error)]
     fn write(&mut self, buf: &[u8]) -> usize {
         match self {
-            Self::Cmd(stdin) => stdin.write(buf)?,
+            Self::Std(stdin) => stdin.lock().expect(EXPECT_THREAD_NOT_POSIONED).write(buf)?,
             Self::Ssh(channel) => channel
                 .lock()
                 .expect(EXPECT_THREAD_NOT_POSIONED)
@@ -620,7 +742,10 @@ impl Write for Stdin {
     #[throws(io::Error)]
     fn write_all(&mut self, buf: &[u8]) {
         match self {
-            Self::Cmd(stdin) => stdin.write_all(buf)?,
+            Self::Std(stdin) => stdin
+                .lock()
+                .expect(EXPECT_THREAD_NOT_POSIONED)
+                .write_all(buf)?,
             Self::Ssh(channel) => channel
                 .lock()
                 .expect(EXPECT_THREAD_NOT_POSIONED)
@@ -631,38 +756,90 @@ impl Write for Stdin {
     #[throws(io::Error)]
     fn flush(&mut self) {
         match self {
-            Self::Cmd(stdin) => stdin.flush()?,
+            Self::Std(stdin) => stdin.lock().expect(EXPECT_THREAD_NOT_POSIONED).flush()?,
             Self::Ssh(channel) => channel.lock().expect(EXPECT_THREAD_NOT_POSIONED).flush()?,
         }
     }
 }
 
+#[derive(Clone)]
+struct Rewindable<T> {
+    buffer: Arc<Mutex<Vec<u8>>>,
+    cursor: usize,
+    inner: T,
+}
+
+impl<T> Rewindable<T> {
+    fn new(inner: T) -> Self {
+        Self {
+            buffer: Arc::new(Mutex::new(Vec::new())),
+            cursor: 0,
+            inner,
+        }
+    }
+
+    fn rewind(&mut self) {
+        self.cursor = 0;
+    }
+}
+
+impl<T> Read for Rewindable<T>
+where
+    T: Read,
+{
+    #[throws(io::Error)]
+    fn read(&mut self, buf: &mut [u8]) -> usize {
+        let mut buffer = self.buffer.lock().expect(EXPECT_THREAD_NOT_POSIONED);
+
+        let read_buffered = Cursor::new(&buffer[self.cursor..]).read(buf)?;
+        self.cursor += read_buffered;
+
+        let read_inner = if read_buffered < buf.len() {
+            let read_inner = self.inner.read(&mut buf[read_buffered..])?;
+
+            let buffer_len = buffer.len();
+            buffer.resize(buffer_len + read_inner, 0);
+            Cursor::new(&buf[read_buffered..])
+                .read_exact(&mut buffer[self.cursor..self.cursor + read_inner])?;
+            self.cursor += read_inner;
+
+            read_inner
+        } else {
+            0
+        };
+
+        read_buffered + read_inner
+    }
+}
+
+#[derive(Clone)]
 enum Stdout {
-    Cmd(std::process::ChildStdout),
-    Ssh(ssh2::Stream),
+    Std(Arc<Mutex<std::process::ChildStdout>>),
+    Ssh(Arc<Mutex<ssh2::Stream>>),
 }
 
 impl Read for Stdout {
     #[throws(io::Error)]
     fn read(&mut self, buf: &mut [u8]) -> usize {
         match self {
-            Self::Cmd(stdout) => stdout.read(buf)?,
-            Self::Ssh(stream) => stream.read(buf)?,
+            Self::Std(stdout) => stdout.lock().expect(EXPECT_THREAD_NOT_POSIONED).read(buf)?,
+            Self::Ssh(stream) => stream.lock().expect(EXPECT_THREAD_NOT_POSIONED).read(buf)?,
         }
     }
 }
 
+#[derive(Clone)]
 enum Stderr {
-    Cmd(std::process::ChildStderr),
-    Ssh(ssh2::Stream),
+    Std(Arc<Mutex<std::process::ChildStderr>>),
+    Ssh(Arc<Mutex<ssh2::Stream>>),
 }
 
 impl Read for Stderr {
     #[throws(io::Error)]
     fn read(&mut self, buf: &mut [u8]) -> usize {
         match self {
-            Self::Cmd(stderr) => stderr.read(buf)?,
-            Self::Ssh(stream) => stream.read(buf)?,
+            Self::Std(stderr) => stderr.lock().expect(EXPECT_THREAD_NOT_POSIONED).read(buf)?,
+            Self::Ssh(stream) => stream.lock().expect(EXPECT_THREAD_NOT_POSIONED).read(buf)?,
         }
     }
 }
@@ -706,20 +883,18 @@ impl Shell<Idle> {
 impl Shell<Running> {
     #[throws(Error)]
     pub fn run(&self, process: ProcessBuilder) -> Output {
-        process.shell_mode(self.state.mode.clone()).run()?
+        process
+            .shell_mode(
+                self.state.mode.clone(),
+                self.state.process.stdin.clone(),
+                self.state.process.stdout.clone(),
+                self.state.process.stderr.clone(),
+            )
+            .run()?
     }
 
     #[throws(Error)]
-    pub fn exit(mut self) -> Output {
-        self.run(ProcessBuilder::new("exit 0"))?;
-        match &mut self.state.process.stdin {
-            Stdin::Ssh(channel) => channel
-                .lock()
-                .expect(EXPECT_THREAD_NOT_POSIONED)
-                .send_eof()?,
-            Stdin::Cmd(_) => (),
-        }
-
+    pub fn exit(self) -> Output {
         self.state.process.join()?
     }
 }
@@ -776,7 +951,7 @@ impl Settings {
     }
 
     pub fn sudo(&mut self) -> &mut Self {
-        if self.get_mode() != &ProcessMode::Container {
+        if !matches!(self.get_mode(), ProcessMode::Container) {
             self.sudo.replace(true);
         }
         self
@@ -819,9 +994,18 @@ impl Settings {
         self
     }
 
-    fn shell_mode(&mut self, outer_mode: ProcessMode) -> &mut Self {
+    fn shell_mode(
+        &mut self,
+        outer_mode: ProcessMode,
+        stdin: Stdin,
+        stdout: Rewindable<Stdout>,
+        stderr: Rewindable<Stderr>,
+    ) -> &mut Self {
         self.mode.replace(ProcessMode::Shell {
             mode: Box::new(outer_mode),
+            stdin,
+            stdout,
+            stderr,
         });
         self
     }
@@ -831,7 +1015,7 @@ impl Settings {
     }
 }
 
-#[derive(Default, Clone, PartialEq, Eq)]
+#[derive(Default, Clone)]
 enum ProcessMode {
     Local,
     #[default]
@@ -841,6 +1025,9 @@ enum ProcessMode {
     },
     Shell {
         mode: Box<ProcessMode>,
+        stdin: Stdin,
+        stdout: Rewindable<Stdout>,
+        stderr: Rewindable<Stderr>,
     },
 }
 
@@ -898,19 +1085,54 @@ mod util {
     }
 
     #[throws(Error)]
-    pub fn read_lines(reader: impl Read, print_line: impl Fn(&str)) -> String {
+    pub fn read_lines(reader: impl Read, token: Option<&str>, print_line: impl Fn(&str)) -> String {
         let mut buf_reader = BufReader::new(reader);
         let mut out = String::new();
 
+        let mut start_found = false;
+        let mut end_found = false;
+
+        let tokens = token.map(|token| {
+            (
+                format!("{SHELL_TOKEN_START_PREFIX}{token}{SHELL_TOKEN_SUFFIX}"),
+                format!("{SHELL_TOKEN_END_PREFIX}{token}{SHELL_TOKEN_SUFFIX}"),
+            )
+        });
+
         loop {
             let mut line = String::new();
-            let written = buf_reader.read_line(&mut line)?;
-            if written == 0 {
+            let read = buf_reader.read_line(&mut line)?;
+            if read == 0 {
                 break;
             }
 
-            print_line(line.trim_end_matches('\n'));
-            out.push_str(&line);
+            let mut line = &*line;
+
+            if let Some((start_token, end_token)) = &tokens {
+                if !start_found && line.contains(start_token) {
+                    start_found = true;
+                    continue;
+                }
+
+                if !end_found {
+                    if let Some((before, _)) = line.split_once(end_token) {
+                        end_found = true;
+                        line = before;
+                    }
+                }
+
+                if start_found && (!end_found || !line.is_empty()) {
+                    print_line(line.trim_end_matches('\n'));
+                    out.push_str(line);
+                }
+
+                if end_found {
+                    break;
+                }
+            } else {
+                print_line(line.trim_end_matches('\n'));
+                out.push_str(line);
+            }
         }
 
         out

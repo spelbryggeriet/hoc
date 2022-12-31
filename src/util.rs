@@ -18,6 +18,10 @@ use crate::{
     prelude::*,
 };
 
+pub const RAND_CHARS: &str = "ABCDEFGHIJKLMNOPQRSTUVXYZ\
+                              abcdefghijklmnopqrstuvxyz\
+                              0123456789";
+
 pub fn from_arguments_to_str_cow(arguments: Arguments) -> Cow<'static, str> {
     if let Some(s) = arguments.as_str() {
         Cow::Borrowed(s)
