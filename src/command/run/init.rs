@@ -10,11 +10,13 @@ pub fn run(
     gateway: IpAddr,
     admin_username: String,
     admin_password: Secret<String>,
+    container_registry: String,
 ) {
     store_network_info(node_addresses, gateway)?;
     store_admin_user(admin_username.clone())?;
     let (pub_key, priv_key) = generate_ssh_keys(admin_username, admin_password.as_deref())?;
     store_ssh_keys(&pub_key, &priv_key)?;
+    store_registry_info(container_registry)?;
 }
 
 #[throws(anyhow::Error)]
@@ -61,4 +63,11 @@ fn store_ssh_keys(pub_key: &str, priv_key: &str) {
 fn create_file_with_content(key: &'static str, content: &str) {
     let mut file = files!("{key}").create()?;
     file.write_all(content.as_bytes())?;
+}
+
+#[throws(anyhow::Error)]
+fn store_registry_info(container_registry: String) {
+    progress!("Storing container information");
+
+    kv!("registry/prefix").put(container_registry)?;
 }

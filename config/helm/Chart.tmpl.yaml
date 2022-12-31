@@ -1,0 +1,7 @@
+apiVersion: v2
+name: {name}
+description: A Helm chart for {name}
+
+type: application
+version: 0.0.5
+appVersion: {app_version | quote}

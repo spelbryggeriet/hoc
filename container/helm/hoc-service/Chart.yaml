@@ -1,7 +1,0 @@
-apiVersion: v2
-name: untitled
-description: A Helm chart for untitled
-
-type: application
-version: 0.0.5
-appVersion: "unversioned"

@@ -30,6 +30,10 @@ commands_summary! {
             long_help = "The password will be used as the node user password, as well as the \
                 passphrase for the SSH keypair."
         }
+        container_registry {
+            default = "docker.io/library",
+            help = "The prefix for the container registry where images are pulled from",
+        }
     }
     node_deploy {
         node_name {
@@ -136,6 +140,16 @@ pub struct InitCommand {
     #[clap(help = help::init::admin_password(), long_help = long_help::init::admin_password(), long)]
     admin_password: Option<Secret<String>>,
 
+    #[clap(
+        help = help::init::container_registry(),
+        long,
+        default_missing_value = default::init::container_registry(),
+        num_args = 0..=1,
+        require_equals = true,
+        default_value_if("defaults", "true", Some(default::init::container_registry())),
+    )]
+    container_registry: Option<String>,
+
     /// Skip prompts for fields that have defaults
     ///
     /// This is equivalent to providing all defaultable flags without a value.
@@ -209,7 +223,15 @@ impl Command {
                 let admin_username = get_arg!(init_command.admin_username)?;
                 let admin_password = get_secret_arg!(init_command.admin_password)?;
 
-                init::run(node_addresses, gateway, admin_username, admin_password)?;
+                let container_registry = get_arg!(init_command.container_registry, default = init)?;
+
+                init::run(
+                    node_addresses,
+                    gateway,
+                    admin_username,
+                    admin_password,
+                    container_registry,
+                )?;
             }
 
             SdCard(sd_card_command) => match sd_card_command {

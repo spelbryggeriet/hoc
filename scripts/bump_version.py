@@ -100,7 +100,7 @@ def bump_version(bump_comp_idx, repository_owner):
 
     update_manifest(current_version, next_version, "Cargo.toml")
     update_changelog(next_version, "CHANGELOG.md", repository_owner)
-    update_helm_chart(current_version, next_version, "container/helm/hoc-service/Chart.yaml")
+    update_helm_chart(current_version, next_version, "config/helm/hoc-service/Chart.tmpl.yaml")
 
     return next_version
 
