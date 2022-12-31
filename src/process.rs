@@ -578,14 +578,14 @@ impl Process {
             let stdout = output.stdout.trim();
             if !stdout.is_empty() {
                 for line in stdout.lines() {
-                    info!("[stdout] {line}");
+                    info!("[{}] {line}", "stdout");
                 }
             }
 
             let stderr = output.stderr.trim();
             if !stderr.is_empty() {
                 for line in stderr.lines() {
-                    info!("[stderr] {line}");
+                    info!("{}", format!("[stderr] {line}").red());
                 }
             }
 
@@ -687,11 +687,13 @@ impl Handle {
         thread::scope(|s| -> Result<(), Error> {
             let stdout_handle = s.spawn(|| {
                 stdout.rewind();
-                util::read_lines(stdout, token, |line| debug!("[stdout] {line}"))
+                util::read_lines(stdout, token, |line| debug!("[{}] {line}", "stdout"))
             });
             let stderr_handle = s.spawn(|| {
                 stderr.rewind();
-                util::read_lines(stderr, token, |line| debug!("[stderr] {line}"))
+                util::read_lines(stderr, token, |line| {
+                    debug!("{}", format!("[stderr] {line}").red())
+                })
             });
 
             output.stdout = stdout_handle.join().expect(EXPECT_THREAD_NOT_POSIONED)?;

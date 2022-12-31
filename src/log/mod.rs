@@ -1,6 +1,7 @@
 use std::fmt;
 
 use chrono::Utc;
+use crossterm::style::{Color, SetForegroundColor};
 pub use logger::Logger;
 pub use progress::pause_rendering;
 
@@ -13,6 +14,12 @@ use self::logger::{LoggerBuffer, LoggerMeta};
 
 mod logger;
 mod progress;
+
+pub const ERROR_COLOR: SetForegroundColor = SetForegroundColor(Color::Red);
+pub const WARN_COLOR: SetForegroundColor = SetForegroundColor(Color::Yellow);
+pub const INFO_COLOR: SetForegroundColor = SetForegroundColor(Color::White);
+pub const DEBUG_COLOR: SetForegroundColor = SetForegroundColor(Color::DarkMagenta);
+pub const TRACE_COLOR: SetForegroundColor = SetForegroundColor(Color::DarkGrey);
 
 #[throws(Error)]
 pub fn init() {
