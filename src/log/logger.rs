@@ -4,11 +4,12 @@ use std::{
     fs::{self, File},
     io::Write,
     panic,
-    sync::Mutex,
+    sync::{Mutex, MutexGuard},
 };
 
 use chrono::{DateTime, Utc};
 use log_facade::{Level, LevelFilter, Log, Metadata, Record};
+use once_cell::sync::OnceCell;
 
 use super::{progress::Progress, Error};
 use crate::prelude::*;
@@ -22,7 +23,6 @@ const MAX_DEFAULT_LEVEL: Level = if cfg!(debug_assertions) {
 pub struct Logger {
     level: Level,
     start_time: DateTime<Utc>,
-    buffer: Mutex<LoggerBuffer>,
 }
 
 impl Logger {
@@ -43,7 +43,6 @@ impl Logger {
         let logger = Self {
             level,
             start_time: Utc::now(),
-            buffer: Mutex::new(LoggerBuffer::new()),
         };
 
         log_facade::set_boxed_logger(Box::new(logger))?;
@@ -67,50 +66,81 @@ impl Log for Logger {
             Progress::get_or_init().push_simple_log(record.level(), args_str.clone());
         }
 
-        let mut buffer_lock = self.buffer.lock().unwrap_or_else(|err| panic!("{err}"));
-        buffer_lock.messages.push((
-            LoggerMeta {
-                timestamp: Utc::now(),
-                level: record.level(),
-                module: record.module_path().map(str::to_owned),
-            },
-            args_str,
-        ));
-
-        if buffer_lock.messages.len() >= 100 {
-            drop(buffer_lock);
-            self.flush();
-        }
+        LoggerBuffer::get_or_init()
+            .push(
+                LoggerMeta {
+                    timestamp: Utc::now(),
+                    level: record.level(),
+                    module: record.module_path().map(str::to_owned),
+                },
+                args_str,
+                self.start_time,
+            )
+            .unwrap_or_else(|e| panic!("{e}"));
     }
 
     fn flush(&self) {
-        let home_dir = env::var("HOME").expect("HOME environment variable should exist");
+        LoggerBuffer::get_or_init()
+            .flush(self.start_time)
+            .unwrap_or_else(|e| panic!("{e}"));
+    }
+}
+
+struct LoggerBuffer {
+    messages: Vec<(LoggerMeta, String)>,
+    longest_mod_name: usize,
+}
+
+impl LoggerBuffer {
+    const fn new() -> Self {
+        Self {
+            messages: Vec::new(),
+            longest_mod_name: 0,
+        }
+    }
+
+    pub fn get_or_init() -> MutexGuard<'static, Self> {
+        static LOGGER_BUFFER: OnceCell<Mutex<LoggerBuffer>> = OnceCell::new();
+
+        LOGGER_BUFFER
+            .get_or_init(|| Mutex::new(Self::new()))
+            .lock()
+            .expect(EXPECT_THREAD_NOT_POSIONED)
+    }
+
+    #[throws(anyhow::Error)]
+    pub fn push(&mut self, meta: LoggerMeta, args: String, start_time: DateTime<Utc>) {
+        self.messages.push((meta, args));
+
+        if self.messages.len() >= 100 {
+            self.flush(start_time)?;
+        }
+    }
+
+    #[throws(anyhow::Error)]
+    pub fn flush(&mut self, start_time: DateTime<Utc>) {
+        let home_dir = env::var("HOME").context("HOME environment variable should exist")?;
         let log_dir = format!(
             "{home_dir}/.local/share/hoc/logs/{}",
-            self.start_time.format("%Y/%m/%d"),
+            start_time.format("%Y/%m/%d"),
         );
-        fs::create_dir_all(&log_dir).expect("directories should be able to be created");
+        fs::create_dir_all(&log_dir).context("directories should be able to be created")?;
         let mut file = File::options()
             .create(true)
             .append(true)
-            .open(format!(
-                "{log_dir}/{}.txt",
-                self.start_time.format("%T.%6f")
-            ))
-            .expect("file should be unique");
+            .open(format!("{log_dir}/{}.txt", start_time.format("%T.%6f")))
+            .context("file should be unique")?;
 
         {
-            let mut buffer_lock = self.buffer.lock().unwrap_or_else(|err| panic!("{err}"));
-            let mut longest_mod_name = buffer_lock.longest_mod_name.max(
-                buffer_lock
-                    .messages
+            let mut longest_mod_name = self.longest_mod_name.max(
+                self.messages
                     .iter()
                     .filter_map(|(meta, _)| meta.module.as_ref().map(String::len))
                     .max()
                     .unwrap_or(0),
             );
 
-            for (meta, message) in buffer_lock.messages.drain(..) {
+            for (meta, message) in self.messages.drain(..) {
                 let res = if let Some(module) = &meta.module {
                     if module.len() > longest_mod_name {
                         longest_mod_name = module.len();
@@ -142,21 +172,7 @@ impl Log for Logger {
                 }
             }
 
-            buffer_lock.longest_mod_name = longest_mod_name;
-        }
-    }
-}
-
-struct LoggerBuffer {
-    messages: Vec<(LoggerMeta, String)>,
-    longest_mod_name: usize,
-}
-
-impl LoggerBuffer {
-    const fn new() -> Self {
-        Self {
-            messages: Vec::new(),
-            longest_mod_name: 0,
+            self.longest_mod_name = longest_mod_name;
         }
     }
 }

@@ -52,7 +52,7 @@ impl Progress {
     pub fn get_or_init() -> &'static Self {
         static PROGRESS: OnceCell<Progress> = OnceCell::new();
 
-        PROGRESS.get_or_init(Progress::new)
+        PROGRESS.get_or_init(Self::new)
     }
 
     fn new() -> Self {
