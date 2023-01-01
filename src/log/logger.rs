@@ -11,8 +11,10 @@ use chrono::{DateTime, Utc};
 use log_facade::{Level, LevelFilter, Log, Metadata, Record};
 use once_cell::sync::OnceCell;
 
-use super::{progress::Progress, Error};
-use crate::prelude::*;
+use crate::{
+    log::{self, progress::Progress, Error},
+    prelude::*,
+};
 
 const MAX_DEFAULT_LEVEL: Level = if cfg!(debug_assertions) {
     Level::Trace
@@ -131,49 +133,49 @@ impl LoggerBuffer {
             .open(format!("{log_dir}/{}.txt", start_time.format("%T.%6f")))
             .context("file should be unique")?;
 
-        {
-            let mut longest_mod_name = self.longest_mod_name.max(
-                self.messages
-                    .iter()
-                    .filter_map(|(meta, _)| meta.module.as_deref().map(str::len))
-                    .max()
-                    .unwrap_or(0),
-            );
+        let mut longest_mod_name = self.longest_mod_name.max(
+            self.messages
+                .iter()
+                .filter_map(|(meta, _)| meta.module.as_deref().map(str::len))
+                .max()
+                .unwrap_or(0),
+        );
 
-            for (meta, message) in self.messages.drain(..) {
-                let res = if let Some(module) = &meta.module {
-                    if module.len() > longest_mod_name {
-                        longest_mod_name = module.len();
-                    }
+        for (meta, message) in self.messages.drain(..) {
+            let color = log::level_color(meta.level);
 
-                    writeln!(
-                        file,
-                        "[{time:<27} {level:<7} {module:<longest_mod_name$}] {message}",
-                        level = meta.level,
-                        time = format!("{:?}", meta.timestamp),
-                    )
-                } else {
-                    writeln!(
-                        file,
-                        "[{time:<27} {level:<7}{empty_mod:mod_len$}] {message}",
-                        empty_mod = "",
-                        level = meta.level,
-                        mod_len = if longest_mod_name > 0 {
-                            longest_mod_name + 1
-                        } else {
-                            0
-                        },
-                        time = format!("{:?}", meta.timestamp),
-                    )
-                };
-
-                if let Err(err) = res {
-                    panic!("{err}");
+            let res = if let Some(module) = &meta.module {
+                if module.len() > longest_mod_name {
+                    longest_mod_name = module.len();
                 }
-            }
 
-            self.longest_mod_name = longest_mod_name;
+                writeln!(
+                    file,
+                    "{color}[{time:<27} {level:<7} {module:<longest_mod_name$}] {message}{CLEAR_COLOR}",
+                    level = meta.level,
+                    time = format!("{:?}", meta.timestamp),
+                )
+            } else {
+                writeln!(
+                    file,
+                    "{color}[{time:<27} {level:<7}{empty_mod:mod_len$}] {message}{CLEAR_COLOR}",
+                    empty_mod = "",
+                    level = meta.level,
+                    mod_len = if longest_mod_name > 0 {
+                        longest_mod_name + 1
+                    } else {
+                        0
+                    },
+                    time = format!("{:?}", meta.timestamp),
+                )
+            };
+
+            if let Err(err) = res {
+                panic!("{err}");
+            }
         }
+
+        self.longest_mod_name = longest_mod_name;
     }
 }
 

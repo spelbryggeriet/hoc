@@ -307,7 +307,7 @@ impl Kv {
         if !should_overwrite {
             debug!("{verb} {desc}: {key} => {into_value}");
         } else {
-            trace!(
+            debug!(
                 "Old item for key {key}: {}",
                 serde_json::to_string(&self.get_item(&*key)?)?
             );
