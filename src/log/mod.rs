@@ -1,10 +1,11 @@
 use std::fmt;
 
-use chrono::Utc;
-use crossterm::style::{Color, SetForegroundColor};
 pub use logger::Logger;
 pub use progress::pause_rendering;
 
+use chrono::Utc;
+use crossterm::style::{Color, SetForegroundColor};
+use log_facade::log_enabled;
 use thiserror::Error;
 
 use crate::prelude::*;
@@ -33,18 +34,22 @@ pub fn cleanup() {
     Logger::cleanup();
 }
 
-pub fn progress(message: String, module: &'static str) -> DropHandle {
+pub fn progress(message: String, level: Option<Level>, module: &'static str) -> DropHandle {
     LoggerBuffer::get_or_init()
         .push(
             LoggerMeta {
                 timestamp: Utc::now(),
-                level: Level::Info,
+                level: level.unwrap_or(Level::Info),
                 module: Some(module.into()),
             },
             format!("[PROGRESS START] {message}"),
         )
         .unwrap_or_else(|e| panic!("{e}"));
-    progress::Progress::get_or_init().push_progress_log(message, module)
+    if level.is_none() || level.filter(|l| log_enabled!(*l)).is_some() {
+        progress::Progress::get_or_init().push_progress_log(message, level, module)
+    } else {
+        DropHandle::new_in_buffer(message, level, module)
+    }
 }
 
 #[derive(Error, Debug)]

@@ -33,6 +33,16 @@ pub fn cleanup() {
     }
 }
 
+fn icon_and_color(level: Level) -> (char, style::Color) {
+    match level {
+        Level::Error => ('\u{f00d}', ERROR_COLOR.0),
+        Level::Warn => ('\u{f12a}', WARN_COLOR.0),
+        Level::Info => ('\u{f48b}', INFO_COLOR.0),
+        Level::Debug => ('\u{fd2b}', DEBUG_COLOR.0),
+        Level::Trace => ('\u{e241}', TRACE_COLOR.0),
+    }
+}
+
 #[must_use]
 pub struct RenderThread {
     handle: Mutex<Option<JoinHandle<Result<(), Error>>>>,
@@ -564,13 +574,7 @@ impl SimpleLog {
 
     #[throws(as Option)]
     fn get_icon_and_color(&self) -> (char, style::Color) {
-        match self.level? {
-            Level::Error => ('\u{f00d}', ERROR_COLOR.0),
-            Level::Warn => ('\u{f12a}', WARN_COLOR.0),
-            Level::Info => ('\u{f48b}', INFO_COLOR.0),
-            Level::Debug => ('\u{fd2b}', DEBUG_COLOR.0),
-            Level::Trace => ('\u{e241}', TRACE_COLOR.0),
-        }
+        icon_and_color(self.level?)
     }
 }
 
@@ -609,16 +613,21 @@ impl ProgressLog {
         } else {
             anim::State::Animating(render_info.animation_frame)
         };
-        let color = if is_finished {
-            Self::FINISHED_COLOR
+        let (icon, color) = if is_finished {
+            if let Some(level) = self.level {
+                let (icon, color) = icon_and_color(level);
+                (Some(icon), color)
+            } else {
+                (None, Self::FINISHED_COLOR)
+            }
         } else {
-            Self::RUNNING_COLOR
+            (None, Self::RUNNING_COLOR)
         };
 
         // Print indicator and progress message.
         view.set_color(color);
         render!(view =>
-            anim::braille_spin(animation_state),
+            icon.unwrap_or_else(|| anim::braille_spin(animation_state)),
             " ",
             self.message,
         );

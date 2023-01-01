@@ -14,7 +14,21 @@ pub fn run() {
                 rand::Rng::gen_range(&mut rng, 0..5)
             };
 
-            let progress = log::progress(format!("Progress {}-{i}", d + 1), module_path!());
+            let level = if rand::Rng::gen_ratio(&mut rng, 1, 2) {
+                None
+            } else if rand::Rng::gen_ratio(&mut rng, 1, 2) {
+                Some(Level::Trace)
+            } else if rand::Rng::gen_ratio(&mut rng, 1, 2) {
+                Some(Level::Debug)
+            } else if rand::Rng::gen_ratio(&mut rng, 9, 10) {
+                Some(Level::Info)
+            } else if rand::Rng::gen_ratio(&mut rng, 1, 2) {
+                Some(Level::Warn)
+            } else {
+                Some(Level::Error)
+            };
+
+            let progress = log::progress(format!("Progress {}-{i}", d + 1), level, module_path!());
 
             progresses.push((progress, ttl));
             progresses.iter_mut().rev().fold(0, |max, (_, ttl)| {
