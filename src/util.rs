@@ -18,6 +18,10 @@ use crate::{
     prelude::*,
 };
 
+pub const RAND_CHARS: &str = "ABCDEFGHIJKLMNOPQRSTUVXYZ\
+                              abcdefghijklmnopqrstuvxyz\
+                              0123456789";
+
 pub fn from_arguments_to_str_cow(arguments: Arguments) -> Cow<'static, str> {
     if let Some(s) = arguments.as_str() {
         Cow::Borrowed(s)
@@ -122,7 +126,7 @@ fn unnamed_if_empty<S: AsRef<str> + ?Sized>(name: &S) -> String {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct Secret<T>(T);
 
 impl<T> Secret<T> {

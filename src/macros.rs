@@ -66,6 +66,13 @@ macro_rules! process {
     }};
 }
 
+#[allow(unused)]
+macro_rules! shell {
+    () => {{
+        $crate::process::Shell::new()
+    }};
+}
+
 macro_rules! __is_sudo {
     (sudo) => {
         true

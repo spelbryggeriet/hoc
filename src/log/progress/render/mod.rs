@@ -565,11 +565,11 @@ impl SimpleLog {
     #[throws(as Option)]
     fn get_icon_and_color(&self) -> (char, style::Color) {
         match self.level? {
-            Level::Error => ('\u{f00d}', style::Color::Red),
-            Level::Warn => ('\u{f12a}', style::Color::Yellow),
-            Level::Info => ('\u{f48b}', style::Color::White),
-            Level::Debug => ('\u{fd2b}', style::Color::DarkMagenta),
-            Level::Trace => ('\u{e241}', style::Color::DarkGrey),
+            Level::Error => ('\u{f00d}', ERROR_COLOR.0),
+            Level::Warn => ('\u{f12a}', WARN_COLOR.0),
+            Level::Info => ('\u{f48b}', INFO_COLOR.0),
+            Level::Debug => ('\u{fd2b}', DEBUG_COLOR.0),
+            Level::Trace => ('\u{e241}', TRACE_COLOR.0),
         }
     }
 }

@@ -10,10 +10,6 @@ use crate::{
     util,
 };
 
-const RAND_CHARS: &str = "ABCDEFGHIJKLMNOPQRSTUVXYZ\
-                          abcdefghijklmnopqrstuvxyz\
-                          0123456789";
-
 pub struct Temp {
     temp_dir: PathBuf,
 }
@@ -35,7 +31,7 @@ impl Temp {
         let mut random_key;
         let mut attempt = 1;
         let file = loop {
-            random_key = util::random_string(RAND_CHARS, 10);
+            random_key = util::random_string(crate::util::RAND_CHARS, 10);
             path.push(&random_key);
             if attempt == 1 {
                 debug!("Creating temporary file: {path:?}");

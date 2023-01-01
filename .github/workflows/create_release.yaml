@@ -116,6 +116,8 @@ jobs:
       with:
         toolchain: ${{ env.RUST_VERSION }}
         default: true
+    - name: Cache Rust
+      uses: Swatinem/rust-cache@v2
     - name: Build
       uses: actions-rs/cargo@v1
       with:
