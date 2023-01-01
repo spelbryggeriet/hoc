@@ -52,7 +52,7 @@ impl Progress {
     pub fn get_or_init() -> &'static Self {
         static PROGRESS: OnceCell<Progress> = OnceCell::new();
 
-        PROGRESS.get_or_init(Progress::new)
+        PROGRESS.get_or_init(Self::new)
     }
 
     fn new() -> Self {
@@ -80,8 +80,8 @@ impl Progress {
         }
     }
 
-    pub fn push_progress_log(&self, message: String) -> DropHandle {
-        let (subprogress_log, drop_handle) = ProgressLog::new(message);
+    pub fn push_progress_log(&self, message: String, module: &'static str) -> DropHandle {
+        let (subprogress_log, drop_handle) = ProgressLog::new(message, module);
 
         // Find the current progress log.
         let mut logs_lock = self.logs.lock().expect(EXPECT_THREAD_NOT_POSIONED);
@@ -238,17 +238,22 @@ impl PauseLog {
 }
 
 mod drop_handle {
+    use chrono::Utc;
+
+    use crate::log::logger::{LoggerBuffer, LoggerMeta};
+
     use super::*;
 
     impl ProgressLog {
-        pub fn new(message: String) -> (Self, DropHandle) {
+        pub fn new(message: String, module: &'static str) -> (Self, DropHandle) {
             let log = Self {
-                message,
+                message: message.clone(),
                 start_time: Instant::now(),
                 logs: Vec::new(),
                 run_time: Arc::new(Mutex::new(None)),
             };
-            let drop_handle = DropHandle::new(log.start_time, Arc::clone(&log.run_time));
+            let drop_handle =
+                DropHandle::new(message, module, log.start_time, Arc::clone(&log.run_time));
 
             (log, drop_handle)
         }
@@ -256,13 +261,22 @@ mod drop_handle {
 
     #[must_use]
     pub struct DropHandle {
+        message: String,
+        module: &'static str,
         start_time: Instant,
         run_time: Shared<Option<Duration>>,
     }
 
     impl DropHandle {
-        fn new(start_time: Instant, run_time: Shared<Option<Duration>>) -> Self {
+        fn new(
+            message: String,
+            module: &'static str,
+            start_time: Instant,
+            run_time: Shared<Option<Duration>>,
+        ) -> Self {
             Self {
+                message,
+                module,
                 start_time,
                 run_time,
             }
@@ -277,6 +291,16 @@ mod drop_handle {
                 .lock()
                 .expect(EXPECT_THREAD_NOT_POSIONED)
                 .replace(self.start_time.elapsed());
+            LoggerBuffer::get_or_init()
+                .push(
+                    LoggerMeta {
+                        timestamp: Utc::now(),
+                        level: Level::Info,
+                        module: Some(self.module.into()),
+                    },
+                    format!("[PROGRESS END] {}", self.message),
+                )
+                .unwrap_or_else(|e| panic!("{e}"));
         }
     }
 }

@@ -14,7 +14,7 @@ pub fn run() {
                 rand::Rng::gen_range(&mut rng, 0..5)
             };
 
-            let progress = log::progress(format!("Progress {}-{i}", d + 1));
+            let progress = log::progress(format!("Progress {}-{i}", d + 1), module_path!());
 
             progresses.push((progress, ttl));
             progresses.iter_mut().rev().fold(0, |max, (_, ttl)| {
