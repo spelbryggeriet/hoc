@@ -1,10 +1,12 @@
 pub use anyhow::{bail, ensure, Context as AnyhowContext};
 pub use fehler::{throw, throws};
-pub use log_facade::{debug, error, info, log, trace, warn, Level};
+pub use log_facade::{debug, error, info, log, warn, Level};
 
 pub use crate::{
     context::kv::IteratorExt,
-    log::{DEBUG_COLOR, ERROR_COLOR, INFO_COLOR, TRACE_COLOR, WARN_COLOR},
+    log::{
+        ProgressHandle, CLEAR_COLOR, DEBUG_COLOR, ERROR_COLOR, INFO_COLOR, TRACE_COLOR, WARN_COLOR,
+    },
     util::Secret,
 };
 

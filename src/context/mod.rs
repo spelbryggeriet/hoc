@@ -72,42 +72,42 @@ impl Context {
         let temp_dir = crate::local_temp_dir();
         let source_dir = crate::local_source_dir();
 
-        trace!("Creating files directory");
+        debug!("Creating files directory");
         std::fs::create_dir_all(&files_dir)?;
 
-        trace!("Creating cache directory");
+        debug!("Creating cache directory");
         std::fs::create_dir_all(&cache_dir)?;
 
-        trace!("Creating temp directory");
+        debug!("Creating temp directory");
         std::fs::create_dir_all(&temp_dir)?;
 
-        trace!("Creating source directory");
+        debug!("Creating source directory");
         std::fs::create_dir_all(&source_dir)?;
 
-        trace!("Setting files directory permissions");
+        debug!("Setting files directory permissions");
         let mut permissions = files_dir.metadata()?.permissions();
         permissions.set_mode(0o700);
         std::fs::set_permissions(&files_dir, permissions)?;
 
-        trace!("Setting cache directory permissions");
+        debug!("Setting cache directory permissions");
         let mut permissions = cache_dir.metadata()?.permissions();
         permissions.set_mode(0o700);
         std::fs::set_permissions(&cache_dir, permissions)?;
 
-        trace!("Setting temp directory permissions");
+        debug!("Setting temp directory permissions");
         let mut permissions = temp_dir.metadata()?.permissions();
         permissions.set_mode(0o700);
         std::fs::set_permissions(&temp_dir, permissions)?;
 
-        trace!("Setting source directory permissions");
+        debug!("Setting source directory permissions");
         let mut permissions = source_dir.metadata()?.permissions();
         permissions.set_mode(0o700);
         std::fs::set_permissions(&source_dir, permissions)?;
 
-        trace!("Opening context file");
+        debug!("Opening context file");
         match File::options().read(true).write(true).open(&context_path) {
             Ok(file) => {
-                trace!("Using pre-existing context file: {context_path:?}");
+                debug!("Using pre-existing context file: {context_path:?}");
 
                 debug!("Deserializing context from file");
                 let context: Self = serde_yaml::from_reader(file)?;

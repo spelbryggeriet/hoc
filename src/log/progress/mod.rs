@@ -1,3 +1,5 @@
+pub use progress_handle::ProgressHandle;
+
 use std::{
     collections::VecDeque,
     sync::{Arc, Mutex, MutexGuard},
@@ -8,7 +10,6 @@ use log_facade::Level;
 use once_cell::sync::OnceCell;
 
 use crate::{log::Error, prelude::*};
-pub use drop_handle::DropHandle;
 use render::PauseLock;
 
 mod render;
@@ -85,8 +86,8 @@ impl Progress {
         message: String,
         level: Option<Level>,
         module: &'static str,
-    ) -> DropHandle {
-        let (subprogress_log, drop_handle) = ProgressLog::new(message, level, module);
+    ) -> ProgressHandle {
+        let (subprogress_log, progress_handle) = ProgressLog::new(message, level, module);
 
         // Find the current progress log.
         let mut logs_lock = self.logs.lock().expect(EXPECT_THREAD_NOT_POSIONED);
@@ -99,7 +100,7 @@ impl Progress {
             logs.push_back(Log::Progress(subprogress_log));
         }
 
-        drop_handle
+        progress_handle
     }
 
     fn push_pause_log(&self, height: usize) -> (Shared<bool>, Shared<Option<LevelMessage>>) {
@@ -243,7 +244,15 @@ impl PauseLog {
     }
 }
 
-mod drop_handle {
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+enum LogType {
+    Simple,
+    RunningProgress,
+    FinishedProgress,
+    Pause,
+}
+
+mod progress_handle {
     use chrono::Utc;
 
     use crate::log::logger::{LoggerBuffer, LoggerMeta};
@@ -255,7 +264,7 @@ mod drop_handle {
             message: String,
             level: Option<Level>,
             module: &'static str,
-        ) -> (Self, DropHandle) {
+        ) -> (Self, ProgressHandle) {
             let log = Self {
                 message: message.clone(),
                 level,
@@ -263,7 +272,7 @@ mod drop_handle {
                 logs: Vec::new(),
                 run_time: Arc::new(Mutex::new(None)),
             };
-            let drop_handle = DropHandle::new(
+            let progress_handle = ProgressHandle::new(
                 message,
                 level,
                 module,
@@ -271,19 +280,19 @@ mod drop_handle {
                 Arc::clone(&log.run_time),
             );
 
-            (log, drop_handle)
+            (log, progress_handle)
         }
     }
 
     #[must_use]
-    pub struct DropHandle {
-        data: Option<DropHandleTimingData>,
+    pub struct ProgressHandle {
+        timings: Option<TimingData>,
         message: String,
         level: Option<Level>,
         module: &'static str,
     }
 
-    impl DropHandle {
+    impl ProgressHandle {
         fn new(
             message: String,
             level: Option<Level>,
@@ -292,7 +301,7 @@ mod drop_handle {
             run_time: Shared<Option<Duration>>,
         ) -> Self {
             Self {
-                data: Some(DropHandleTimingData {
+                timings: Some(TimingData {
                     start_time,
                     run_time,
                 }),
@@ -302,13 +311,13 @@ mod drop_handle {
             }
         }
 
-        pub(in crate::log) fn new_in_buffer(
+        pub(in crate::log) fn new_for_buffer(
             message: String,
             level: Option<Level>,
             module: &'static str,
         ) -> Self {
             Self {
-                data: None,
+                timings: None,
                 message,
                 level,
                 module,
@@ -318,13 +327,14 @@ mod drop_handle {
         pub fn finish(self) {}
     }
 
-    impl Drop for DropHandle {
+    impl Drop for ProgressHandle {
         fn drop(&mut self) {
-            if let Some(data) = &self.data {
-                data.run_time
+            if let Some(timings) = &self.timings {
+                timings
+                    .run_time
                     .lock()
                     .expect(EXPECT_THREAD_NOT_POSIONED)
-                    .replace(data.start_time.elapsed());
+                    .replace(timings.start_time.elapsed());
             }
             LoggerBuffer::get_or_init()
                 .push(
@@ -339,16 +349,8 @@ mod drop_handle {
         }
     }
 
-    struct DropHandleTimingData {
+    struct TimingData {
         start_time: Instant,
         run_time: Shared<Option<Duration>>,
     }
-}
-
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
-enum LogType {
-    Simple,
-    RunningProgress,
-    FinishedProgress,
-    Pause,
 }

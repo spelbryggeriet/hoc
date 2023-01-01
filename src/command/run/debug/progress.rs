@@ -38,7 +38,7 @@ pub fn run() {
                 *ttl
             });
         } else if rand::Rng::gen_ratio(&mut rng, 1, 2) {
-            trace!("Trace {d}-{i}");
+            log!(Level::Trace, "Trace {d}-{i}");
         } else if rand::Rng::gen_ratio(&mut rng, 1, 2) {
             debug!("Debug {d}-{i}");
         } else if rand::Rng::gen_ratio(&mut rng, 9, 10) {

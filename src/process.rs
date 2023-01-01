@@ -191,29 +191,31 @@ impl ProcessBuilder {
             self.input_data = password.into_non_secret() + "\n" + &self.input_data;
         }
 
-        util::describe_process(&self.raw, self.settings.is_sudo(), debug_desc);
+        let sudo_str = util::colored_sudo_string(self.settings.is_sudo());
+        let process_str = self.raw.yellow().to_string();
+        let progress_handle = progress_with_handle!(Debug, "{debug_desc}: {sudo_str}{process_str}");
 
         match self.settings.get_mode() {
-            ProcessMode::Local => trace!("Mode: local"),
-            ProcessMode::Container => trace!("Mode: container"),
-            ProcessMode::Remote { node_name } => trace!("Mode: remote => {node_name}"),
+            ProcessMode::Local => debug!("Mode: local"),
+            ProcessMode::Container => debug!("Mode: container"),
+            ProcessMode::Remote { node_name } => debug!("Mode: remote => {node_name}"),
             ProcessMode::Shell { mode, .. } => match &**mode {
-                ProcessMode::Local => trace!("Mode: local shell"),
-                ProcessMode::Container => trace!("Mode: container shell"),
-                ProcessMode::Remote { node_name } => trace!("Mode: remote shell => {node_name}"),
+                ProcessMode::Local => debug!("Mode: local shell"),
+                ProcessMode::Container => debug!("Mode: container shell"),
+                ProcessMode::Remote { node_name } => debug!("Mode: remote shell => {node_name}"),
                 ProcessMode::Shell { .. } => unreachable!(),
             },
         }
 
         match self.settings.get_mode() {
-            ProcessMode::Local => self.spawn_local(password_to_cache)?,
+            ProcessMode::Local => self.spawn_local(password_to_cache, progress_handle)?,
             ProcessMode::Container => {
                 const WAIT_SECONDS: u64 = 5;
                 const TIMEOUT_SECONDS: u64 = 3 * 60;
 
                 // Ensure Docker is started.
                 for attempt in 1..=TIMEOUT_SECONDS / WAIT_SECONDS {
-                    trace!("Checking if Docker is started");
+                    debug!("Checking if Docker is started");
                     let output = ProcessBuilder::new("docker stats --no-stream")
                         .local_mode()
                         .success_codes([0, 1])
@@ -223,24 +225,24 @@ impl ProcessBuilder {
                     if output.code == 0 {
                         break;
                     } else if attempt == 1 {
-                        trace!("Starting Docker");
+                        debug!("Starting Docker");
                         ProcessBuilder::new("open -a Docker")
                             .local_mode()
                             .spawn_no_settings_update("Running process")?
                             .join()?;
                     }
 
-                    trace!("Waiting {WAIT_SECONDS} seconds");
+                    debug!("Waiting {WAIT_SECONDS} seconds");
                     spin_sleep::sleep(Duration::from_secs(WAIT_SECONDS));
                 }
 
-                self.spawn_container(password_to_cache)?
+                self.spawn_container(password_to_cache, progress_handle)?
             }
             ProcessMode::Remote { node_name } => {
                 let mut current_session = current_ssh_session();
                 match &*current_session {
                     Some((current_node, session)) if node_name == current_node => {
-                        self.spawn_remote(session, password_to_cache)?
+                        self.spawn_remote(session, password_to_cache, progress_handle)?
                     }
                     _ => {
                         let host: IpAddr =
@@ -266,7 +268,8 @@ impl ProcessBuilder {
                         )?;
 
                         let node_name = node_name.clone();
-                        let process = self.spawn_remote(&session, password_to_cache);
+                        let process =
+                            self.spawn_remote(&session, password_to_cache, progress_handle);
 
                         current_session.replace((node_name, session));
 
@@ -283,7 +286,7 @@ impl ProcessBuilder {
                 let stdin = stdin.clone();
                 let stdout = stdout.clone();
                 let stderr = stderr.clone();
-                self.spawn_in_shell(stdin, stdout, stderr, password_to_cache)?
+                self.spawn_in_shell(stdin, stdout, stderr, password_to_cache, progress_handle)?
             }
         }
     }
@@ -296,7 +299,11 @@ impl ProcessBuilder {
     }
 
     #[throws(Error)]
-    fn spawn_local(self, password_to_cache: Option<Secret<String>>) -> Process {
+    fn spawn_local(
+        self,
+        password_to_cache: Option<Secret<String>>,
+        progress_handle: ProgressHandle,
+    ) -> Process {
         let mut cmd = std::process::Command::new("sh");
         cmd.args(["-c", &*util::get_runnable_raw(&self)])
             .stdin(Stdio::piped())
@@ -325,11 +332,16 @@ impl ProcessBuilder {
             )))),
             handle: Handle::Cmd(child),
             password_to_cache,
+            progress_handle,
         }
     }
 
     #[throws(Error)]
-    fn spawn_container(self, password_to_cache: Option<Secret<String>>) -> Process {
+    fn spawn_container(
+        self,
+        password_to_cache: Option<Secret<String>>,
+        progress_handle: ProgressHandle,
+    ) -> Process {
         let raw: Cow<_> = if let Some(current_dir) = &self.settings.get_current_dir() {
             format!("cd {current_dir} ; {}", util::get_runnable_raw(&self)).into()
         } else {
@@ -389,6 +401,7 @@ impl ProcessBuilder {
             )))),
             handle: Handle::Cmd(child),
             password_to_cache,
+            progress_handle,
         }
     }
 
@@ -397,6 +410,7 @@ impl ProcessBuilder {
         self,
         session: &ssh2::Session,
         password_to_cache: Option<Secret<String>>,
+        progress_handle: ProgressHandle,
     ) -> Process {
         let mut channel = session.channel_session()?;
 
@@ -430,6 +444,7 @@ impl ProcessBuilder {
             stderr: Rewindable::new(Stderr::Ssh(stderr)),
             handle: Handle::Ssh(handle),
             password_to_cache,
+            progress_handle,
         }
     }
 
@@ -440,6 +455,7 @@ impl ProcessBuilder {
         stdout: Rewindable<Stdout>,
         stderr: Rewindable<Stderr>,
         password_to_cache: Option<Secret<String>>,
+        progress_handle: ProgressHandle,
     ) -> Process {
         enum StdinLock<'a> {
             Std(MutexGuard<'a, std::process::ChildStdin>),
@@ -511,6 +527,7 @@ impl ProcessBuilder {
             stderr,
             handle: Handle::Shell(token),
             password_to_cache,
+            progress_handle,
         }
     }
 }
@@ -522,15 +539,16 @@ pub struct Process {
     stderr: Rewindable<Stderr>,
     handle: Handle,
     password_to_cache: Option<Secret<String>>,
+    progress_handle: ProgressHandle,
 }
 
 impl Process {
     #[throws(Error)]
     pub fn join(mut self) -> Output {
-        let raw = self.builder.raw.clone();
-        let is_sudo = self.builder.settings.is_sudo();
-
         let mut output = self.handle.join(self.stdin, self.stdout, self.stderr)?;
+        debug!("Exit code: {}", output.code);
+
+        self.progress_handle.finish();
 
         if self.builder.success_codes.contains(&output.code) {
             if let Some(password) = self.password_to_cache {
@@ -570,7 +588,8 @@ impl Process {
             }
 
             error!(
-                "The program {program} failed with exit code {}",
+                "The program {}{ERROR_COLOR} failed with exit code {}",
+                program.yellow(),
                 output.code,
             );
 
@@ -655,7 +674,6 @@ impl Process {
             }
         }
 
-        util::describe_process(&raw, is_sudo, "Finished process");
         output
     }
 }
@@ -1075,12 +1093,6 @@ mod util {
     use std::io::{BufRead, BufReader, Read};
 
     use super::*;
-
-    pub fn describe_process(raw: &str, is_sudo: bool, desc: &str) {
-        let sudo_str = colored_sudo_string(is_sudo);
-        let process_str = raw.yellow().to_string();
-        debug!("{desc}: {sudo_str}{process_str}");
-    }
 
     pub fn colored_sudo_string(is_sudo: bool) -> Cow<'static, str> {
         if is_sudo {

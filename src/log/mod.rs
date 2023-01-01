@@ -1,7 +1,7 @@
 use std::fmt;
 
 pub use logger::Logger;
-pub use progress::pause_rendering;
+pub use progress::{pause_rendering, ProgressHandle};
 
 use chrono::Utc;
 use crossterm::style::{Color, SetForegroundColor};
@@ -9,13 +9,13 @@ use log_facade::log_enabled;
 use thiserror::Error;
 
 use crate::prelude::*;
-use progress::DropHandle;
 
 use self::logger::{LoggerBuffer, LoggerMeta};
 
 mod logger;
 mod progress;
 
+pub const CLEAR_COLOR: SetForegroundColor = SetForegroundColor(Color::Reset);
 pub const ERROR_COLOR: SetForegroundColor = SetForegroundColor(Color::Red);
 pub const WARN_COLOR: SetForegroundColor = SetForegroundColor(Color::Yellow);
 pub const INFO_COLOR: SetForegroundColor = SetForegroundColor(Color::White);
@@ -34,7 +34,7 @@ pub fn cleanup() {
     Logger::cleanup();
 }
 
-pub fn progress(message: String, level: Option<Level>, module: &'static str) -> DropHandle {
+pub fn progress(message: String, level: Option<Level>, module: &'static str) -> ProgressHandle {
     LoggerBuffer::get_or_init()
         .push(
             LoggerMeta {
@@ -48,7 +48,17 @@ pub fn progress(message: String, level: Option<Level>, module: &'static str) -> 
     if level.is_none() || level.filter(|l| log_enabled!(*l)).is_some() {
         progress::Progress::get_or_init().push_progress_log(message, level, module)
     } else {
-        DropHandle::new_in_buffer(message, level, module)
+        ProgressHandle::new_for_buffer(message, level, module)
+    }
+}
+
+pub fn level_color(level: Level) -> SetForegroundColor {
+    match level {
+        Level::Trace => TRACE_COLOR,
+        Level::Debug => DEBUG_COLOR,
+        Level::Info => INFO_COLOR,
+        Level::Warn => WARN_COLOR,
+        Level::Error => ERROR_COLOR,
     }
 }
 

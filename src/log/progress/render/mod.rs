@@ -8,13 +8,20 @@ use std::{
     time::Duration,
 };
 
-use crossterm::{cursor, execute, style, terminal, ExecutableCommand};
+use crossterm::{
+    cursor, execute,
+    style::{self, Color},
+    terminal, ExecutableCommand,
+};
 use log_facade::Level;
 use once_cell::sync::OnceCell;
 
 use self::view::{Position, RootView, View};
 use super::{Log, LogType, PauseLog, ProgressLog, SimpleLog};
-use crate::{log::Error, prelude::*};
+use crate::{
+    log::{self, Error},
+    prelude::*,
+};
 
 #[macro_use]
 mod view;
@@ -30,16 +37,6 @@ pub fn init() {
 pub fn cleanup() {
     if let Some(render_thread) = RenderThread::cell().get() {
         render_thread.terminate()?;
-    }
-}
-
-fn icon_and_color(level: Level) -> (char, style::Color) {
-    match level {
-        Level::Error => ('\u{f00d}', ERROR_COLOR.0),
-        Level::Warn => ('\u{f12a}', WARN_COLOR.0),
-        Level::Info => ('\u{f48b}', INFO_COLOR.0),
-        Level::Debug => ('\u{fd2b}', DEBUG_COLOR.0),
-        Level::Trace => ('\u{e241}', TRACE_COLOR.0),
     }
 }
 
@@ -558,7 +555,7 @@ impl SimpleLog {
     }
 
     fn render(&self, view: &mut dyn View) {
-        if let Some((level_icon, color)) = self.get_icon_and_color() {
+        if let Some((level_icon, color)) = self.level_icon_and_icon() {
             view.set_color(color);
             render!(view =>
                 level_icon,
@@ -573,14 +570,23 @@ impl SimpleLog {
     }
 
     #[throws(as Option)]
-    fn get_icon_and_color(&self) -> (char, style::Color) {
-        icon_and_color(self.level?)
+    fn level_icon_and_icon(&self) -> (char, Color) {
+        let level = self.level?;
+        let icon = match level {
+            Level::Error => '\u{f00d}',
+            Level::Warn => '\u{f12a}',
+            Level::Info => '\u{f48b}',
+            Level::Debug => '\u{fd2b}',
+            Level::Trace => '\u{e241}',
+        };
+        let color = log::level_color(level).0;
+        (icon, color)
     }
 }
 
 impl ProgressLog {
-    const RUNNING_COLOR: style::Color = style::Color::Yellow;
-    const FINISHED_COLOR: style::Color = style::Color::DarkCyan;
+    const RUNNING_COLOR: Color = Color::Yellow;
+    const FINISHED_COLOR: Color = Color::DarkCyan;
 
     fn render_height(&self, render_info: &RenderInfo) -> usize {
         if self.logs.is_empty() && !render_info.is_paused {
@@ -613,21 +619,17 @@ impl ProgressLog {
         } else {
             anim::State::Animating(render_info.animation_frame)
         };
-        let (icon, color) = if is_finished {
-            if let Some(level) = self.level {
-                let (icon, color) = icon_and_color(level);
-                (Some(icon), color)
-            } else {
-                (None, Self::FINISHED_COLOR)
-            }
+        let color = if is_finished {
+            self.level
+                .map_or(Self::FINISHED_COLOR, |l| log::level_color(l).0)
         } else {
-            (None, Self::RUNNING_COLOR)
+            Self::RUNNING_COLOR
         };
 
         // Print indicator and progress message.
         view.set_color(color);
         render!(view =>
-            icon.unwrap_or_else(|| anim::braille_spin(animation_state)),
+            anim::braille_spin(animation_state),
             " ",
             self.message,
         );
