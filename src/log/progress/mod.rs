@@ -80,8 +80,13 @@ impl Progress {
         }
     }
 
-    pub fn push_progress_log(&self, message: String, module: &'static str) -> DropHandle {
-        let (subprogress_log, drop_handle) = ProgressLog::new(message, module);
+    pub fn push_progress_log(
+        &self,
+        message: String,
+        level: Option<Level>,
+        module: &'static str,
+    ) -> DropHandle {
+        let (subprogress_log, drop_handle) = ProgressLog::new(message, level, module);
 
         // Find the current progress log.
         let mut logs_lock = self.logs.lock().expect(EXPECT_THREAD_NOT_POSIONED);
@@ -177,6 +182,7 @@ impl SimpleLog {
 
 #[derive(Debug)]
 pub struct ProgressLog {
+    level: Option<Level>,
     message: String,
     start_time: Instant,
     logs: Vec<Log>,
@@ -245,15 +251,25 @@ mod drop_handle {
     use super::*;
 
     impl ProgressLog {
-        pub fn new(message: String, module: &'static str) -> (Self, DropHandle) {
+        pub fn new(
+            message: String,
+            level: Option<Level>,
+            module: &'static str,
+        ) -> (Self, DropHandle) {
             let log = Self {
                 message: message.clone(),
+                level,
                 start_time: Instant::now(),
                 logs: Vec::new(),
                 run_time: Arc::new(Mutex::new(None)),
             };
-            let drop_handle =
-                DropHandle::new(message, module, log.start_time, Arc::clone(&log.run_time));
+            let drop_handle = DropHandle::new(
+                message,
+                level,
+                module,
+                log.start_time,
+                Arc::clone(&log.run_time),
+            );
 
             (log, drop_handle)
         }
@@ -261,24 +277,41 @@ mod drop_handle {
 
     #[must_use]
     pub struct DropHandle {
+        data: Option<DropHandleTimingData>,
         message: String,
+        level: Option<Level>,
         module: &'static str,
-        start_time: Instant,
-        run_time: Shared<Option<Duration>>,
     }
 
     impl DropHandle {
         fn new(
             message: String,
+            level: Option<Level>,
             module: &'static str,
             start_time: Instant,
             run_time: Shared<Option<Duration>>,
         ) -> Self {
             Self {
+                data: Some(DropHandleTimingData {
+                    start_time,
+                    run_time,
+                }),
                 message,
+                level,
                 module,
-                start_time,
-                run_time,
+            }
+        }
+
+        pub(in crate::log) fn new_in_buffer(
+            message: String,
+            level: Option<Level>,
+            module: &'static str,
+        ) -> Self {
+            Self {
+                data: None,
+                message,
+                level,
+                module,
             }
         }
 
@@ -287,21 +320,28 @@ mod drop_handle {
 
     impl Drop for DropHandle {
         fn drop(&mut self) {
-            self.run_time
-                .lock()
-                .expect(EXPECT_THREAD_NOT_POSIONED)
-                .replace(self.start_time.elapsed());
+            if let Some(data) = &self.data {
+                data.run_time
+                    .lock()
+                    .expect(EXPECT_THREAD_NOT_POSIONED)
+                    .replace(data.start_time.elapsed());
+            }
             LoggerBuffer::get_or_init()
                 .push(
                     LoggerMeta {
                         timestamp: Utc::now(),
-                        level: Level::Info,
+                        level: self.level.unwrap_or(Level::Info),
                         module: Some(self.module.into()),
                     },
                     format!("[PROGRESS END] {}", self.message),
                 )
                 .unwrap_or_else(|e| panic!("{e}"));
         }
+    }
+
+    struct DropHandleTimingData {
+        start_time: Instant,
+        run_time: Shared<Option<Duration>>,
     }
 }
 

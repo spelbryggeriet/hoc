@@ -1,6 +1,10 @@
 macro_rules! progress_with_handle {
+    ($level:ident, $($args:tt)*) => {{
+        $crate::log::progress(format!($($args)*), Some($crate::prelude::Level::$level), module_path!())
+    }};
+
     ($($args:tt)*) => {{
-        $crate::log::progress(format!($($args)*), module_path!())
+        $crate::log::progress(format!($($args)*), None, module_path!())
     }};
 }
 
