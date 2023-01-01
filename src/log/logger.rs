@@ -20,9 +20,10 @@ const MAX_DEFAULT_LEVEL: Level = if cfg!(debug_assertions) {
     Level::Info
 };
 
+static START_TIME: OnceCell<DateTime<Utc>> = OnceCell::new();
+
 pub struct Logger {
     level: Level,
-    start_time: DateTime<Utc>,
 }
 
 impl Logger {
@@ -40,10 +41,9 @@ impl Logger {
             _ => throw!(Error::UnknownLevel(level_str.into_owned())),
         };
 
-        let logger = Self {
-            level,
-            start_time: Utc::now(),
-        };
+        START_TIME.get_or_init(Utc::now);
+
+        let logger = Self { level };
 
         log_facade::set_boxed_logger(Box::new(logger))?;
         log_facade::set_max_level(LevelFilter::Trace);
@@ -71,22 +71,21 @@ impl Log for Logger {
                 LoggerMeta {
                     timestamp: Utc::now(),
                     level: record.level(),
-                    module: record.module_path().map(str::to_owned),
+                    module: record.module_path().map(|m| m.to_owned().into()),
                 },
                 args_str,
-                self.start_time,
             )
             .unwrap_or_else(|e| panic!("{e}"));
     }
 
     fn flush(&self) {
         LoggerBuffer::get_or_init()
-            .flush(self.start_time)
+            .flush()
             .unwrap_or_else(|e| panic!("{e}"));
     }
 }
 
-struct LoggerBuffer {
+pub(in crate::log) struct LoggerBuffer {
     messages: Vec<(LoggerMeta, String)>,
     longest_mod_name: usize,
 }
@@ -109,16 +108,17 @@ impl LoggerBuffer {
     }
 
     #[throws(anyhow::Error)]
-    pub fn push(&mut self, meta: LoggerMeta, args: String, start_time: DateTime<Utc>) {
+    pub fn push(&mut self, meta: LoggerMeta, args: String) {
         self.messages.push((meta, args));
 
         if self.messages.len() >= 100 {
-            self.flush(start_time)?;
+            self.flush()?;
         }
     }
 
     #[throws(anyhow::Error)]
-    pub fn flush(&mut self, start_time: DateTime<Utc>) {
+    pub fn flush(&mut self) {
+        let start_time = START_TIME.get().expect("start time should be initialized");
         let home_dir = env::var("HOME").context("HOME environment variable should exist")?;
         let log_dir = format!(
             "{home_dir}/.local/share/hoc/logs/{}",
@@ -135,7 +135,7 @@ impl LoggerBuffer {
             let mut longest_mod_name = self.longest_mod_name.max(
                 self.messages
                     .iter()
-                    .filter_map(|(meta, _)| meta.module.as_ref().map(String::len))
+                    .filter_map(|(meta, _)| meta.module.as_deref().map(str::len))
                     .max()
                     .unwrap_or(0),
             );
@@ -177,8 +177,8 @@ impl LoggerBuffer {
     }
 }
 
-struct LoggerMeta {
-    timestamp: DateTime<Utc>,
-    level: Level,
-    module: Option<String>,
+pub(in crate::log) struct LoggerMeta {
+    pub timestamp: DateTime<Utc>,
+    pub level: Level,
+    pub module: Option<Cow<'static, str>>,
 }

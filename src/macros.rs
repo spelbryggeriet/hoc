@@ -1,6 +1,6 @@
 macro_rules! progress_with_handle {
     ($($args:tt)*) => {{
-        $crate::log::progress(format!($($args)*))
+        $crate::log::progress(format!($($args)*), module_path!())
     }};
 }
 
