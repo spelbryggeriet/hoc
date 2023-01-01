@@ -113,7 +113,6 @@ impl ProcessBuilder {
         self
     }
 
-    #[allow(unused)]
     pub fn local_mode(mut self) -> Self {
         self.settings.local_mode();
         self
@@ -434,7 +433,6 @@ impl ProcessBuilder {
         }
     }
 
-    #[allow(unused)]
     #[throws(Error)]
     fn spawn_in_shell(
         self,
@@ -870,6 +868,7 @@ pub struct Running {
 }
 
 impl Shell<Idle> {
+    #[allow(unused)]
     pub fn new() -> Self {
         Self {
             state: Idle {
@@ -879,6 +878,7 @@ impl Shell<Idle> {
     }
 
     #[throws(Error)]
+    #[allow(unused)]
     pub fn start(self) -> Shell<Running> {
         let mode = self.state.builder.settings.get_mode().clone();
         let process = self
@@ -894,6 +894,7 @@ impl Shell<Idle> {
 
 impl Shell<Running> {
     #[throws(Error)]
+    #[allow(unused)]
     pub fn run(&self, process: ProcessBuilder) -> Output {
         process
             .shell_mode(
@@ -906,6 +907,7 @@ impl Shell<Running> {
     }
 
     #[throws(Error)]
+    #[allow(unused)]
     pub fn exit(self) -> Output {
         self.state.process.join()?
     }
@@ -990,7 +992,6 @@ impl Settings {
         self
     }
 
-    #[allow(unused)]
     pub fn container_mode(&mut self) -> &mut Self {
         self.mode.replace(ProcessMode::Container);
         if let Some(s) = self.sudo.as_mut() {

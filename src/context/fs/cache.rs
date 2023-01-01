@@ -157,7 +157,7 @@ impl Cache {
             .create(true)
             .truncate(true)
             .create_new(true);
-        let mut file = match file_options.open(&path) {
+        let file = match file_options.open(&path) {
             Ok(file) => file,
             Err(err) if err.kind() == io::ErrorKind::AlreadyExists => {
                 had_previous_file = true;
