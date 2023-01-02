@@ -65,8 +65,9 @@ fn deploy_application(hocfile: &Hocfile) {
 
     shell.run(process!("tee /helm/hoc-service/Chart.yaml" < ("{chart}")))?;
     shell.run(process!(
-        "helm upgrade {name} /helm/hoc-service/ --install --set ingress.host=172.16.4.0 --set ingress.path=/{name} --set image.repository={registry}/{name}",
-        name = hocfile.name
+        "helm upgrade {name} /helm/hoc-service/ --install --set ingress.host={host} --set image.repository={registry}/{name}",
+        host = hocfile.domain,
+        name = hocfile.name,
     ))?;
 
     shell.exit()?;
@@ -80,6 +81,7 @@ fn report(application_name: &str) {
 struct Hocfile {
     name: String,
     version: String,
+    domain: String,
 }
 
 #[derive(Serialize)]

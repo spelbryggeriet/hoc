@@ -30,7 +30,7 @@ spec:
     - host: {{ required "Ingress host must be specified" .host | quote }}
       http:
         paths:
-          - path: {{ required "Ingress path must be specified" .path }}
+          - path: {{ .path }}
             pathType: {{ .pathType }}
             backend:
               service:
