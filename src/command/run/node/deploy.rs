@@ -5,7 +5,7 @@ use lazy_regex::regex;
 
 use crate::{
     prelude::*,
-    process::{self, Output},
+    process,
     util::{self, DiskPartitionInfo, Opt},
 };
 
@@ -14,7 +14,7 @@ pub fn run(node_name: String) {
     check_not_initialized(&node_name)?;
 
     let ip_address = get_node_ip_address(&node_name)?;
-    if ping_endpoint(ip_address)?.code == 2 {
+    if !ping_endpoint(ip_address)? {
         await_node_startup(&node_name, ip_address)?;
     }
 
@@ -46,12 +46,27 @@ fn get_node_ip_address(node_name: &str) -> IpAddr {
 }
 
 #[throws(Error)]
-fn ping_endpoint(ip_address: IpAddr) -> Output {
+fn ping_endpoint(ip_address: IpAddr) -> bool {
     progress!("Pinging node");
 
-    process!("ping -o -t 15 -i 5 {ip_address}")
-        .success_codes([0, 2])
-        .run()?
+    let shell = shell!().start()?;
+    let mut i = 0;
+    let reached_endpoint = loop {
+        if i == 3 {
+            break false;
+        }
+
+        let output = shell.run(process!("ping -c 1 {ip_address}").success_codes([0, 2]))?;
+        if output.code == 0 {
+            return true;
+        }
+
+        shell.run(process!("sleep 5"))?;
+
+        i += 1;
+    };
+    shell.exit()?;
+    reached_endpoint
 }
 
 #[throws(Error)]
@@ -73,7 +88,7 @@ fn await_node_startup(node_name: &str, ip_address: IpAddr) {
             throw!(inquire::InquireError::OperationCanceled);
         }
 
-        if ping_endpoint(ip_address)?.code == 2 {
+        if !ping_endpoint(ip_address)? {
             message = format!("{node_name} could not be reached at {ip_address}.");
         } else {
             break;

@@ -926,7 +926,7 @@ impl Shell<Running> {
 
     #[throws(Error)]
     #[allow(unused)]
-    pub fn exit(self) -> Output {
+    pub fn exit(mut self) -> Output {
         self.state.process.join()?
     }
 }
