@@ -17,16 +17,22 @@ pub fn run() {
 
 #[throws(Error)]
 fn open_hocfile() -> File {
+    progress!("Opening hocfile");
+
     File::open("hocfile.yaml").context("hocfile not found in current directory")?
 }
 
 #[throws(Error)]
 fn parse_hocfile(file: File) -> Hocfile {
+    progress!("Parsing hocfile");
+
     serde_yaml::from_reader(file)?
 }
 
 #[throws(Error)]
 fn deploy_application(hocfile: &Hocfile) {
+    progress!("Deploying application");
+
     let shell = shell!().start()?;
 
     let mut tt = TinyTemplate::new();
