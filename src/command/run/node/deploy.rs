@@ -26,7 +26,7 @@ pub fn run(node_name: String) {
     if !partitions.is_empty() {
         mount_storage(partitions)?;
     }
-    copy_kubeconfig()?;
+    copy_kubeconfig(ip_address)?;
 
     verify_installation()?;
     report(&node_name)?;
@@ -160,11 +160,16 @@ fn mount_storage(partitions: Vec<DiskPartitionInfo>) {
 }
 
 #[throws(Error)]
-fn copy_kubeconfig() {
+fn copy_kubeconfig(ip_address: IpAddr) {
     progress!("Copying kubeconfig");
+
     let output = process!(sudo "cat /etc/rancher/k3s/k3s.yaml").run()?;
     let mut kubeconfig_file = files!("admin/kube/config").create()?;
-    kubeconfig_file.write_all(output.stdout.as_bytes())?;
+    let contents = output.stdout.replace(
+        "server: https://127.0.0.1:6443",
+        &format!("server: https://{ip_address}:6443"),
+    );
+    kubeconfig_file.write_all(contents.as_bytes())?;
 }
 
 #[throws(Error)]
