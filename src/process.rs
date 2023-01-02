@@ -983,14 +983,13 @@ impl Settings {
     }
 
     pub fn sudo(&mut self) -> &mut Self {
-        if !matches!(self.get_mode(), ProcessMode::Container) {
-            self.sudo.replace(true);
-        }
+        self.sudo.replace(true);
         self
     }
 
     fn is_sudo(&self) -> bool {
-        self.sudo.unwrap_or(Self::DEFAULT_SUDO)
+        !matches!(self.get_mode(), ProcessMode::Container)
+            && self.sudo.unwrap_or(Self::DEFAULT_SUDO)
     }
 
     pub fn current_dir<P: Into<Cow<'static, str>>>(&mut self, current_dir: P) -> &mut Self {
