@@ -162,7 +162,7 @@ fn mount_storage(partitions: Vec<DiskPartitionInfo>) {
 #[throws(Error)]
 fn copy_kubeconfig() {
     progress!("Copying kubeconfig");
-    let output = process!("cat /etc/rancher/k3s/k3s.yaml").run()?;
+    let output = process!(sudo "cat /etc/rancher/k3s/k3s.yaml").run()?;
     let mut kubeconfig_file = files!("admin/kube/config").create()?;
     kubeconfig_file.write_all(output.stdout.as_bytes())?;
 }
