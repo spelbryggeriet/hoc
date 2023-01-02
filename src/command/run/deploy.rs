@@ -65,7 +65,7 @@ fn deploy_application(hocfile: &Hocfile) {
 
     shell.run(process!("tee /helm/hoc-service/Chart.yaml" < ("{chart}")))?;
     shell.run(process!(
-        "helm install {name} /helm/hoc-service/ --set image.repository={registry}/{name}",
+        "helm upgrade {name} /helm/hoc-service/ --install --set ingress.host=172.16.4.0 --set ingress.path=/{name} --set image.repository={registry}/{name}",
         name = hocfile.name
     ))?;
 
