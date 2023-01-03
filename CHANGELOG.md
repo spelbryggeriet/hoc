@@ -7,6 +7,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.0.8] - 2023-01-03
+
+Image tag: ghcr.io/spelbryggeriet/game-box-backend:0.0.8
+
 ### Fixed
 
 - `hocfile.yaml` now correctly parses `service.internalPort` as an unsigned 16-bit integer instead
