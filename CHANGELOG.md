@@ -7,6 +7,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+Image tag: ghcr.io/spelbryggeriet/game-box-backend:0.0.6
+
+## [0.0.6] - 2023-01-03
+
 ### Added
 
 - The `deploy` command will now read a certain file (called `hocfile.yaml`), which contains
