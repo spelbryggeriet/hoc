@@ -7,9 +7,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-Image tag: ghcr.io/spelbryggeriet/game-box-backend:0.0.6
+### Changed
+
+- `hocfile.yaml` now contains the top categories `meta`, `image` and `service`.
+- `hocfile.yaml` now supports `service.internalPort` for specifying the internal port that the
+  application is listening on.
 
 ## [0.0.6] - 2023-01-03
+
+Image tag: ghcr.io/spelbryggeriet/game-box-backend:0.0.6
 
 ### Added
 
