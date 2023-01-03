@@ -74,15 +74,15 @@ def update_changelog(next_version, path, repository_owner):
 
     current_date = datetime.datetime.now(datetime.timezone.utc)
     formatted_date = current_date.strftime("%Y-%m-%d")
-    replacement = f"## [{next_version}] - {formatted_date}"
-    new_content = content.replace(HEADER_KEY, replacement, 1)
+    new_header = f"## [{next_version}] - {formatted_date}"
+    new_content = content.replace(HEADER_KEY, new_header, 1)
 
     if content == new_content:
         error("no unreleased version section found")
-    if new_content != new_content.replace(HEADER_KEY, replacement):
+    if new_content != new_content.replace(HEADER_KEY, new_header):
         error("multiple unreleased version sections found")
 
-    new_content = new_content.replace(replacement, f"{HEADER_KEY}\n\nImage tag: ghcr.io/{repository_owner}/game-box-backend:{next_version}\n\n{replacement}")
+    new_content = new_content.replace(new_header, f"{HEADER_KEY}\n\n{new_header}\n\nImage tag: ghcr.io/{repository_owner}/game-box-backend:{next_version}")
     with open(changelog_path, "w") as f:
         f.write(new_content)
 
