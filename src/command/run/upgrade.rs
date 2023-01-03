@@ -15,7 +15,7 @@ use reqwest::{
 use serde::Deserialize;
 use zip::ZipArchive;
 
-use crate::{context::fs::ContextFile, prelude::*};
+use crate::{context::fs::ContextFile, prelude::*, process};
 
 const DEFAULT_REPO_URL: &str = "https://github.com/spelbryggeriet/hoc.git";
 const EXECUTABLE_HOME_DESTINATION_PATH: &str = ".local/bin/hoc";
@@ -25,6 +25,8 @@ const GITHUB_API_RELEASE_DOWNLOAD_TEMPLATE: &str = "https://github.com/spelbrygg
 
 #[throws(Error)]
 pub fn run(from_ref: Option<String>) {
+    process::global_settings().local_mode();
+
     let version = if let Some(from_ref) = from_ref {
         compile_from_source(&from_ref)?;
         from_ref
@@ -86,7 +88,7 @@ fn fetch_source() {
 
     info!("Repository URL: {repo_url}");
 
-    let dest_path = crate::container_source_dir();
+    let dest_path = crate::local_source_dir();
     process!("git clone --depth=1 {repo_url} {dest_path:?}").run()?;
 }
 
@@ -94,7 +96,7 @@ fn fetch_source() {
 fn checkout_ref(from_ref: &str) {
     progress!("Checking out source");
 
-    let source_path = crate::container_source_dir().to_string_lossy();
+    let source_path = crate::local_source_dir().to_string_lossy().into_owned();
 
     process!("git fetch --force origin {from_ref}")
         .current_dir(source_path.clone())
@@ -108,13 +110,13 @@ fn checkout_ref(from_ref: &str) {
 fn build() -> PathBuf {
     progress!("Building");
 
-    let source_path = crate::container_source_dir().to_string_lossy();
+    let source_path = crate::local_source_dir().to_string_lossy().into_owned();
 
     process!("cargo build --release")
         .current_dir(source_path)
         .run()?;
 
-    crate::container_source_dir().join("target/release/hoc")
+    crate::local_source_dir().join("target/release/hoc")
 }
 
 #[throws(Error)]

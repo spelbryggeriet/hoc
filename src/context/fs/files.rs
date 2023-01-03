@@ -49,7 +49,7 @@ impl Files {
         let mut had_previous_file = false;
         let mut should_overwrite = false;
         if let Some(path) = self.map.get(&*key) {
-            error!("File for key {key} is already created");
+            error!("File for key {key} has already been created");
 
             had_previous_file = true;
             let opt = select!("How do you want to resolve the key conflict?")

@@ -28,7 +28,7 @@ def get_next_version(bump_comp_idx, current_version):
     all_components_are_ints = all(map(is_int, components))
 
     if not (has_three_components and all_components_are_ints):
-        error(f'"{version}" version number invalid')
+        error(f'"{current_version}" version number invalid')
 
     components[bump_comp_idx] = int(components[bump_comp_idx]) + 1
     [major, minor, patch] = [*components[:bump_comp_idx+1], 0, 0, 0][:3]
@@ -36,13 +36,11 @@ def get_next_version(bump_comp_idx, current_version):
     return f"{major}.{minor}.{patch}"
 
 
-def update_manifest(bump_comp_idx, path):
+def update_manifest(current_version, next_version, path):
     manifest_path = os.path.join(REPO_DIR, path)
     with open(manifest_path, "r") as f:
         content = f.read()
 
-    current_version = get_current_version(content)
-    next_version = get_next_version(bump_comp_idx, current_version)
     content = content.replace(f'version = "{current_version}"', f'version = "{next_version}"', 1)
 
     with open(manifest_path, "w") as f:
@@ -51,15 +49,14 @@ def update_manifest(bump_comp_idx, path):
     return next_version
 
 
-def update_changelog(next_version, repository_owner):
+def update_changelog(next_version, path, repository_owner):
     HEADER_KEY = "## [Unreleased]"
-    CHANGELOG_NAME = "CHANGELOG.md"
 
-    changelog_path = os.path.join(REPO_DIR, CHANGELOG_NAME)
+    changelog_path = os.path.join(REPO_DIR, path)
     last_version, _ = run("git", "-C", REPO_DIR, "rev-list", "--date-order", "--tags", "--max-count=1")
 
     if len(last_version) > 0:
-        stdout, stderr = run("git", "-C", REPO_DIR, "diff", last_version, "HEAD", "--", CHANGELOG_NAME)
+        stdout, stderr = run("git", "-C", REPO_DIR, "diff", last_version, "HEAD", "--", path)
 
         if len(stderr) > 0:
             error(stderr.strip())
@@ -79,14 +76,32 @@ def update_changelog(next_version, repository_owner):
     if new_content != new_content.replace(HEADER_KEY, replacement):
         error("multiple unreleased version sections found")
 
-    new_content = new_content.replace(replacement, f"{HEADER_KEY}\n\nImage tag: ghcr.io/{repository_owner}/game-box-backend:{next_version}\n\n{replacement}")
+    new_content = new_content.replace(replacement, f"{HEADER_KEY}\n\n{replacement}\n\nImage tag: ghcr.io/{repository_owner}/game-box-backend:{next_version}")
     with open(changelog_path, "w") as f:
         f.write(new_content)
 
 
-def bump_version(bump_comp_idx):
-    next_version = update_manifest(bump_comp_idx, "Cargo.toml")
-    update_changelog(next_version)
+def update_helm_chart(current_version, next_version, path):
+    helm_chart_path = os.path.join(REPO_DIR, path)
+    with open(helm_chart_path, "r") as f:
+        content = f.read()
+
+    content = content.replace(f"version: {current_version}", f"version: {next_version}", 1)
+
+    with open(helm_chart_path, "w") as f:
+        f.write(content)
+
+    return next_version
+
+
+def bump_version(bump_comp_idx, repository_owner):
+    current_version = get_current_version()
+    next_version = get_next_version(bump_comp_idx, current_version)
+
+    update_manifest(current_version, next_version, "Cargo.toml")
+    update_changelog(next_version, "CHANGELOG.md", repository_owner)
+    update_helm_chart(current_version, next_version, "config/helm/hoc-service/Chart.tmpl.yaml")
+
     return next_version
 
 

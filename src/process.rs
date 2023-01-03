@@ -354,25 +354,25 @@ impl ProcessBuilder {
             "-i",
             "--mount",
             &format!(
-                "type=bind,source={},target={}",
+                "type=bind,source={},target={},readonly",
                 crate::local_files_dir().to_string_lossy(),
                 crate::container_files_dir().to_string_lossy(),
             ),
             "--mount",
             &format!(
-                "type=bind,source={},target={}",
+                "type=bind,source={},target={},readonly",
                 crate::local_cache_dir().to_string_lossy(),
                 crate::container_cache_dir().to_string_lossy(),
             ),
             "--mount",
             &format!(
-                "type=bind,source={},target={}",
+                "type=bind,source={},target={},readonly",
                 crate::local_temp_dir().to_string_lossy(),
                 crate::container_temp_dir().to_string_lossy(),
             ),
             "--mount",
             &format!(
-                "type=bind,source={},target={}",
+                "type=bind,source={},target={},readonly",
                 crate::local_source_dir().to_string_lossy(),
                 crate::container_source_dir().to_string_lossy(),
             ),
@@ -926,7 +926,7 @@ impl Shell<Running> {
 
     #[throws(Error)]
     #[allow(unused)]
-    pub fn exit(self) -> Output {
+    pub fn exit(mut self) -> Output {
         self.state.process.join()?
     }
 }
@@ -983,14 +983,13 @@ impl Settings {
     }
 
     pub fn sudo(&mut self) -> &mut Self {
-        if !matches!(self.get_mode(), ProcessMode::Container) {
-            self.sudo.replace(true);
-        }
+        self.sudo.replace(true);
         self
     }
 
     fn is_sudo(&self) -> bool {
-        self.sudo.unwrap_or(Self::DEFAULT_SUDO)
+        !matches!(self.get_mode(), ProcessMode::Container)
+            && self.sudo.unwrap_or(Self::DEFAULT_SUDO)
     }
 
     pub fn current_dir<P: Into<Cow<'static, str>>>(&mut self, current_dir: P) -> &mut Self {
