@@ -12,6 +12,7 @@ pub fn run() {
     let file = open_hocfile()?;
     let hocfile = parse_hocfile(file)?;
     deploy_application(&hocfile)?;
+    test_application(&hocfile)?;
     report(&hocfile.name);
 }
 
@@ -72,6 +73,13 @@ fn deploy_application(hocfile: &Hocfile) {
     ))?;
 
     shell.exit()?;
+}
+
+#[throws(Error)]
+fn test_application(hocfile: &Hocfile) {
+    progress!("Verifying deployment");
+
+    process!("helm test {name}", name = hocfile.name).run()?;
 }
 
 fn report(application_name: &str) {
