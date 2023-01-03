@@ -7,6 +7,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- The `deploy` command will now read a certain file (called `hocfile.yaml`), which contains
+  information on the application and how to deploy it, and use that to deploy it as a Helm chart in
+  the Kubernetes cluster.
+
 ## [0.0.5] - 2022-12-26
 
 Image tag: ghcr.io/spelbryggeriet/game-box-backend:0.0.5
