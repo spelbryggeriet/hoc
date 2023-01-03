@@ -28,7 +28,7 @@ def get_next_version(bump_comp_idx, current_version):
     all_components_are_ints = all(map(is_int, components))
 
     if not (has_three_components and all_components_are_ints):
-        error(f'"{current_version}" version number invalid')
+        error(f'"{version}" version number invalid')
 
     components[bump_comp_idx] = int(components[bump_comp_idx]) + 1
     [major, minor, patch] = [*components[:bump_comp_idx+1], 0, 0, 0][:3]
@@ -36,7 +36,15 @@ def get_next_version(bump_comp_idx, current_version):
     return f"{major}.{minor}.{patch}"
 
 
-def update_manifest(current_version, next_version, path):
+def update_version_file(next_version, path):
+    version_path = os.path.join(REPO_DIR, path)
+    with open(version_path, "w") as f:
+        f.write(next_version)
+
+    return next_version
+
+
+def update_manifest(next_version, path, current_version):
     manifest_path = os.path.join(REPO_DIR, path)
     with open(manifest_path, "r") as f:
         content = f.read()
@@ -45,8 +53,6 @@ def update_manifest(current_version, next_version, path):
 
     with open(manifest_path, "w") as f:
         f.write(content)
-
-    return next_version
 
 
 def update_changelog(next_version, path, repository_owner):
@@ -76,12 +82,12 @@ def update_changelog(next_version, path, repository_owner):
     if new_content != new_content.replace(HEADER_KEY, replacement):
         error("multiple unreleased version sections found")
 
-    new_content = new_content.replace(replacement, f"{HEADER_KEY}\n\n{replacement}\n\nImage tag: ghcr.io/{repository_owner}/game-box-backend:{next_version}")
+    new_content = new_content.replace(replacement, f"{HEADER_KEY}\n\nImage tag: ghcr.io/{repository_owner}/game-box-backend:{next_version}\n\n{replacement}")
     with open(changelog_path, "w") as f:
         f.write(new_content)
 
 
-def update_helm_chart(current_version, next_version, path):
+def update_helm_chart(next_version, path, current_version):
     helm_chart_path = os.path.join(REPO_DIR, path)
     with open(helm_chart_path, "r") as f:
         content = f.read()
@@ -98,9 +104,10 @@ def bump_version(bump_comp_idx, repository_owner):
     current_version = get_current_version()
     next_version = get_next_version(bump_comp_idx, current_version)
 
-    update_manifest(current_version, next_version, "Cargo.toml")
+    update_version_file(next_version, "VERSION")
+    update_manifest(next_version, "Cargo.toml", current_version)
     update_changelog(next_version, "CHANGELOG.md", repository_owner)
-    update_helm_chart(current_version, next_version, "config/helm/hoc-service/Chart.tmpl.yaml")
+    update_helm_chart(next_version, "config/helm/Chart.tmpl.yaml", current_version)
 
     return next_version
 
