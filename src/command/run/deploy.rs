@@ -104,7 +104,7 @@ struct Image {
 #[serde(rename_all = "camelCase")]
 struct Service {
     domain: String,
-    internal_port: String,
+    internal_port: u16,
 }
 
 #[derive(Serialize)]
