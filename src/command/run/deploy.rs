@@ -12,7 +12,7 @@ pub fn run() {
     let file = open_hocfile()?;
     let hocfile = parse_hocfile(file)?;
     deploy_application(&hocfile)?;
-    report(&hocfile.name);
+    report(&hocfile.meta.name);
 }
 
 #[throws(Error)]
@@ -55,8 +55,8 @@ fn deploy_application(hocfile: &Hocfile) {
     });
 
     let context = ChartContext {
-        name: &hocfile.name,
-        app_version: &hocfile.version,
+        name: &hocfile.meta.name,
+        app_version: &hocfile.meta.version,
     };
 
     let chart = tt.render("chart", &context)?;
@@ -65,10 +65,14 @@ fn deploy_application(hocfile: &Hocfile) {
 
     shell.run(process!("tee /helm/hoc-service/Chart.yaml" < ("{chart}")))?;
     shell.run(process!(
-        "helm upgrade {name} /helm/hoc-service/ --install --set ingress.host={host} --set image.repository={registry}/{image_name}",
-        host = hocfile.domain,
-        image_name = hocfile.image_name,
-        name = hocfile.name,
+        "helm upgrade {name} /helm/hoc-service/ --install \
+            --set image.repository={registry}/{image_name} \
+            --set ingress.host={host} \
+            --set service.port={port}",
+        host = hocfile.service.domain,
+        image_name = hocfile.image.name,
+        name = hocfile.meta.name,
+        port = hocfile.service.internal_port,
     ))?;
 
     shell.exit()?;
@@ -79,12 +83,28 @@ fn report(application_name: &str) {
 }
 
 #[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
 struct Hocfile {
+    meta: Meta,
+    image: Image,
+    service: Service,
+}
+
+#[derive(Deserialize)]
+struct Meta {
     name: String,
     version: String,
-    image_name: String,
+}
+
+#[derive(Deserialize)]
+struct Image {
+    name: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Service {
     domain: String,
+    internal_port: String,
 }
 
 #[derive(Serialize)]
