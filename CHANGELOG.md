@@ -7,6 +7,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- Application deployments are now awaited until completion. If the deployment succeeds, it will run
+  connectivity tests to the application. If the deployment fails, then it will roll back to the
+  previous state.
+
 ## [0.0.8] - 2023-01-03
 
 Image tag: ghcr.io/spelbryggeriet/game-box-backend:0.0.8

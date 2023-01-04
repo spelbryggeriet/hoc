@@ -4,8 +4,10 @@ use clap::{CommandFactory, Parser};
 
 use crate::{cidr::Cidr, prelude::*};
 pub use run::*;
+use util::Defaults;
 
 mod run;
+mod util;
 
 #[macro_use]
 mod macros;
@@ -38,6 +40,12 @@ commands_summary! {
     node_deploy {
         node_name {
             help = "The name of the node",
+        }
+    }
+    deploy {
+        timeout {
+            default = "5m0s",
+            help = "Time to wait for any individual Kubernetes operation",
         }
     }
 }
@@ -150,16 +158,20 @@ pub struct InitCommand {
     )]
     container_registry: Option<String>,
 
-    /// Skip prompts for fields that have defaults
-    ///
-    /// This is equivalent to providing all defaultable flags without a value.
-    #[clap(short, long)]
-    defaults: bool,
+    #[clap(flatten)]
+    defaults: Defaults,
 }
 
 /// Deploy an application
 #[derive(Parser)]
-pub struct DeployCommand {}
+pub struct DeployCommand {
+    #[clap(
+        help = help::deploy::timeout(),
+        long,
+        default_value = default::deploy::timeout(),
+    )]
+    timeout: String,
+}
 
 /// Manage an SD card
 #[derive(clap::Subcommand)]
@@ -251,10 +263,12 @@ impl Command {
                 }
             },
 
-            Deploy(_deploy_command) => {
+            Deploy(deploy_command) => {
                 cmd_diagnostics!(DeployCommand);
 
-                deploy::run()?;
+                arg_diagnostics!(timeout, deploy_command.timeout);
+
+                deploy::run(deploy_command.timeout)?;
             }
 
             #[cfg(debug_assertions)]
