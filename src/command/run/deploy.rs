@@ -1,3 +1,4 @@
+use std::time::Duration;
 use std::{fmt::Write, fs::File};
 
 use anyhow::Error;
@@ -8,10 +9,12 @@ use tinytemplate::TinyTemplate;
 use crate::prelude::*;
 
 #[throws(Error)]
-pub fn run() {
+pub fn run(timeout: String) {
     let file = open_hocfile()?;
     let hocfile = parse_hocfile(file)?;
-    deploy_application(&hocfile)?;
+    deploy_application(&hocfile, &timeout)?;
+    wait_on_pods(&hocfile)?;
+    test_deployment(&hocfile, &timeout)?;
     report(&hocfile.meta.name);
 }
 
@@ -30,7 +33,7 @@ fn parse_hocfile(file: File) -> Hocfile {
 }
 
 #[throws(Error)]
-fn deploy_application(hocfile: &Hocfile) {
+fn deploy_application(hocfile: &Hocfile, timeout: &str) {
     progress!("Deploying application");
 
     let shell = shell!().start()?;
@@ -65,7 +68,7 @@ fn deploy_application(hocfile: &Hocfile) {
 
     shell.run(process!("tee /helm/hoc-service/Chart.yaml" < ("{chart}")))?;
     shell.run(process!(
-        "helm upgrade {name} /helm/hoc-service/ --install \
+        "helm upgrade {name} /helm/hoc-service/ --install --atomic --timeout {timeout} \
             --set image.repository={registry}/{image_name} \
             --set ingress.host={host} \
             --set service.port={port}",
@@ -76,6 +79,56 @@ fn deploy_application(hocfile: &Hocfile) {
     ))?;
 
     shell.exit()?;
+}
+
+#[throws(Error)]
+fn wait_on_pods(hocfile: &Hocfile) {
+    progress!("Waiting on pods to be ready");
+
+    const JSON_PATH: &str = "'\
+        {range .items[*]}\
+            {.status.phase}{\"=\"}\
+            {range .status.containerStatuses[*]}\
+                {.ready}{\"-\"}\
+            {end}{\",\"}\
+        {end}'";
+
+    for _ in 0..30 {
+        let output = process!(
+            "kubectl get pods \
+                -l=app.kubernetes.io/managed-by!=Helm,\
+                   app.kubernetes.io/instance={name} \
+                -o=jsonpath={JSON_PATH}",
+            name = hocfile.meta.name,
+        )
+        .run()?;
+
+        let all_ready = output.stdout.split_terminator(',').all(|pod| {
+            pod.split_once('=').map_or(false, |(phase, statuses)| {
+                phase == "Running"
+                    && statuses
+                        .split_terminator('-')
+                        .all(|status| status == "true")
+            })
+        });
+
+        if all_ready {
+            break;
+        };
+
+        spin_sleep::sleep(Duration::from_secs(10));
+    }
+}
+
+#[throws(Error)]
+fn test_deployment(hocfile: &Hocfile, timeout: &str) {
+    progress!("Testing deployment");
+
+    process!(
+        "helm test {name} --timeout {timeout}",
+        name = hocfile.meta.name,
+    )
+    .run()?;
 }
 
 fn report(application_name: &str) {

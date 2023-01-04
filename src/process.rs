@@ -158,7 +158,7 @@ impl ProcessBuilder {
     }
 
     #[throws(Error)]
-    fn spawn(mut self) -> Process {
+    pub fn spawn(mut self) -> Process {
         self.update_settings();
         if let Some(process) = self.revert_process.as_mut() {
             process.update_settings();
