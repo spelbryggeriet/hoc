@@ -1,6 +1,6 @@
 use std::{io::Write, net::IpAddr};
 
-use anyhow::{anyhow, Error};
+use anyhow::Error;
 use lazy_regex::regex;
 
 use crate::{
@@ -34,9 +34,18 @@ pub fn run(node_name: String) {
 
 #[throws(Error)]
 fn check_not_initialized(node_name: &str) {
-    let initialized: bool = kv!("nodes/{node_name}/initialized").get()?.convert()?;
-    if initialized {
-        throw!(anyhow!("{node_name} has already been deployed"));
+    if !kv!("nodes/{node_name}").exists() {
+        let output = process!(
+            "kubectl get node {node_name} \
+            -o=jsonpath='{{.status.conditions[?(@.type==\"Ready\")].status}}'",
+        )
+        .run()?;
+
+        if output.stdout == "True" {
+            bail!("{node_name} has already been deployed");
+        } else {
+            bail!("{node_name} has already been deployed, but is not ready yet")
+        }
     }
 }
 
