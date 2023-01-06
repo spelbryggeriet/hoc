@@ -210,6 +210,15 @@ impl Kv {
         }
     }
 
+    pub fn item_exists<K>(&self, key: &K) -> bool
+    where
+        K: AsRef<Key> + ?Sized,
+    {
+        self.map
+            .keys()
+            .any(|k| k.as_str().starts_with(key.as_ref().as_str()))
+    }
+
     /// Puts a value in the key-value store.
     ///
     /// Returns `None` if no previous value was present, `Some(None)` if a value is already present
