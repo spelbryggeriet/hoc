@@ -229,12 +229,29 @@ impl<'a> KvBuilder<'a, All> {
         Context::get_or_init().kv().item_exists(&self.key)
     }
 
+    #[allow(unused)]
     #[throws(kv::Error)]
     pub fn update<V>(self, value: V)
     where
         V: Into<Value> + Clone + Display + Send + 'static,
     {
         self.put_or_update(value, true)?;
+    }
+
+    #[throws(kv::Error)]
+    pub fn drop(self) {
+        let item =
+            Context::get_or_init()
+                .kv_mut()
+                .drop_item(&self.key, |value, is_temporary| {
+                    if is_temporary {
+                        value.take();
+                    }
+                })?;
+
+        if let Some(item) = item {
+            Ledger::get_or_init().add(ledger::Drop::new(self.key.into_owned(), item));
+        }
     }
 }
 
@@ -291,11 +308,12 @@ pub mod ledger {
 
     use crate::{
         context::{
-            key::KeyOwned,
-            kv::{PutOptions, Value},
+            key::{self, KeyOwned},
+            kv::{Item, PutOptions, Value},
             Context,
         },
         ledger::Transaction,
+        prelude::*,
         util::Secret,
     };
 
@@ -315,7 +333,10 @@ pub mod ledger {
         }
     }
 
-    impl<V: Into<Value> + Display + Send + 'static> Transaction for Put<V> {
+    impl<V> Transaction for Put<V>
+    where
+        V: Into<Value> + Display + Send + 'static,
+    {
         fn description(&self) -> Cow<'static, str> {
             "Put value".into()
         }
@@ -332,7 +353,8 @@ pub mod ledger {
             detail.into()
         }
 
-        fn revert(mut self: Box<Self>) -> anyhow::Result<()> {
+        #[throws(anyhow::Error)]
+        fn revert(mut self: Box<Self>) {
             let mut kv = Context::get_or_init().kv_mut();
             match self.previous_value.take() {
                 Some(previous_value) => {
@@ -346,10 +368,50 @@ pub mod ledger {
                     )?;
                 }
                 None => {
-                    kv.drop_value(&self.key)?;
+                    kv.drop_item(&self.key, |_, _| ())?;
                 }
             }
-            Ok(())
+        }
+    }
+
+    pub struct Drop {
+        template: KeyOwned,
+        item: Item,
+    }
+
+    impl Drop {
+        pub fn new(template: KeyOwned, item: Item) -> Self {
+            Self { template, item }
+        }
+    }
+
+    impl Transaction for Drop {
+        fn description(&self) -> Cow<'static, str> {
+            "Drop value".into()
+        }
+
+        fn detail(&self) -> Cow<'static, str> {
+            let mut detail = "Key: ".to_owned();
+            detail += self.template.as_str();
+            detail += "\nItem:\n";
+            detail += &self.item.to_string();
+            detail.into()
+        }
+
+        #[throws(anyhow::Error)]
+        fn revert(self: Box<Self>) {
+            let known_prefix = key::get_known_prefix_for_template(&self.template);
+            let mut kv = Context::get_or_init().kv_mut();
+            for (key, value) in self.item.into_key_values() {
+                kv.put_value(
+                    known_prefix.join(&key),
+                    value,
+                    PutOptions {
+                        update: false,
+                        temporary: false,
+                    },
+                )?;
+            }
         }
     }
 }
