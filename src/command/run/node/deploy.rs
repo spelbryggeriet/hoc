@@ -14,18 +14,13 @@ pub fn run(node_name: String) {
     check_not_initialized(&node_name)?;
 
     let ip_address = get_node_ip_address(&node_name)?;
-    if !ping_endpoint(ip_address)? {
-        await_node_startup(&node_name, ip_address)?;
-    }
+    await_node_startup(&node_name, ip_address)?;
 
     process::global_settings().remote_mode(node_name.clone());
 
     await_node_initialization()?;
     change_password()?;
-    let partitions = find_attached_storage()?;
-    if !partitions.is_empty() {
-        mount_storage(partitions)?;
-    }
+    mount_storage()?;
     copy_kubeconfig(ip_address)?;
 
     verify_installation()?;
@@ -80,6 +75,10 @@ fn ping_endpoint(ip_address: IpAddr) -> bool {
 
 #[throws(Error)]
 fn await_node_startup(node_name: &str, ip_address: IpAddr) {
+    if ping_endpoint(ip_address)? {
+        return;
+    }
+
     let mut message = format!(
         "{node_name} could not be reached at {ip_address}. Make sure the node hardware has been \
         prepared with a flashed SD card, is plugged into the local network with ethernet, and is \
@@ -107,18 +106,38 @@ fn await_node_startup(node_name: &str, ip_address: IpAddr) {
 
 #[throws(Error)]
 fn await_node_initialization() {
+    let init_status = progress_with_handle!("Checking node initializaion status");
+
+    let output = process!("cloud-init status").run()?;
+    if output.stdout.contains("status: done") {
+        info!("Status: Done");
+        return;
+    }
+    info!("Status: In progress");
+    init_status.finish();
+
     progress!("Waiting for node initialization to finish");
     process!("cloud-init status --wait").run()?;
 }
 
 #[throws(Error)]
 fn change_password() {
+    let check_pass = progress_with_handle!("Checking password");
+    match process!(sudo "true").run() {
+        Ok(_) => return,
+        Err(process::Error::Failed(_)) => (),
+        Err(error) => throw!(error),
+    }
+    check_pass.finish();
+
     progress!("Changing password");
 
     let username: String = kv!("admin/username").get()?.convert()?;
     let password = process::get_remote_password()?.into_non_secret();
-    process!(sudo "chpasswd" < ("temporary_password\n{username}:{password}"))
-        .revertible(process!(sudo "chpasswd" < ("{username}:temporary_password")))
+    process!("sudo chpasswd" < ("temporary_password\n{username}:{password}"))
+        .revertible(process!(
+            "sudo chpasswd" < ("{password}\n{username}:temporary_password")
+        ))
         .run()?
 }
 
@@ -138,7 +157,12 @@ fn find_attached_storage() -> Vec<DiskPartitionInfo> {
 }
 
 #[throws(Error)]
-fn mount_storage(partitions: Vec<DiskPartitionInfo>) {
+fn mount_storage() {
+    let partitions = find_attached_storage()?;
+    if partitions.is_empty() {
+        return;
+    }
+
     progress!("Mounting permanent storage");
 
     let opt = select!("Which storage do you want to mount?")
@@ -170,6 +194,13 @@ fn mount_storage(partitions: Vec<DiskPartitionInfo>) {
 
 #[throws(Error)]
 fn copy_kubeconfig(ip_address: IpAddr) {
+    let check_kubeconf = progress_with_handle!("Checking existing kubeconfig");
+    if files!("admin/kube/config").exists()? {
+        return;
+    }
+    info!("Config was not found");
+    check_kubeconf.finish();
+
     progress!("Copying kubeconfig");
 
     let output = process!(sudo "cat /etc/rancher/k3s/k3s.yaml").run()?;
