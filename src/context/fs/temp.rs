@@ -1,6 +1,7 @@
 use std::{
     fs::{self, File},
     io,
+    os::unix::prelude::OpenOptionsExt,
     path::PathBuf,
 };
 
@@ -12,19 +13,32 @@ use crate::{
 
 pub struct Temp {
     temp_dir: PathBuf,
+    permissions: Option<u32>,
 }
 
 impl Temp {
     pub(in crate::context) fn new() -> Self {
         Self {
             temp_dir: crate::local_temp_dir(),
+            permissions: None,
         }
+    }
+
+    #[allow(unused)]
+    pub fn permissions(mut self, permissions: u32) -> Self {
+        self.permissions.replace(permissions);
+        self
     }
 
     #[throws(Error)]
     pub fn create_file(&self) -> ContextFile {
         let mut file_options = File::options();
         file_options.write(true).truncate(true).read(true);
+
+        // Set permissions (mode) if provided
+        if let Some(permissions) = self.permissions {
+            file_options.mode(permissions);
+        }
 
         let mut path = self.temp_dir.clone();
 
@@ -77,6 +91,7 @@ impl Default for Temp {
     fn default() -> Self {
         Self {
             temp_dir: crate::local_temp_dir(),
+            permissions: None,
         }
     }
 }

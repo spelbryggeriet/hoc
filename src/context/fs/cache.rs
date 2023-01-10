@@ -1,6 +1,7 @@
 use std::{
     fs::{self, File},
     io,
+    os::unix::prelude::OpenOptionsExt,
     path::{Path, PathBuf},
 };
 
@@ -39,6 +40,7 @@ impl Cache {
     pub fn get_or_create_file<K, C, O>(
         &mut self,
         key: K,
+        permissions: Option<u32>,
         on_cache: C,
         on_overwrite: O,
     ) -> (bool, ContextFile)
@@ -51,6 +53,12 @@ impl Cache {
 
         let mut had_previous_file = false;
         let mut file_options = File::options();
+
+        // Set permissions (mode) if provided
+        if let Some(permissions) = permissions {
+            file_options.mode(permissions);
+        }
+
         file_options.write(true).read(true);
 
         if let Some(path) = self.map.get(&*key) {
@@ -134,6 +142,7 @@ impl Cache {
     pub fn create_or_overwrite_file<K, C, O>(
         &mut self,
         key: K,
+        permissions: Option<u32>,
         on_cache: C,
         on_overwrite: O,
     ) -> (bool, ContextFile)
@@ -151,12 +160,19 @@ impl Cache {
 
         let mut had_previous_file = false;
         let mut file_options = File::options();
+
+        // Set permissions (mode) if provided
+        if let Some(permissions) = permissions {
+            file_options.mode(permissions);
+        }
+
         file_options
             .write(true)
             .read(true)
             .create(true)
             .truncate(true)
             .create_new(true);
+
         let file = match file_options.open(&path) {
             Ok(file) => file,
             Err(err) if err.kind() == io::ErrorKind::AlreadyExists => {

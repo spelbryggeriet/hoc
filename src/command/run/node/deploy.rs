@@ -173,7 +173,7 @@ fn copy_kubeconfig(ip_address: IpAddr) {
     progress!("Copying kubeconfig");
 
     let output = process!(sudo "cat /etc/rancher/k3s/k3s.yaml").run()?;
-    let mut kubeconfig_file = files!("admin/kube/config").create()?;
+    let mut kubeconfig_file = files!("admin/kube/config").permissions(0o600).create()?;
     let contents = output.stdout.replace(
         "server: https://127.0.0.1:6443",
         &format!("server: https://{ip_address}:6443"),

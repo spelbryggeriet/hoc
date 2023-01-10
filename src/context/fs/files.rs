@@ -2,6 +2,7 @@ use std::{
     borrow::Cow,
     fs::{self, File},
     io,
+    os::unix::prelude::OpenOptionsExt,
     path::{Path, PathBuf},
 };
 
@@ -36,7 +37,12 @@ impl Files {
     }
 
     #[throws(Error)]
-    pub fn create_file<K, F>(&mut self, key: K, on_overwrite: F) -> (bool, ContextFile)
+    pub fn create_file<K, F>(
+        &mut self,
+        key: K,
+        permissions: Option<u32>,
+        on_overwrite: F,
+    ) -> (bool, ContextFile)
     where
         K: Into<KeyOwned>,
         F: FnOnce(&Path) -> Result<(), Error>,
@@ -44,6 +50,12 @@ impl Files {
         let key = key.into();
 
         let mut file_options = File::options();
+
+        // Set permissions (mode) if provided
+        if let Some(permissions) = permissions {
+            file_options.mode(permissions);
+        }
+
         file_options.read(true).write(true);
 
         let mut had_previous_file = false;
