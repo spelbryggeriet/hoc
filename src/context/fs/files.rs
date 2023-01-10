@@ -37,6 +37,16 @@ impl Files {
     }
 
     #[throws(Error)]
+    pub fn exists<'key, K>(&self, key: K) -> bool
+    where
+        K: Into<Cow<'key, Key>>,
+    {
+        self.map
+            .get(&*key.into())
+            .map_or(Ok(false), |path| path.try_exists())?
+    }
+
+    #[throws(Error)]
     pub fn create_file<K, F>(
         &mut self,
         key: K,
