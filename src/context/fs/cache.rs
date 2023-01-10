@@ -57,7 +57,7 @@ impl Cache {
             match file_options.open(path) {
                 Ok(file) => {
                     had_previous_file = true;
-                    debug!("Getting cached file: {key}");
+                    debug!("Getting cached file: {key:?}");
                     let file = ContextFile::new(
                         file,
                         path,
@@ -94,7 +94,7 @@ impl Cache {
 
                 should_overwrite = opt == Opt::Overwrite;
                 if !should_overwrite {
-                    debug!("Creating cached file: {key} (skipping)");
+                    debug!("Creating cached file: {key:?} (skipping)");
                     let file = file_options.open(&path)?;
                     let file = ContextFile::new(
                         file,
@@ -119,9 +119,9 @@ impl Cache {
         context::util::cache_loop(&key, &mut file, on_cache)?;
 
         if !should_overwrite {
-            debug!("Creating cached file: {key}");
+            debug!("Creating cached file: {key:?}");
         } else {
-            warn!("Creating cached file: {key} (overwriting)");
+            warn!("Creating cached file: {key:?} (overwriting)");
         }
 
         self.map.insert(key, path);
@@ -175,9 +175,9 @@ impl Cache {
         context::util::cache_loop(&key, &mut file, on_cache)?;
 
         if !had_previous_file {
-            debug!("Creating cached file: {key}");
+            debug!("Creating cached file: {key:?}");
         } else {
-            debug!("Creating cached file: {key} (overwriting)");
+            debug!("Creating cached file: {key:?} (overwriting)");
         }
 
         self.map.insert(key, path);
@@ -194,7 +194,7 @@ impl Cache {
 
         match self.map.remove(key) {
             Some(path) => {
-                debug!("Remove cached file: {key}");
+                debug!("Remove cached file: {key:?}");
                 match fs::remove_file(path) {
                     Ok(()) => (),
                     Err(err) if force && err.kind() == io::ErrorKind::NotFound => (),
@@ -202,15 +202,15 @@ impl Cache {
                 };
             }
             None if !force => {
-                error!("Key {key} does not exist.");
+                error!("Key {key:?} does not exist.");
 
                 select!("How do you want to resolve the key conflict?")
                     .with_option(Opt::Skip)
                     .get()?;
 
-                warn!("Remove cached file: {key} (skipping)");
+                warn!("Remove cached file: {key:?} (skipping)");
             }
-            None => debug!("Remove cached file: {key} (skipping)"),
+            None => debug!("Remove cached file: {key:?} (skipping)"),
         }
     }
 }

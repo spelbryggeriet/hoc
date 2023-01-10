@@ -49,7 +49,7 @@ impl Files {
         let mut had_previous_file = false;
         let mut should_overwrite = false;
         if let Some(path) = self.map.get(&*key) {
-            error!("File for key {key} has already been created");
+            error!("File for key {key:?} has already been created");
 
             had_previous_file = true;
             let opt = select!("How do you want to resolve the key conflict?")
@@ -58,7 +58,7 @@ impl Files {
 
             should_overwrite = opt == Opt::Overwrite;
             if !should_overwrite {
-                warn!("Creating file: {key} (skipping)");
+                warn!("Creating file: {key:?} (skipping)");
                 let file = ContextFile::new(
                     file_options.open(path)?,
                     path.clone(),
@@ -91,7 +91,7 @@ impl Files {
 
                 should_overwrite = opt == Opt::Overwrite;
                 if !should_overwrite {
-                    warn!("Creating file: {key} (skipping)");
+                    warn!("Creating file: {key:?} (skipping)");
                     let file = ContextFile::new(
                         file_options.open(&path)?,
                         path,
@@ -106,9 +106,9 @@ impl Files {
         };
 
         if !should_overwrite {
-            debug!("Creating file: {key}");
+            debug!("Creating file: {key:?}");
         } else {
-            warn!("Creating file: {key} (overwriting)");
+            warn!("Creating file: {key:?} (overwriting)");
         }
 
         let file = ContextFile::new(
@@ -128,7 +128,7 @@ impl Files {
     {
         let key = key.into();
 
-        debug!("Getting file for key: {key}");
+        debug!("Getting file for key: {key:?}");
 
         let mut file_options = File::options();
         file_options.write(true).read(true);
@@ -150,17 +150,17 @@ impl Files {
 
         match self.map.remove(key) {
             Some(path) => {
-                debug!("Remove file: {key}");
+                debug!("Remove file: {key:?}");
                 fs::remove_file(path)?;
             }
             None if !force => {
-                error!("Key {key} does not exist.");
+                error!("Key {key:?} does not exist.");
 
                 select!("How do you want to resolve the key conflict?")
                     .with_option(Opt::Skip)
                     .get()?;
 
-                warn!("Remove file: {key} (skipping)");
+                warn!("Remove file: {key:?} (skipping)");
             }
             None => (),
         }
