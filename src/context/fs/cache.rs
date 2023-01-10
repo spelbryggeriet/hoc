@@ -1,4 +1,5 @@
 use std::{
+    borrow::Cow,
     fs::{self, File},
     io,
     os::unix::prelude::OpenOptionsExt,
@@ -34,6 +35,17 @@ impl Cache {
             map: IndexMap::new(),
             cache_dir: crate::local_cache_dir(),
         }
+    }
+
+    #[allow(unused)]
+    #[throws(Error)]
+    pub fn exists<'key, K>(&self, key: K) -> bool
+    where
+        K: Into<Cow<'key, Key>>,
+    {
+        self.map
+            .get(&*key.into())
+            .map_or(Ok(false), |path| path.try_exists())?
     }
 
     #[throws(Error)]

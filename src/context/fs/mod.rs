@@ -36,6 +36,11 @@ impl FileBuilder<Persisted> {
     }
 
     #[throws(anyhow::Error)]
+    pub fn exists(self) -> bool {
+        Context::get_or_init().files().exists(self.key)?
+    }
+
+    #[throws(anyhow::Error)]
     pub fn get(self) -> ContextFile {
         Context::get_or_init().files().get_file(self.key)?
     }
@@ -81,6 +86,12 @@ impl<F> FileBuilder<Cached<F>>
 where
     F: Fn(&mut ContextFile, bool) -> Result<(), Error>,
 {
+    #[allow(unused)]
+    #[throws(anyhow::Error)]
+    pub fn exists(self) -> bool {
+        Context::get_or_init().cache_mut().exists(self.key)?
+    }
+
     #[throws(anyhow::Error)]
     pub fn get_or_create(self) -> ContextFile {
         let context = Context::get_or_init();
