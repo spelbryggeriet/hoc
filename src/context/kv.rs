@@ -573,7 +573,7 @@ impl Display for Item {
         write!(
             f,
             "{}",
-            serde_yaml::to_string(self).unwrap_or("<invalid format>".to_owned())
+            serde_yaml::to_string(self).unwrap_or_else(|_| "<invalid format>".to_owned())
         )?;
     }
 }
@@ -1260,7 +1260,22 @@ mod tests {
             };
             array
         }};
+    }
 
+    macro_rules! value_array {
+         ($($value:expr),* $(,)?) => {{
+             let mut array = Vec::<Value>::new();
+             $(array.push({$value}.into());)*
+             array
+         }};
+    }
+
+    macro_rules! value_map {
+        ($($key_value:ident),* $(,)?) => {{
+            let mut map = IndexMap::<&str, Value>::new();
+            $(map.insert(stringify!($key_value), $key_value.into());)*
+            map
+        }};
     }
 
     macro_rules! expect_equal {
@@ -1271,6 +1286,18 @@ mod tests {
                 expected == actual,
                 "\n\nexpected: {expected:?}\nactual: {actual:?}\n\n",
             );
+        }};
+    }
+
+    macro_rules! expect_dropped {
+        ($kv:expr, $key:expr) => {{
+            assert!(matches!(
+                $kv.get_item($key),
+                Err(crate::context::kv::Error::Key(
+                    crate::context::kv::key::Error::KeyDoesNotExist(key)
+                ))
+                if key.as_str() == $key),
+                "item was not dropped");
         }};
     }
 
@@ -1609,6 +1636,308 @@ mod tests {
                 map betsy,
             },
         });
+        expect!("array/*/**" => m_array());
+    }
+
+    #[test]
+    #[throws(Error)]
+    fn put_value() {
+        let unsigned = v_unsigned();
+        let signed = v_signed();
+        let float = v_float();
+        let unsigned64 = v_unsigned64();
+        let boolean = v_boolean();
+        let string = v_string();
+
+        let mut kv = Kv::new();
+
+        macro_rules! expect {
+            ($expected:ident: $type:ty) => {{
+                kv.put_value(
+                    &stringify!($expected),
+                    $expected,
+                    PutOptions {
+                        temporary: true,
+                        update: false,
+                    },
+                )?;
+                let actual = kv.get_item(&stringify!($expected))?.convert::<$type>()?;
+                expect_equal!($expected, actual);
+            }};
+        }
+
+        expect!(unsigned: u32);
+        expect!(signed: i32);
+        expect!(float: f32);
+        expect!(unsigned64: u64);
+        expect!(boolean: bool);
+        expect!(string: String);
+    }
+
+    #[test]
+    #[throws(Error)]
+    fn put_array() {
+        let unsigned = v_unsigned();
+        let signed = v_signed();
+        let float = v_float();
+        let unsigned64 = v_unsigned64();
+        let boolean = v_boolean();
+        let string = v_string();
+
+        let array1 = value_array![unsigned];
+        let array2 = value_array![unsigned, unsigned];
+        let array3 = value_array![unsigned, signed];
+        let array4 = value_array![unsigned, signed, unsigned64];
+        let array5 = value_array![unsigned, signed, float, unsigned64, boolean, string];
+
+        let mut kv = Kv::new();
+
+        macro_rules! expect {
+            ($expected:ident: $type:ty) => {{
+                kv.put_array(
+                    &stringify!($expected),
+                    $expected.clone(),
+                    PutOptions {
+                        temporary: true,
+                        update: false,
+                    },
+                )?;
+                let expected = $expected
+                    .into_iter()
+                    .map(<$type>::try_from)
+                    .collect::<Result<Vec<_>, _>>()?;
+
+                // Test getting whole array at once
+                let actual = kv
+                    .get_item(&concat!(stringify!($expected), "/*"))?
+                    .convert::<Vec<$type>>()?;
+                expect_equal!(expected, actual);
+
+                // Test getting single elements
+                for i in 0..expected.len() {
+                    let actual = kv
+                        .get_item(&format!(concat!(stringify!($expected), "/{}"), i))?
+                        .convert::<$type>()?;
+                    expect_equal!(expected[i], actual);
+                }
+            }};
+        }
+
+        expect!(array1: u32);
+        expect!(array2: u32);
+        expect!(array3: Value);
+        expect!(array4: Value);
+        expect!(array5: Value);
+    }
+
+    #[test]
+    #[throws(Error)]
+    fn put_map() {
+        let unsigned = v_unsigned();
+        let signed = v_signed();
+        let float = v_float();
+        let unsigned64 = v_unsigned64();
+        let boolean = v_boolean();
+        let string = v_string();
+
+        let map1 = value_map![unsigned];
+        let map2 = value_map![unsigned, unsigned];
+        let map3 = value_map![unsigned, signed];
+        let map4 = value_map![unsigned, signed, unsigned64];
+        let map5 = value_map![unsigned, signed, float, unsigned64, boolean, string];
+
+        let mut kv = Kv::new();
+
+        macro_rules! expect {
+            ($expected:ident: $type:ty) => {{
+                kv.put_map(
+                    &stringify!($expected),
+                    $expected.clone(),
+                    PutOptions {
+                        temporary: true,
+                        update: false,
+                    },
+                )?;
+                let expected = $expected
+                    .into_iter()
+                    .map(|(key, value)| {
+                        Ok::<_, <$type as TryFrom<Value>>::Error>((
+                            key.to_owned(),
+                            <$type>::try_from(value)?,
+                        ))
+                    })
+                    .collect::<Result<IndexMap<_, _>, _>>()?;
+
+                // Test getting whole map at once
+                let actual = kv
+                    .get_item(&concat!(stringify!($expected), "/*"))?
+                    .convert::<IndexMap<_, $type>>()?;
+                expect_equal!(expected, actual);
+
+                // Test getting single elements
+                for key in expected.keys() {
+                    let actual = kv
+                        .get_item(&format!(concat!(stringify!($expected), "/{}"), key))?
+                        .convert::<$type>()?;
+                    expect_equal!(expected[key], actual);
+                }
+            }};
+        }
+
+        expect!(map1: u32);
+        expect!(map2: u32);
+        expect!(map3: Value);
+        expect!(map4: Value);
+        expect!(map5: Value);
+    }
+
+    #[test]
+    #[throws(Error)]
+    fn drop_single_value() {
+        let unsigned = v_unsigned();
+        let signed = v_signed();
+        let float = v_float();
+        let unsigned64 = v_unsigned64();
+        let boolean = v_boolean();
+        let string = v_string();
+
+        let nested = m_nested();
+        let root = item_map! {
+            **r_root(),
+            map nested,
+        };
+
+        let mut kv = item_map_to_kv(root);
+
+        macro_rules! expect {
+            ($expected:ident: $type:ty) => {{
+                let actual = kv
+                    .drop_item(&stringify!($expected).replace('_', "/"), |_, _| ())?
+                    .expect(concat!(stringify!($expected), " should contain an item"))
+                    .convert::<$type>()?;
+                expect_equal!($expected, actual);
+                expect_dropped!(kv, stringify!($expected));
+            }};
+        }
+
+        let nested_one = v_nested_one();
+        let nested_two_adam = v_nested_two_adam();
+
+        expect!(unsigned: u32);
+        expect!(signed: i32);
+        expect!(float: f32);
+        expect!(unsigned64: u64);
+        expect!(boolean: bool);
+        expect!(string: String);
+        expect!(nested_one: bool);
+        expect!(nested_two_adam: bool);
+    }
+
+    #[test]
+    #[throws(Error)]
+    fn drop_multiple_values() {
+        let nested = m_nested();
+        let root = item_map! {
+            map nested,
+        };
+
+        let mut kv = item_map_to_kv(root);
+
+        macro_rules! expect {
+            ($key:literal => $($expected:literal),*) => {{
+                let actual: Vec<_> = kv
+                    .drop_item($key, |_, _| ())?
+                    .expect(concat!($key, " should contain an item"))
+                    .into_values()
+                    .map(Item::Value)
+                    .collect();
+                expect_equal!(item_array![$($expected),*], actual);
+                expect_dropped!(kv, $key);
+            }};
+        }
+
+        expect!("nested/two/betsy/*ta/token" => "t2", "t3");
+        expect!("nested/two/betsy/*/token" => "t1", "t4");
+    }
+
+    #[test]
+    #[throws(Error)]
+    fn drop_array() {
+        let array = m_array();
+        let root = item_map! {
+            map array,
+        };
+
+        let mut kv = item_map_to_kv(root);
+
+        macro_rules! expect {
+            ($key:literal => $expected:expr) => {{
+                let actual = kv
+                    .drop_item($key, |_, _| ())?
+                    .expect(concat!($key, " should contain an item"))
+                    .convert::<Vec<_>>()?;
+                expect_equal!($expected, actual);
+                expect_dropped!(kv, $key);
+            }};
+        }
+
+        let array_inner = a_array_inner();
+
+        expect!("array/inner/*" => array_inner);
+    }
+
+    #[test]
+    #[throws(Error)]
+    fn drop_array_no_zero_index() {
+        let invalid_array = item_map! {
+            "1" => true,
+        };
+        let mut kv = item_map_to_kv(item_map! {
+            map invalid_array,
+        });
+
+        macro_rules! expect {
+            ($key:literal => $expected:expr) => {{
+                let actual = kv
+                    .drop_item($key, |_, _| ())?
+                    .expect(concat!($key, " should contain an item"))
+                    .convert::<IndexMap<_, _>>()?;
+                expect_equal!($expected, actual);
+                expect_dropped!(kv, $key);
+            }};
+        }
+
+        expect!("invalid_array/**" => invalid_array);
+    }
+
+    #[test]
+    #[throws(Error)]
+    fn drop_map() {
+        let mut kv = item_map_to_kv(m_root());
+
+        macro_rules! expect {
+            ($key:literal => $expected:expr) => {{
+                let actual = kv
+                    .drop_item($key, |_, _| ())?
+                    .expect(concat!($key, " should contain an item"))
+                    .convert::<IndexMap<_, _>>()?;
+                expect_equal!($expected, actual);
+            }};
+        }
+
+        // Map of values at a single level
+        expect!("*" => r_root());
+        expect!("nested/*" => r_nested());
+        expect!("nested/*/*" => item_map! {
+            "two" map=> item_map! {
+                "adam" => v_nested_two_adam(),
+            },
+        });
+
+        // Map of values at multiple nested levels with single wildcard
+        expect!("map/**" => m_map());
+
+        // Map of values at multiple nested levels with multiple wildcards
         expect!("array/*/**" => m_array());
     }
 }
