@@ -14,7 +14,10 @@ use once_cell::sync::OnceCell;
 use thiserror::Error;
 
 use crate::{
-    context::kv::{self, Item, Value},
+    context::{
+        self,
+        kv::{Item, Value},
+    },
     ledger::{Ledger, Transaction},
     prelude::*,
     prompt,
@@ -638,7 +641,7 @@ impl Process {
                             .with_options([Opt::Yes, Opt::No])
                             .get()?;
                         if opt == Opt::Yes {
-                            Box::new(transaction).revert()?;
+                            Box::new(transaction).revert().map_err(Error::Transaction)?;
                         }
                     }
                 }
@@ -1076,13 +1079,13 @@ pub enum Error {
     Prompt(#[from] prompt::Error),
 
     #[error(transparent)]
-    Kv(#[from] kv::Error),
+    Context(#[from] context::Error),
 
     #[error(transparent)]
     Io(#[from] io::Error),
 
     #[error(transparent)]
-    Transaction(#[from] anyhow::Error),
+    Transaction(anyhow::Error),
 
     #[error(transparent)]
     Ssh(#[from] ssh2::Error),

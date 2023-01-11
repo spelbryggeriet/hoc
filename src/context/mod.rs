@@ -1,5 +1,6 @@
 use std::{
     borrow::Cow,
+    convert::Infallible,
     fmt::Display,
     fs::File,
     io,
@@ -14,7 +15,7 @@ use thiserror::Error;
 
 use self::{
     fs::{cache::Cache, files::Files, temp::Temp},
-    key::Key,
+    key::{Key, KeyOwned},
     kv::{Item, Kv, PutOptions, Value},
 };
 use crate::{ledger::Ledger, prelude::*, prompt};
@@ -220,7 +221,7 @@ impl<'a> KvBuilder<'a, All> {
         }
     }
 
-    #[throws(kv::Error)]
+    #[throws(Error)]
     pub fn get(self) -> Item {
         Context::get_or_init().kv().get_item(&self.key)?
     }
@@ -230,7 +231,7 @@ impl<'a> KvBuilder<'a, All> {
     }
 
     #[allow(unused)]
-    #[throws(kv::Error)]
+    #[throws(Error)]
     pub fn update<V>(self, value: V)
     where
         V: Into<Value> + Clone + Display + Send + 'static,
@@ -238,7 +239,7 @@ impl<'a> KvBuilder<'a, All> {
         self.put_or_update(value, true)?;
     }
 
-    #[throws(kv::Error)]
+    #[throws(Error)]
     pub fn drop(self) {
         let item =
             Context::get_or_init()
@@ -256,7 +257,7 @@ impl<'a> KvBuilder<'a, All> {
 }
 
 impl<'a, O> KvBuilder<'a, O> {
-    #[throws(kv::Error)]
+    #[throws(Error)]
     fn put_or_update<V>(self, value: V, update: bool)
     where
         V: Into<Value> + Clone + Display + Send + 'static,
@@ -279,7 +280,7 @@ impl<'a, O> KvBuilder<'a, O> {
         }
     }
 
-    #[throws(kv::Error)]
+    #[throws(Error)]
     pub fn put<V>(self, value: V)
     where
         V: Into<Value> + Clone + Display + Send + 'static,
@@ -290,17 +291,38 @@ impl<'a, O> KvBuilder<'a, O> {
 
 #[derive(Debug, Error)]
 pub enum Error {
-    #[error(transparent)]
-    Io(#[from] io::Error),
+    #[error("Key already exists: {0:?}")]
+    KeyAlreadyExists(KeyOwned),
+
+    #[error("Key does not exist: {0:?}")]
+    KeyDoesNotExist(KeyOwned),
+
+    #[error("Mismatched value types: expected {expected} ≠ actual {actual}")]
+    MismatchedTypes {
+        expected: kv::TypeDescription,
+        actual: kv::TypeDescription,
+    },
+
+    #[error("{0} out of range for `{1}`")]
+    OverflowingNumber(i128, &'static str),
 
     #[error(transparent)]
-    Key(#[from] key::Error),
+    Io(#[from] io::Error),
 
     #[error(transparent)]
     Prompt(#[from] prompt::Error),
 
     #[error(transparent)]
+    Serialization(#[from] serde_json::Error),
+
+    #[error(transparent)]
     Custom(#[from] anyhow::Error),
+}
+
+impl From<Infallible> for Error {
+    fn from(x: Infallible) -> Self {
+        x.into()
+    }
 }
 
 pub mod ledger {

@@ -11,7 +11,7 @@ use xz2::read::XzDecoder;
 
 use crate::{
     cidr::Cidr,
-    context::{self, fs::ContextFile, key, kv},
+    context::{self, fs::ContextFile},
     prelude::*,
     process,
     util::{self, DiskInfo, DiskPartitionInfo, Opt},
@@ -240,7 +240,7 @@ fn generate_node_name() -> String {
             .into_iter()
             .filter_key_value("initialized", true)
             .count(),
-        Err(kv::Error::Key(key::Error::KeyDoesNotExist(_))) => 0,
+        Err(context::Error::KeyDoesNotExist(_)) => 0,
         Err(err) => throw!(err),
     };
 
@@ -263,7 +263,7 @@ fn assign_ip_address(node_name: &str) -> Cidr {
             .try_get_key("network/start_address")
             .and_convert()
             .collect::<Result<_, _>>()?,
-        Err(kv::Error::Key(key::Error::KeyDoesNotExist(_))) => Vec::new(),
+        Err(context::Error::KeyDoesNotExist(_)) => Vec::new(),
         Err(err) => throw!(err),
     };
     let prefix_len: u32 = kv!("network/prefix_len").get()?.convert()?;

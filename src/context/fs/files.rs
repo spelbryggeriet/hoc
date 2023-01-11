@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     context::{
         fs::ContextFile,
-        key::{self, Key, KeyOwned},
+        key::{Key, KeyOwned},
         Error,
     },
     prelude::*,
@@ -160,7 +160,7 @@ impl Files {
             return ContextFile::new(file, path, crate::container_files_dir().join(key.as_str()));
         }
 
-        throw!(key::Error::KeyDoesNotExist(key.into_owned()));
+        throw!(Error::KeyDoesNotExist(key.into_owned()));
     }
 
     #[throws(Error)]

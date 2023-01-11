@@ -1,7 +1,5 @@
 use std::{
-    convert::Infallible,
     fmt::{self, Debug, Display, Formatter},
-    io,
     iter::Enumerate,
     marker::PhantomData,
     ops::Deref,
@@ -11,13 +9,13 @@ use std::{
 use indexmap::IndexMap;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
-use thiserror::Error;
 
 use crate::{
-    context::key::{self, Key, KeyComponent, KeyOwned},
-    log,
+    context::{
+        key::{self, Key, KeyComponent, KeyOwned},
+        Error,
+    },
     prelude::*,
-    prompt,
     util::Opt,
 };
 
@@ -79,7 +77,7 @@ impl Kv {
                 .map
                 .get(template)
                 .map(|value| Item::Value(value.deref().clone()))
-                .ok_or_else(|| key::Error::KeyDoesNotExist(template.to_owned()))?;
+                .ok_or_else(|| Error::KeyDoesNotExist(template.to_owned()))?;
         }
 
         let mut item_builder = ItemBuilder::new(template);
@@ -98,7 +96,7 @@ impl Kv {
 
         item_builder
             .build()
-            .ok_or_else(|| key::Error::KeyDoesNotExist(template.to_owned()))?
+            .ok_or_else(|| Error::KeyDoesNotExist(template.to_owned()))?
     }
 
     pub fn item_exists<K>(&self, key: &K) -> bool
@@ -994,7 +992,7 @@ where
         self.inner
             .next()?
             .take(self.key)
-            .ok_or_else(|| key::Error::KeyDoesNotExist(self.key.to_owned()).into())
+            .ok_or_else(|| Error::KeyDoesNotExist(self.key.to_owned()))
     }
 }
 
@@ -1146,42 +1144,6 @@ impl Display for TypeDescription {
     }
 }
 
-#[derive(Debug, Error)]
-pub enum Error {
-    #[error("Mismatched value types: expected {expected} ≠ actual {actual}")]
-    MismatchedTypes {
-        expected: TypeDescription,
-        actual: TypeDescription,
-    },
-
-    #[error("{0} out of range for `{1}`")]
-    OverflowingNumber(i128, &'static str),
-
-    #[error(transparent)]
-    Key(#[from] key::Error),
-
-    #[error(transparent)]
-    Log(#[from] log::Error),
-
-    #[error(transparent)]
-    Prompt(#[from] prompt::Error),
-
-    #[error("An IO error occurred: {0}")]
-    Io(#[from] io::Error),
-
-    #[error(transparent)]
-    Serialization(#[from] serde_json::Error),
-
-    #[error(transparent)]
-    Custom(#[from] anyhow::Error),
-}
-
-impl From<Infallible> for Error {
-    fn from(x: Infallible) -> Self {
-        x.into()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1293,10 +1255,7 @@ mod tests {
         ($kv:expr, $key:expr) => {{
             assert!(matches!(
                 $kv.get_item($key),
-                Err(crate::context::kv::Error::Key(
-                    crate::context::kv::key::Error::KeyDoesNotExist(key)
-                ))
-                if key.as_str() == $key),
+                Err(Error::KeyDoesNotExist(key)) if key.as_str() == $key),
                 "item was not dropped");
         }};
     }

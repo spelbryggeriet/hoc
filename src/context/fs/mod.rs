@@ -35,17 +35,17 @@ impl FileBuilder<Persisted> {
         }
     }
 
-    #[throws(anyhow::Error)]
+    #[throws(Error)]
     pub fn exists(self) -> bool {
         Context::get_or_init().files().exists(self.key)?
     }
 
-    #[throws(anyhow::Error)]
+    #[throws(Error)]
     pub fn get(self) -> ContextFile {
         Context::get_or_init().files().get_file(self.key)?
     }
 
-    #[throws(anyhow::Error)]
+    #[throws(Error)]
     pub fn create(self) -> ContextFile {
         let context = Context::get_or_init();
         let mut previous_path = None;
@@ -87,12 +87,12 @@ where
     F: Fn(&mut ContextFile, bool) -> Result<(), Error>,
 {
     #[allow(unused)]
-    #[throws(anyhow::Error)]
+    #[throws(Error)]
     pub fn exists(self) -> bool {
         Context::get_or_init().cache_mut().exists(self.key)?
     }
 
-    #[throws(anyhow::Error)]
+    #[throws(Error)]
     pub fn get_or_create(self) -> ContextFile {
         let context = Context::get_or_init();
         let mut previous_path = None;
@@ -120,7 +120,7 @@ where
     }
 
     #[allow(unused)]
-    #[throws(anyhow::Error)]
+    #[throws(Error)]
     pub fn create_or_overwrite(self) -> ContextFile {
         let context = Context::get_or_init();
         let mut previous_path = None;
@@ -174,7 +174,7 @@ impl ContextFile {
         }
     }
 
-    #[throws(io::Error)]
+    #[throws(Error)]
     pub fn set_len(&self, size: u64) {
         self.file.set_len(size)?
     }

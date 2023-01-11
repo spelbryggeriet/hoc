@@ -5,7 +5,6 @@ use std::{
 };
 
 use serde::{Deserialize, Serialize};
-use thiserror::Error;
 
 use crate::prelude::*;
 
@@ -251,13 +250,4 @@ impl<'a> KeyComponent<'a> {
     pub fn as_str(&self) -> &str {
         self.0
     }
-}
-
-#[derive(Debug, Error)]
-pub enum Error {
-    #[error("Key already exists: {0:?}")]
-    KeyAlreadyExists(KeyOwned),
-
-    #[error("Key does not exist: {0:?}")]
-    KeyDoesNotExist(KeyOwned),
 }

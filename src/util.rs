@@ -7,13 +7,13 @@ use std::{
     str::FromStr,
 };
 
-use anyhow::Error;
 use rand::seq::SliceRandom;
 
 use crate::{
     context::{
+        self,
         key::{Key, KeyOwned},
-        kv::{self, Item, Value},
+        kv::{Item, Value},
     },
     prelude::*,
 };
@@ -103,7 +103,7 @@ pub fn random_string(source: &str, len: usize) -> String {
     sample.choose_multiple(&mut rng, len).collect()
 }
 
-#[throws(Error)]
+#[throws(anyhow::Error)]
 pub fn get_attached_disks() -> Vec<DiskInfo> {
     match process!("uname").run()?.stdout.trim() {
         "Linux" => {
@@ -184,11 +184,13 @@ where
 }
 
 impl TryFrom<Item> for IpAddr {
-    type Error = kv::Error;
+    type Error = context::Error;
 
     #[throws(Self::Error)]
     fn try_from(item: Item) -> Self {
-        item.convert::<String>()?.parse().map_err(Error::from)?
+        item.convert::<String>()?
+            .parse()
+            .map_err(anyhow::Error::from)?
     }
 }
 
