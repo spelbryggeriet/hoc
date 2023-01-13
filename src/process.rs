@@ -1,5 +1,6 @@
 use std::{
     borrow::Cow,
+    collections::HashMap,
     env,
     io::{self, Cursor, Read, Write},
     net::{IpAddr, TcpStream},
@@ -84,6 +85,7 @@ pub struct ProcessBuilder {
     raw: Cow<'static, str>,
     settings: Settings,
     input_data: String,
+    env_vars: HashMap<Cow<'static, str>, Option<Cow<'static, str>>>,
     success_codes: Vec<i32>,
     revert_process: Option<Box<Self>>,
     should_retry: bool,
@@ -95,6 +97,7 @@ impl ProcessBuilder {
             raw: process.into(),
             settings: Settings::new(),
             input_data: String::new(),
+            env_vars: HashMap::new(),
             success_codes: vec![0],
             revert_process: None,
             should_retry: true,
@@ -147,6 +150,15 @@ impl ProcessBuilder {
 
     pub fn write_stdin<S: AsRef<str> + ?Sized>(mut self, input: &S) -> Self {
         self.input_data.push_str(input.as_ref());
+        self
+    }
+
+    pub fn env_var<N, V>(mut self, name: N, value: Option<V>) -> Self
+    where
+        N: Into<Cow<'static, str>>,
+        V: Into<Cow<'static, str>>,
+    {
+        self.env_vars.insert(name.into(), value.map(V::into));
         self
     }
 
@@ -308,7 +320,12 @@ impl ProcessBuilder {
         progress_handle: ProgressHandle,
     ) -> Process {
         let mut cmd = std::process::Command::new("sh");
-        cmd.args(["-c", &*util::get_runnable_raw(&self)])
+        cmd.args(["-c", &*util::get_sudo_raw(&self)])
+            .envs(
+                self.env_vars
+                    .iter()
+                    .map(|(key, value)| (&**key, &**value.as_ref().unwrap_or(&Cow::Borrowed("")))),
+            )
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
@@ -346,15 +363,15 @@ impl ProcessBuilder {
         progress_handle: ProgressHandle,
     ) -> Process {
         let raw: Cow<_> = if let Some(current_dir) = &self.settings.get_current_dir() {
-            format!("cd {current_dir} ; {}", util::get_runnable_raw(&self)).into()
+            format!("cd {current_dir} ; {}", util::get_sudo_raw(&self)).into()
         } else {
-            util::get_runnable_raw(&self)
+            util::get_sudo_raw(&self)
         };
 
         let mut cmd = std::process::Command::new("docker");
         cmd.args([
             "run",
-            "-i",
+            "--interactive",
             "--mount",
             &format!(
                 "type=bind,source={},target={},readonly",
@@ -380,6 +397,13 @@ impl ProcessBuilder {
                 crate::container_source_dir().to_string_lossy(),
             ),
         ]);
+
+        for (key, value) in &self.env_vars {
+            cmd.args([
+                "--env",
+                &format!("{key}={}", value.as_ref().unwrap_or(&Cow::Borrowed(""))),
+            ]);
+        }
 
         let mut child = cmd
             .args([&container_image(), "sh", "-c", &*raw])
@@ -417,10 +441,14 @@ impl ProcessBuilder {
     ) -> Process {
         let mut channel = session.channel_session()?;
 
+        for (key, value) in &self.env_vars {
+            channel.setenv(key, value.as_ref().unwrap_or(&Cow::Borrowed("")))?;
+        }
+
         let raw: Cow<_> = if let Some(current_dir) = &self.settings.get_current_dir() {
-            format!("cd {current_dir} ; {}", util::get_runnable_raw(&self)).into()
+            format!("cd {current_dir} ; {}", util::get_sudo_raw(&self)).into()
         } else {
-            util::get_runnable_raw(&self)
+            util::get_sudo_raw(&self)
         };
 
         let raw = if !self.input_data.is_empty() {
@@ -460,68 +488,61 @@ impl ProcessBuilder {
         password_to_cache: Option<Secret<String>>,
         progress_handle: ProgressHandle,
     ) -> Process {
-        enum StdinLock<'a> {
-            Std(MutexGuard<'a, std::process::ChildStdin>),
-            Ssh(MutexGuard<'a, ssh2::Channel>),
-        }
-
-        impl Write for StdinLock<'_> {
-            #[throws(io::Error)]
-            fn write(&mut self, buf: &[u8]) -> usize {
-                match self {
-                    Self::Std(stdin) => stdin.write(buf)?,
-                    Self::Ssh(channel) => channel.write(buf)?,
-                }
-            }
-
-            #[throws(io::Error)]
-            fn flush(&mut self) {
-                match self {
-                    Self::Std(stdin) => stdin.flush()?,
-                    Self::Ssh(channel) => channel.flush()?,
-                }
-            }
-        }
-
-        let mut stdin_mut = match &stdin {
-            Stdin::Std(stdin) => StdinLock::Std(stdin.lock().expect(EXPECT_THREAD_NOT_POSIONED)),
-            Stdin::Ssh(channel) => {
-                StdinLock::Ssh(channel.lock().expect(EXPECT_THREAD_NOT_POSIONED))
-            }
-        };
-
         let token = crate::util::random_string(crate::util::RAND_CHARS, 10);
 
-        if let Some(current_dir) = &self.settings.get_current_dir() {
-            stdin_mut.write_all(b"cd ")?;
-            stdin_mut.write_all(current_dir.as_bytes())?;
-            stdin_mut.write_all(b"\n")?;
-        };
+        {
+            let mut std_stdin;
+            let mut ssh_stdin;
+            let stdin_mut: &mut dyn Write = match &stdin {
+                Stdin::Std(stdin) => {
+                    std_stdin = stdin.lock().expect(EXPECT_THREAD_NOT_POSIONED);
+                    &mut *std_stdin
+                }
+                Stdin::Ssh(channel) => {
+                    ssh_stdin = channel.lock().expect(EXPECT_THREAD_NOT_POSIONED);
+                    &mut *ssh_stdin
+                }
+            };
 
-        stdin_mut.write_all(b"echo '")?;
-        stdin_mut.write_all(SHELL_TOKEN_START_PREFIX.as_bytes())?;
-        stdin_mut.write_all(token.as_bytes())?;
-        stdin_mut.write_all(SHELL_TOKEN_SUFFIX.as_bytes())?;
-        stdin_mut.write_all(b"' | tee /dev/stderr\n")?;
-
-        stdin_mut.write_all(util::get_runnable_raw(&self).as_bytes())?;
-        if !self.input_data.is_empty() {
-            stdin_mut.write_all(b" <<EOT\n")?;
-            stdin_mut.write_all(self.input_data.as_bytes())?;
-            if !self.input_data.ends_with('\n') {
+            if let Some(current_dir) = &self.settings.get_current_dir() {
+                stdin_mut.write_all(b"cd ")?;
+                stdin_mut.write_all(current_dir.as_bytes())?;
                 stdin_mut.write_all(b"\n")?;
-            }
-            stdin_mut.write_all(b"EOT")?;
-        }
-        stdin_mut.write_all(b"\n")?;
+            };
 
-        stdin_mut.write_all(b"echo '")?;
-        stdin_mut.write_all(SHELL_TOKEN_END_PREFIX.as_bytes())?;
-        stdin_mut.write_all(token.as_bytes())?;
-        stdin_mut.write_all(b":'$?'")?;
-        stdin_mut.write_all(SHELL_TOKEN_SUFFIX.as_bytes())?;
-        stdin_mut.write_all(b"' | tee /dev/stderr\n")?;
-        drop(stdin_mut);
+            stdin_mut.write_all(b"echo '")?;
+            stdin_mut.write_all(SHELL_TOKEN_START_PREFIX.as_bytes())?;
+            stdin_mut.write_all(token.as_bytes())?;
+            stdin_mut.write_all(SHELL_TOKEN_SUFFIX.as_bytes())?;
+            stdin_mut.write_all(b"' | tee /dev/stderr\n")?;
+
+            for (key, value) in &self.env_vars {
+                stdin_mut.write_all(key.as_bytes())?;
+                stdin_mut.write_all(b"=")?;
+                if let Some(value) = value {
+                    stdin_mut.write_all(value.as_bytes())?;
+                }
+                stdin_mut.write_all(b" ")?;
+            }
+
+            stdin_mut.write_all(util::get_sudo_raw(&self).as_bytes())?;
+            if !self.input_data.is_empty() {
+                stdin_mut.write_all(b" <<EOT\n")?;
+                stdin_mut.write_all(self.input_data.as_bytes())?;
+                if !self.input_data.ends_with('\n') {
+                    stdin_mut.write_all(b"\n")?;
+                }
+                stdin_mut.write_all(b"EOT")?;
+            }
+            stdin_mut.write_all(b"\n")?;
+
+            stdin_mut.write_all(b"echo '")?;
+            stdin_mut.write_all(SHELL_TOKEN_END_PREFIX.as_bytes())?;
+            stdin_mut.write_all(token.as_bytes())?;
+            stdin_mut.write_all(b":'$?'")?;
+            stdin_mut.write_all(SHELL_TOKEN_SUFFIX.as_bytes())?;
+            stdin_mut.write_all(b"' | tee /dev/stderr\n")?;
+        }
 
         Process {
             builder: self,
@@ -1104,7 +1125,7 @@ mod util {
         }
     }
 
-    pub fn get_runnable_raw(process: &ProcessBuilder) -> Cow<'static, str> {
+    pub fn get_sudo_raw(process: &ProcessBuilder) -> Cow<'static, str> {
         let maybe_sudo = if process.settings.is_sudo() {
             "sudo -kSp '' "
         } else {

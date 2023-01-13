@@ -48,25 +48,158 @@ macro_rules! temp_file {
     };
 }
 
+/// ## Example
+///  
+/// ```no_run
+/// let captured = "one";
+/// let payload = 10;
+/// process!(ENV_VAR="value_{captured}" "command {arg}" <("stdin data: {payload}"), arg = 1 + 1);
+/// process!(ENV_VAR="value_{captured}" sudo "command {arg}" <("stdin data: {payload}"), arg = 1 + 1);
+/// ```
 macro_rules! process {
-    ($($sudo:ident)? $fmt:literal $(<($stdin_fmt:literal))? $(, $arg_name:ident = $arg_val:expr)* $(,)?) => {{
+    (@impl ($fmt:literal $($rest:tt)*) => {
+        fmt: [],
+        args: [],
+        stdin_data: [],
+        env: [$($env:tt)*],
+        sudo: $sudo:tt,
+    }) => {{
+        process!(@impl ($($rest)*) => {
+            fmt: [$fmt],
+            args: [],
+            stdin_data: [],
+            env: [$($env)*],
+            sudo: $sudo,
+        })
+    }};
+
+    (@impl (sudo $($rest:tt)*) => {
+        fmt: [],
+        args: [],
+        stdin_data: [],
+        env: [$($env:tt)*],
+        sudo: false,
+    }) => {{
+        process!(@impl ($($rest)*) => {
+            fmt: [],
+            args: [],
+            stdin_data: [],
+            env: [$($env)*],
+            sudo: true,
+        })
+    }};
+
+    (@impl ($env_name:ident=$env_value:literal $($rest:tt)*) => {
+        fmt: [],
+        args: [],
+        stdin_data: [],
+        env: [$($env:tt)*],
+        sudo: false,
+    }) => {{
+        process!(@impl ($($rest)*) => {
+            fmt: [],
+            args: [],
+            stdin_data: [],
+            env: [$($env)* $env_name=$env_value,],
+            sudo: false,
+        })
+    }};
+
+    (@impl ($env_name:ident $($rest:tt)*) => {
+        fmt: [],
+        args: [],
+        stdin_data: [],
+        env: [$($env:tt)*],
+        sudo: false,
+    }) => {{
+        process!(@impl ($($rest)*) => {
+            fmt: [],
+            args: [],
+            stdin_data: [],
+            env: [$($env)* $env_name,],
+            sudo: false,
+        })
+    }};
+
+    (@impl (<($stdin_data:literal) $($rest:tt)*) => {
+        fmt: [$fmt:tt],
+        args: [],
+        stdin_data: [],
+        env: [$($env:tt)*],
+        sudo: $sudo:tt,
+    }) => {{
+        process!(@impl ($($rest)*) => {
+            fmt: [$fmt],
+            args: [],
+            stdin_data: [$stdin_data],
+            env: [$($env)*],
+            sudo: $sudo,
+        })
+    }};
+
+    (@impl ($(, $arg_name:ident = $arg_value:expr)+ $(,)?) => {
+        fmt: [$fmt:tt],
+        args: [],
+        stdin_data: [$($stdin_data:tt)?],
+        env: [$($env:tt)*],
+        sudo: $sudo:tt,
+    }) => {{
+        process!(@impl () => {
+            fmt: [$fmt],
+            args: [$($arg_name = $arg_value,)+],
+            stdin_data: [$($stdin_data)?],
+            env: [$($env)*],
+            sudo: $sudo,
+        })
+    }};
+
+    (@impl ($(,)?) => {
+        fmt: [$fmt:literal],
+        args: [$($arg_name:ident = $arg_value:expr,)*],
+        stdin_data: [$($stdin_data:literal)?],
+        env: [$($env_name:ident$(=$env_value:literal)?,)*],
+        sudo: $sudo:literal,
+    }) => {{
         $(
         #[deny(unused)]
-        let $arg_name = &$arg_val;
+        let $arg_name = &$arg_value;
         )*
 
         let process = $crate::util::from_arguments_to_str_cow(format_args!($fmt));
         let mut builder = $crate::process::ProcessBuilder::new(process);
 
-        if __is_sudo!($($sudo)?) {
+        $(
+        let env_value: Option<::std::borrow::Cow<'static, str>> = $(if true {
+            Some($crate::util::from_arguments_to_str_cow(format_args!($env_value)))
+        } else )? {
+            None
+        };
+        builder = builder.env_var(stringify!($env_name), env_value);
+        )*
+
+        if $sudo {
             builder = builder.sudo();
         }
 
         $(
-        builder = builder.write_stdin(&format!($stdin_fmt));
-        )*
+        builder = builder.write_stdin(&format!($stdin_data));
+        )?
 
         builder
+    }};
+
+    (@impl ($unexpected:tt $($rest:tt)*) => { $($irrelevant:tt)* }) => {{
+        compile_error!(concat!("unexpected input: ", stringify!($unexpected)))
+    }};
+
+    ($($args:tt)*) => {{
+        process!(@impl ($($args)*) => {
+            fmt: [],
+            args: [],
+            stdin_data: [],
+            env: [],
+            sudo: false,
+        })
     }};
 }
 
@@ -74,23 +207,5 @@ macro_rules! process {
 macro_rules! shell {
     () => {{
         $crate::process::Shell::new()
-    }};
-}
-
-macro_rules! __is_sudo {
-    (sudo) => {
-        true
-    };
-
-    () => {
-        false
-    };
-
-    ($token:tt) => {{
-        compile_error!(concat!(
-            "Expected `sudo` token, found `",
-            stringify!($token),
-            "`"
-        ));
     }};
 }
