@@ -1,7 +1,7 @@
 use std::{
     borrow::Cow,
     fmt::{self, Arguments, Display, Formatter},
-    fs,
+    fs, iter,
     net::IpAddr,
     ops::Deref,
     str::FromStr,
@@ -38,7 +38,7 @@ pub fn from_arguments_to_key_cow(arguments: Arguments) -> Cow<'static, Key> {
     }
 }
 
-pub fn numeral(n: u64) -> Cow<'static, str> {
+pub fn int_to_numeral(n: u64) -> Cow<'static, str> {
     match n {
         0 => "zero".into(),
         1 => "one".into(),
@@ -71,30 +71,240 @@ pub fn numeral(n: u64) -> Cow<'static, str> {
         100 => "hundred".into(),
         1000 => "thousand".into(),
         1_000_000 => "million".into(),
-        n if n <= 99 => format!("{}-{}", numeral(n - n % 10), numeral(n % 10)).into(),
-        n if n <= 199 => format!("hundred-{}", numeral(n % 100)).into(),
-        n if n <= 999 && n % 100 == 0 => format!("{}-hundred", numeral(n / 100)).into(),
-        n if n <= 999 => format!("{}-{}", numeral(n - n % 100), numeral(n % 100)).into(),
-        n if n <= 1999 => format!("thousand-{}", numeral(n % 1000)).into(),
-        n if n <= 999_999 && n % 1000 == 0 => format!("{}-thousand", numeral(n / 1000)).into(),
-        n if n <= 999_999 => format!("{}-{}", numeral(n - n % 1000), numeral(n % 1000)).into(),
-        n if n <= 1_999_999 => format!("million-{}", numeral(n % 1_000_000)).into(),
-        n if n % 1_000_000 == 0 => format!("{}-million", numeral(n / 1_000_000)).into(),
+        n if n <= 99 => format!("{}-{}", int_to_numeral(n - n % 10), int_to_numeral(n % 10)).into(),
+        n if n <= 199 => format!("hundred-{}", int_to_numeral(n % 100)).into(),
+        n if n <= 999 && n % 100 == 0 => format!("{}-hundred", int_to_numeral(n / 100)).into(),
+        n if n <= 999 => format!(
+            "{}-{}",
+            int_to_numeral(n - n % 100),
+            int_to_numeral(n % 100)
+        )
+        .into(),
+        n if n <= 1999 => format!("thousand-{}", int_to_numeral(n % 1000)).into(),
+        n if n <= 999_999 && n % 1000 == 0 => {
+            format!("{}-thousand", int_to_numeral(n / 1000)).into()
+        }
+        n if n <= 999_999 => format!(
+            "{}-{}",
+            int_to_numeral(n - n % 1000),
+            int_to_numeral(n % 1000)
+        )
+        .into(),
+        n if n <= 1_999_999 => format!("million-{}", int_to_numeral(n % 1_000_000)).into(),
+        n if n % 1_000_000 == 0 => format!("{}-million", int_to_numeral(n / 1_000_000)).into(),
 
         mut n => {
             let mut list = Vec::new();
             loop {
-                list.push(numeral(n % 1_000_000));
+                let n_mod_million = n % 1_000_000;
                 n /= 1_000_000;
+
                 if n == 0 {
+                    if n_mod_million > 1 {
+                        list.push(int_to_numeral(n_mod_million));
+                    }
                     break;
+                }
+
+                if n_mod_million > 0 {
+                    list.push(int_to_numeral(n_mod_million));
                 }
                 list.push("million".into());
             }
+
             list.reverse();
             list.join("-").into()
         }
     }
+}
+
+#[throws(as Option)]
+pub fn numeral_to_int(numeral: &str) -> u64 {
+    if numeral == "zero" {
+        return 0;
+    }
+
+    let mut groups = numeral
+        .split('-')
+        .map(|numeral| match numeral {
+            "one" => Ok(1),
+            "two" => Ok(2),
+            "three" => Ok(3),
+            "four" => Ok(4),
+            "five" => Ok(5),
+            "six" => Ok(6),
+            "seven" => Ok(7),
+            "eight" => Ok(8),
+            "nine" => Ok(9),
+            "ten" => Ok(10),
+            "eleven" => Ok(11),
+            "twelve" => Ok(12),
+            "thirteen" => Ok(13),
+            "fourteen" => Ok(14),
+            "fifteen" => Ok(15),
+            "sixteen" => Ok(16),
+            "seventeen" => Ok(17),
+            "eighteen" => Ok(18),
+            "nineteen" => Ok(19),
+            "twenty" => Ok(20),
+            "thirty" => Ok(30),
+            "fourty" => Ok(40),
+            "fifty" => Ok(50),
+            "sixty" => Ok(60),
+            "seventy" => Ok(70),
+            "eighty" => Ok(80),
+            "ninety" => Ok(90),
+            "hundred" => Ok(100),
+            "thousand" => Ok(1000),
+            "million" => Ok(1_000_000),
+            _ => Err(()),
+        })
+        .peekable();
+
+    let mut tens_groups = iter::from_fn(move || match groups.next()? {
+        Ok(ones_and_teens) if ones_and_teens < 20 => match groups.peek() {
+            None => Some(Ok(ones_and_teens)),
+            Some(&Ok(n)) if n >= 100 => Some(Ok(ones_and_teens)),
+            _ => Some(Err(())),
+        },
+        Ok(tens) if tens < 100 => match groups.peek() {
+            None => Some(Ok(tens)),
+            Some(&Ok(ones)) if ones < 10 => {
+                groups.next();
+                match groups.peek() {
+                    None => Some(Ok(tens + ones)),
+                    Some(&Ok(n)) if n >= 100 => Some(Ok(tens + ones)),
+                    _ => Some(Err(())),
+                }
+            }
+            Some(Ok(n)) if *n >= 100 => Some(Ok(tens)),
+            _ => Some(Err(())),
+        },
+        Ok(n) => Some(Ok(n)),
+        _ => Some(Err(())),
+    })
+    .peekable();
+
+    let mut hundreds_groups = iter::from_fn(move || match tens_groups.next()? {
+        Ok(ones) if ones < 10 => match tens_groups.peek() {
+            None => Some(Ok(ones)),
+            Some(Ok(100)) if ones > 1 => {
+                tens_groups.next();
+                let hundreds = ones * 100;
+                match tens_groups.peek() {
+                    None => Some(Ok(hundreds)),
+                    Some(&Ok(tens)) if tens < 100 => {
+                        tens_groups.next();
+                        match tens_groups.peek() {
+                            None => Some(Ok(hundreds + tens)),
+                            Some(&Ok(n)) if n >= 1000 => Some(Ok(hundreds + tens)),
+                            _ => Some(Err(())),
+                        }
+                    }
+                    Some(Ok(n)) if *n >= 1000 => Some(Ok(hundreds)),
+                    _ => Some(Err(())),
+                }
+            }
+            Some(&Ok(n)) if n >= 1000 => Some(Ok(ones)),
+            _ => Some(Err(())),
+        },
+        Ok(tens) if tens < 100 => match tens_groups.peek() {
+            None => Some(Ok(tens)),
+            Some(&Ok(n)) if n >= 1000 => Some(Ok(tens)),
+            _ => Some(Err(())),
+        },
+        Ok(100) => match tens_groups.peek() {
+            None => Some(Ok(100)),
+            Some(&Ok(tens)) if tens < 100 => {
+                tens_groups.next();
+                match tens_groups.peek() {
+                    None => Some(Ok(100 + tens)),
+                    Some(&Ok(n)) if n >= 1000 => Some(Ok(100 + tens)),
+                    _ => Some(Err(())),
+                }
+            }
+            Some(Ok(n)) if *n >= 1000 => Some(Ok(100)),
+            _ => Some(Err(())),
+        },
+        Ok(n) if n >= 1000 => Some(Ok(n)),
+        _ => Some(Err(())),
+    })
+    .peekable();
+
+    let mut thousands_groups = iter::from_fn(move || match hundreds_groups.next()? {
+        Ok(hundreds) if hundreds < 1000 => match hundreds_groups.peek() {
+            None => Some(Ok(hundreds)),
+            Some(Ok(1000)) if hundreds > 1 => {
+                hundreds_groups.next();
+                let thousands = hundreds * 1000;
+                match hundreds_groups.peek() {
+                    None => Some(Ok(thousands)),
+                    Some(&Ok(hundreds)) if hundreds < 1000 => {
+                        hundreds_groups.next();
+                        match hundreds_groups.peek() {
+                            None => Some(Ok(thousands + hundreds)),
+                            Some(&Ok(n)) if n >= 1_000_000 => Some(Ok(thousands + hundreds)),
+                            _ => Some(Err(())),
+                        }
+                    }
+                    Some(Ok(n)) if *n >= 1_000_000 => Some(Ok(thousands)),
+                    _ => Some(Err(())),
+                }
+            }
+            Some(&Ok(n)) if n >= 1_000_000 => Some(Ok(hundreds)),
+            _ => Some(Err(())),
+        },
+        Ok(1000) => match hundreds_groups.peek() {
+            None => Some(Ok(1000)),
+            Some(&Ok(hundreds)) if hundreds < 1000 => {
+                hundreds_groups.next();
+                match hundreds_groups.peek() {
+                    None => Some(Ok(1000 + hundreds)),
+                    Some(&Ok(n)) if n >= 1_000_000 => Some(Ok(1000 + hundreds)),
+                    _ => Some(Err(())),
+                }
+            }
+            Some(Ok(n)) if *n >= 1_000_000 => Some(Ok(1000)),
+            _ => Some(Err(())),
+        },
+        Ok(n) if n >= 1_000_000 => Some(Ok(n)),
+        _ => Some(Err(())),
+    })
+    .peekable();
+
+    let mut millions_groups = iter::from_fn(move || match thousands_groups.next()? {
+        Ok(thousands) if thousands < 1_000_000 => match thousands_groups.peek() {
+            None => Some(Ok(thousands)),
+            Some(Ok(1_000_000)) if thousands > 1 => Some(Ok(thousands)),
+            _ => Some(Err(())),
+        },
+        Ok(1_000_000) => match thousands_groups.peek() {
+            None => Some(Ok(1_000_000)),
+            Some(&Ok(thousands)) if thousands < 1_000_000 => {
+                thousands_groups.next();
+                match thousands_groups.peek() {
+                    None => Some(Ok(1_000_000 + thousands)),
+                    Some(Ok(1_000_000)) => Some(Ok(1_000_000 + thousands)),
+                    _ => Some(Err(())),
+                }
+            }
+            Some(Ok(1_000_000)) => Some(Ok(1_000_000)),
+            _ => Some(Err(())),
+        },
+        _ => Some(Err(())),
+    })
+    .peekable();
+
+    millions_groups
+        .try_fold::<_, _, Result<_, ()>>(0, |shift, millions_group| {
+            let millions_group = millions_group?;
+            if shift == 0 {
+                Ok(millions_group)
+            } else {
+                Ok(shift * 1_000_000 + millions_group % 1_000_000)
+            }
+        })
+        .ok()?
 }
 
 pub fn random_string(source: &str, len: usize) -> String {
@@ -412,6 +622,34 @@ mod macos {
                 name: partition.volume_name,
                 size: partition.size,
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn numerals() {
+        let numbers = (0..1000)
+            .chain((1000..1_000_000).step_by(97))
+            .chain((1_000_000..1_000_000_000).step_by(97_511))
+            .chain((1_000_000_000..1_000_000_000_000).step_by(98_654_221))
+            .chain((1_000_000_000_000..1_000_000_000_000_000).step_by(98_765_443_331))
+            .chain([1_000_000_000_000_000]);
+
+        for n in numbers {
+            println!("{n}");
+
+            let numeral = int_to_numeral(n);
+            let n_from_numeral = numeral_to_int(&numeral)
+                .unwrap_or_else(|| panic!("not a valid numeral: {numeral}"));
+
+            assert!(
+                n == n_from_numeral,
+                "incorrect int-to-numeral-to-int conversion: {n} => {numeral} => {n_from_numeral}",
+            );
         }
     }
 }

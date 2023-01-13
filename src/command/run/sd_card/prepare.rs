@@ -244,7 +244,7 @@ fn generate_node_name() -> String {
         Err(err) => throw!(err),
     };
 
-    let node_name = format!("node-{}", util::numeral(num_nodes as u64 + 1));
+    let node_name = format!("node-{}", util::int_to_numeral(num_nodes as u64 + 1));
     kv!("nodes/{node_name}/initialized").put(false)?;
     info!("Node name: {node_name}");
 
