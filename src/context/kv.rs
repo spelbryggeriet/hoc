@@ -555,8 +555,13 @@ impl Item {
             }
         }
     }
+}
 
-    pub fn into_iter(self) -> IntoIter {
+impl IntoIterator for Item {
+    type IntoIter = IntoIter;
+    type Item = <IntoIter as Iterator>::Item;
+
+    fn into_iter(self) -> Self::IntoIter {
         match self {
             item @ Self::Value(_) => IntoIter::Value(Some(item).into_iter()),
             Self::Array(array) => IntoIter::Array(array.into_iter()),
@@ -934,7 +939,7 @@ pub trait IteratorExt: Iterator + Sized {
         }
     }
 
-    fn try_get_key<K>(self, key: &K) -> TryGetKey<Self>
+    fn try_get<K>(self, key: &K) -> TryGetKey<Self>
     where
         K: AsRef<Key> + ?Sized,
     {

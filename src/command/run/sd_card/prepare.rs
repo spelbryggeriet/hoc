@@ -260,7 +260,7 @@ fn assign_ip_address(node_name: &str) -> Cidr {
         Ok(item) => item
             .into_iter()
             .filter_key_value("initialized", true)
-            .try_get_key("network/start_address")
+            .try_get("network/start_address")
             .and_convert()
             .collect::<Result<_, _>>()?,
         Err(context::Error::KeyDoesNotExist(_)) => Vec::new(),

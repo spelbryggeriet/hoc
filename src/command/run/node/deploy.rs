@@ -4,6 +4,7 @@ use anyhow::Error;
 use lazy_regex::regex;
 
 use crate::{
+    context::{self, kv},
     prelude::*,
     process,
     util::{self, DiskPartitionInfo, Opt},
@@ -21,6 +22,7 @@ pub fn run(node_name: String) {
     await_node_initialization()?;
     change_password()?;
     mount_storage()?;
+    join_cluster()?;
     copy_kubeconfig(ip_address)?;
 
     verify_installation()?;
@@ -190,6 +192,41 @@ fn mount_storage() {
     let output = process!("cat /etc/fstab").run()?;
 
     debug!("{}", output.stdout);
+}
+
+#[throws(Error)]
+fn join_cluster() {
+    progress!("Joining cluster");
+
+    match files!("admin/kube/config").get() {
+        Ok(kubeconfig_file) => {
+            let kubeconfig: kv::Item = serde_yaml::from_reader(kubeconfig_file)?;
+            let k3s_host: String = kubeconfig
+                .take("clusters")
+                .into_iter()
+                .flatten()
+                .filter_key_value("name", "default")
+                .try_get("cluster/server")
+                .and_convert::<String>()
+                .next()
+                .and_then(Result::ok)
+                .context("Could not read server address from the kubeconfig")?;
+
+            let output = process!(sudo "cat /var/lib/rancher/k3s/server/node-token").run()?;
+            let k3s_token = output.stdout.trim();
+
+            process!(
+                K3S_URL = "https://{k3s_host}:6443"
+                K3S_TOKEN = "{k3s_token}"
+                "k3s-init.sh"
+            )
+            .run()?;
+        }
+        Err(context::Error::KeyDoesNotExist(_)) => {
+            process!("k3s-init.sh").run()?;
+        }
+        Err(error) => throw!(error),
+    }
 }
 
 #[throws(Error)]
