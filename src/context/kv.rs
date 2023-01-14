@@ -435,11 +435,7 @@ impl ItemBuilder {
 #[serde(untagged)]
 pub enum Item {
     Value(Value),
-
-    #[serde(skip)]
     Array(Vec<Item>),
-
-    #[serde(skip)]
     Map(IndexMap<String, Item>),
 }
 
