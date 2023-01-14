@@ -227,7 +227,28 @@ fn join_cluster() {
                 .and_then(Result::ok)
                 .context("Could not read server address from the kubeconfig")?;
 
-            let output = process!(sudo "cat /var/lib/rancher/k3s/server/node-token").run()?;
+            let configured_ip_address: IpAddr = k3s_host
+                .trim_start_matches("https://")
+                .trim_end_matches(":6443")
+                .parse()
+                .context("Could not parse the server IP address in the kubeconfig")?;
+            let configured_node_name = match kv!("nodes/**").get()? {
+                kv::Item::Map(map) => map
+                    .into_iter()
+                    .find_map(|(key, item)| {
+                        item.take("network/address")?
+                            .convert::<IpAddr>()
+                            .ok()
+                            .filter(|ip_addr| *ip_addr == configured_ip_address)
+                            .map(|_| key)
+                    })
+                    .context("Could not find server node name in context")?,
+                _ => bail!("Could not determine server node name due to invalid context"),
+            };
+
+            let output = process!(sudo "cat /var/lib/rancher/k3s/server/node-token")
+                .remote_mode(configured_node_name)
+                .run()?;
             let k3s_token = output.stdout.trim();
 
             process!(
