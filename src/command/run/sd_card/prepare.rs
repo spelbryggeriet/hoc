@@ -310,7 +310,7 @@ fn assign_ip_address(node_numeral: &str) -> Cidr {
     match kv!("nodes/**").get() {
         Ok(item) => used_addresses.extend(
             item.into_iter()
-                .try_get("network/start_address")
+                .try_get("network/address")
                 .and_convert::<IpAddr>()
                 .collect::<Result<Vec<_>, _>>()?,
         ),
