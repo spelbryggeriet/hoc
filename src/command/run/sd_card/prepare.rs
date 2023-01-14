@@ -1,5 +1,4 @@
 use std::{
-    borrow::Cow,
     fmt::{self, Display, Formatter},
     fs::{self, File},
     io::{Read, Seek, SeekFrom, Write},
@@ -35,10 +34,8 @@ pub fn run() {
         flash_image(&disk, &os_image_path)?;
     }
 
-    let node_numeral = generate_node_numeral()?;
-    let ip_address = assign_ip_address(&node_numeral)?;
-
-    let node_name = format!("node-{node_numeral}");
+    let node_name = generate_node_name()?;
+    let ip_address = assign_ip_address(&node_name)?;
 
     let partition = mount_sd_card()?;
     let mount_dir = find_mount_dir(&disk)?;
@@ -235,7 +232,7 @@ fn find_mount_dir(disk: &DiskInfo) -> PathBuf {
 }
 
 #[throws(Error)]
-fn generate_node_numeral() -> Cow<'static, str> {
+fn generate_node_name() -> String {
     progress!("Generating node name");
 
     let mut used_indices = if files!("admin/kube/config").exists()? {
@@ -255,7 +252,7 @@ fn generate_node_numeral() -> Cow<'static, str> {
     match kv!("nodes/**").get() {
         Ok(kv::Item::Map(map)) => used_indices.extend(
             map.keys()
-                .map(|key| util::numeral_to_int(key))
+                .map(|key| util::numeral_to_int(key.trim_start_matches("node-")))
                 .collect::<Option<Vec<_>>>()
                 .context("Could not parse pending node names")?,
         ),
@@ -277,14 +274,14 @@ fn generate_node_numeral() -> Cow<'static, str> {
         .find(|(i, j)| i != *j)
         .map_or(used_indices.len() as u64 + 1, |(i, _)| i);
 
-    let node_numeral = util::int_to_numeral(available_index);
-    info!("Node name: node-{node_numeral}");
+    let node_name = format!("node-{}", util::int_to_numeral(available_index));
+    info!("Node name: {node_name}");
 
-    node_numeral
+    node_name
 }
 
 #[throws(Error)]
-fn assign_ip_address(node_numeral: &str) -> Cidr {
+fn assign_ip_address(node_name: &str) -> Cidr {
     progress!("Assigning IP address");
 
     let start_address: IpAddr = kv!("network/start_address").get()?.convert()?;
@@ -338,7 +335,7 @@ fn assign_ip_address(node_numeral: &str) -> Cidr {
         .map_or(addresses.offset(used_addresses.len() as u128), |(i, _)| i)
         .context("No more IP addresses available")?;
 
-    kv!("nodes/{node_numeral}/network/address").put(available_address.to_string())?;
+    kv!("nodes/{node_name}/network/address").put(available_address.to_string())?;
     info!("Assigned IP Address: {available_address}");
 
     Cidr {
