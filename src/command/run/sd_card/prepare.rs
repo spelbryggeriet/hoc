@@ -11,7 +11,7 @@ use xz2::read::XzDecoder;
 
 use crate::{
     cidr::Cidr,
-    context::{self, fs::ContextFile},
+    context::{self, fs::ContextFile, kv},
     prelude::*,
     process,
     util::{self, DiskInfo, DiskPartitionInfo, Opt},
@@ -235,29 +235,46 @@ fn find_mount_dir(disk: &DiskInfo) -> PathBuf {
 fn generate_node_name() -> String {
     progress!("Generating node name");
 
-    let node_numeral = if files!("admin/kube/config").exists()? {
-        let output = process!("kubectl get nodes -o name")
+    let mut used_indices = if files!("admin/kube/config").exists()? {
+        process!("kubectl get nodes -o name")
             .container_mode()
-            .run()?;
-        let mut node_indices = output
+            .run()?
             .stdout
             .trim()
             .lines()
             .map(|line| util::numeral_to_int(line.trim_start_matches("node/node-")))
             .collect::<Option<Vec<_>>>()
-            .context("Could not parse existing node names")?;
-        node_indices.sort();
-        let available_index = (1..)
-            .zip(node_indices.into_iter())
-            .find(|(potential, existing)| potential != existing)
-            .context("Expected at least one node to be present in the cluster")?
-            .0;
-        util::int_to_numeral(available_index)
+            .context("Could not parse cluster node names")?
     } else {
-        util::int_to_numeral(1)
+        Vec::new()
     };
 
-    let node_name = format!("node-{node_numeral}");
+    match kv!("nodes/**").get() {
+        Ok(kv::Item::Map(map)) => used_indices.extend(
+            map.keys()
+                .map(|key| util::numeral_to_int(key))
+                .collect::<Option<Vec<_>>>()
+                .context("Could not parse pending node names")?,
+        ),
+        Ok(_) => bail!("Can't determine available node names due to invalid context"),
+        Err(context::Error::KeyDoesNotExist(_)) => (),
+        Err(err) => throw!(err),
+    }
+
+    used_indices.sort();
+
+    let count_before_dedup = used_indices.len();
+    used_indices.dedup();
+    if used_indices.len() != count_before_dedup {
+        bail!("Can't determine available node names due to invalid context");
+    }
+
+    let available_index = (1..)
+        .zip(&used_indices)
+        .find(|(i, j)| i != *j)
+        .map_or(used_indices.len() as u64 + 1, |(i, _)| i);
+
+    let node_name = format!("node-{}", util::int_to_numeral(available_index));
     info!("Node name: {node_name}");
 
     node_name
@@ -270,44 +287,60 @@ fn assign_ip_address(node_name: &str) -> Cidr {
     let start_address: IpAddr = kv!("network/start_address").get()?.convert()?;
     let prefix_len: u32 = kv!("network/prefix_len").get()?.convert()?;
 
-    let used_addresses = if files!("admin/kube/config").exists()? {
-        let output = process!(
+    let mut used_addresses = if files!("admin/kube/config").exists()? {
+        process!(
             "kubectl get nodes \
             -o=jsonpath='{{.items[?(@.kind==\"Node\")]\
                            .status\
                            .addresses[?(@.type==\"InternalIP\")]\
                            .address}}'",
         )
-        .run()?;
-        output
-            .stdout
-            .split_whitespace()
-            .map(str::parse::<IpAddr>)
-            .collect::<Result<Vec<_>, _>>()?
+        .run()?
+        .stdout
+        .split_whitespace()
+        .map(str::parse::<IpAddr>)
+        .collect::<Result<Vec<_>, _>>()?
     } else {
         Vec::new()
     };
+
+    match kv!("nodes/**").get() {
+        Ok(item) => used_addresses.extend(
+            item.into_iter()
+                .try_get("network/start_address")
+                .and_convert::<IpAddr>()
+                .collect::<Result<Vec<_>, _>>()?,
+        ),
+        Err(context::Error::KeyDoesNotExist(_)) => (),
+        Err(err) => throw!(err),
+    };
+
+    used_addresses.sort();
+
+    let count_before_dedup = used_addresses.len();
+    used_addresses.dedup();
+    if used_addresses.len() != count_before_dedup {
+        bail!("Can't determine available node names due to invalid context");
+    }
 
     let addresses = Cidr {
         ip_addr: start_address,
         prefix_len,
     };
 
-    let mut step = 0;
-    loop {
-        let next_address = addresses
-            .step(step)
-            .context("No more IP addresses available")?;
-        if !used_addresses.contains(&next_address) {
-            kv!("nodes/{node_name}/network/address").put(next_address.to_string())?;
-            info!("Assigned IP Address: {next_address}");
-            break Cidr {
-                ip_addr: next_address,
-                prefix_len,
-            };
-        }
+    let available_address = (0..)
+        .zip(&used_addresses)
+        .map(|(i, address)| (addresses.offset(i), address))
+        .find(|(a, b)| *a != Some(**b))
+        .map_or(addresses.offset(used_addresses.len() as u128), |(i, _)| i)
+        .context("No more IP addresses available")?;
 
-        step += 1;
+    kv!("nodes/{node_name}/network/address").put(available_address.to_string())?;
+    info!("Assigned IP Address: {available_address}");
+
+    Cidr {
+        ip_addr: available_address,
+        prefix_len,
     }
 }
 
