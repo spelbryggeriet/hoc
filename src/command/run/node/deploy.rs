@@ -32,27 +32,34 @@ pub fn run(node_name: String) {
 #[throws(Error)]
 fn check_not_initialized(node_name: &str) {
     if !kv!("nodes/{node_name}").exists() {
-        if !files!("admin/kube/config").exists()? {
-            error!("{node_name} is not a known prepared node name");
-            info!(
-                "Run the following to prepare an SD card for a node:\
-                 \n\
-                 \n  hoc sd-card prepare\
-                 \n "
-            );
-            bail!("Failed to deploy {node_name}");
-        } else {
-            let output = process!(
-                "kubectl get node {node_name} \
-                -o=jsonpath='{{.status.conditions[?(@.type==\"Ready\")].status}}'",
-            )
-            .run()?;
+        error!("{node_name} is not a known prepared node name");
+        info!(
+            "Run the following to prepare an SD card for a node:\
+             \n\
+             \n  hoc sd-card prepare\
+             \n "
+        );
+        bail!("Failed to deploy {node_name}");
+    }
 
-            if output.stdout == "True" {
-                bail!("{node_name} has already been deployed");
-            } else {
-                bail!("{node_name} has already been deployed, but is not ready yet")
-            }
+    if kv!("nodes/{node_name}/initialized")
+        .get()?
+        .convert::<bool>()?
+    {
+        if !files!("admin/kube/config").exists()? {
+            bail!("Could not check status on {node_name} since kubeconfig is missing")
+        }
+
+        let output = process!(
+            "kubectl get node {node_name} \
+                -o=jsonpath='{{.status.conditions[?(@.type==\"Ready\")].status}}'",
+        )
+        .run()?;
+
+        if output.stdout.trim() == "True" {
+            bail!("{node_name} has already been deployed");
+        } else {
+            bail!("{node_name} has already been deployed, but it is not ready")
         }
     }
 }
@@ -119,7 +126,7 @@ fn await_node_startup(node_name: &str, ip_address: IpAddr) {
 
 #[throws(Error)]
 fn await_node_initialization() {
-    let init_status = progress_with_handle!("Checking node initializaion status");
+    let init_status = progress_with_handle!("Checking node initialization status");
 
     let output = process!("cloud-init status").run()?;
     if output.stdout.contains("status: done") {
@@ -295,6 +302,6 @@ fn verify_installation(node_name: &str) {
 
 #[throws(Error)]
 fn report(node_name: &str) {
-    kv!("nodes/{node_name}/initialized").put(true)?;
+    kv!("nodes/{node_name}/initialized").update(true)?;
     info!("{node_name} has been successfully deployed");
 }

@@ -226,11 +226,11 @@ impl<'a> KvBuilder<'a, All> {
         Context::get_or_init().kv().get_item(&self.key)?
     }
 
+    #[allow(unused)]
     pub fn exists(self) -> bool {
         Context::get_or_init().kv().item_exists(&self.key)
     }
 
-    #[allow(unused)]
     #[throws(Error)]
     pub fn update<V>(self, value: V)
     where

@@ -285,6 +285,7 @@ fn generate_node_name() -> String {
         .map_or(used_indices.len() as u64 + 1, |(i, _)| i);
 
     let node_name = format!("node-{}", util::int_to_numeral(available_index));
+    kv!("nodes/{node_name}/initialized").put(false)?;
     info!("Node name: {node_name}");
 
     node_name
