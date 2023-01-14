@@ -22,7 +22,7 @@ pub fn run(node_name: String) {
     await_node_initialization()?;
     change_password()?;
     mount_storage()?;
-    join_cluster()?;
+    join_cluster(&node_name)?;
     copy_kubeconfig(ip_address)?;
 
     verify_installation(&node_name)?;
@@ -217,7 +217,7 @@ fn mount_storage() {
 }
 
 #[throws(Error)]
-fn join_cluster() {
+fn join_cluster(node_name: &str) {
     progress!("Joining cluster");
 
     match files!("admin/kube/config").get() {
@@ -239,6 +239,13 @@ fn join_cluster() {
                 .trim_end_matches(":6443")
                 .parse()
                 .context("Could not parse the server IP address in the kubeconfig")?;
+            let self_ip_address: IpAddr =
+                kv!("nodes/{node_name}/network/address").get()?.convert()?;
+
+            if self_ip_address == configured_ip_address {
+                bail!("Node IP address can not be the same as the host node IP address");
+            }
+
             let configured_node_name = match kv!("nodes/**").get()? {
                 kv::Item::Map(map) => map
                     .into_iter()
