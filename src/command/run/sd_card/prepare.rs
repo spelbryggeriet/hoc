@@ -46,14 +46,6 @@ pub fn run() {
     report(&node_name);
 }
 
-#[throws(Error)]
-fn get_os_image_path() -> PathBuf {
-    files!("images/os")
-        .cached(get_os_image)
-        .get_or_create()?
-        .local_path
-}
-
 #[throws(context::Error)]
 fn get_os_image(file: &mut ContextFile, retrying: bool) {
     download_os_image(file, retrying)?;
@@ -171,6 +163,14 @@ fn unmount_sd_card(disk: &DiskInfo) {
 }
 
 #[throws(Error)]
+fn get_os_image_path() -> PathBuf {
+    files!("images/os")
+        .cached(get_os_image)
+        .get_or_create()?
+        .local_path
+}
+
+#[throws(Error)]
 fn flash_image(disk: &DiskInfo, os_image_path: &Path) {
     let opt = select!("Do you want to flash target disk {:?}?", disk.description())
         .with_options([Opt::Yes, Opt::No])
@@ -235,17 +235,29 @@ fn find_mount_dir(disk: &DiskInfo) -> PathBuf {
 fn generate_node_name() -> String {
     progress!("Generating node name");
 
-    let num_nodes = match kv!("nodes/**").get() {
-        Ok(item) => item
-            .into_iter()
-            .filter_key_value("initialized", true)
-            .count(),
-        Err(context::Error::KeyDoesNotExist(_)) => 0,
-        Err(err) => throw!(err),
+    let node_numeral = if files!("admin/kube/config").exists()? {
+        let output = process!("kubectl get nodes -o name")
+            .container_mode()
+            .run()?;
+        let mut node_indices = output
+            .stdout
+            .trim()
+            .lines()
+            .map(|line| util::numeral_to_int(line.trim_start_matches("node/node-")))
+            .collect::<Option<Vec<_>>>()
+            .context("Could not parse existing node names")?;
+        node_indices.sort();
+        let available_index = (1..)
+            .zip(node_indices.into_iter())
+            .find(|(potential, existing)| potential != existing)
+            .context("Expected at least one node to be present in the cluster")?
+            .0;
+        util::int_to_numeral(available_index)
+    } else {
+        util::int_to_numeral(1)
     };
 
-    let node_name = format!("node-{}", util::int_to_numeral(num_nodes as u64 + 1));
-    kv!("nodes/{node_name}/initialized").put(false)?;
+    let node_name = format!("node-{node_numeral}");
     info!("Node name: {node_name}");
 
     node_name
@@ -256,17 +268,25 @@ fn assign_ip_address(node_name: &str) -> Cidr {
     progress!("Assigning IP address");
 
     let start_address: IpAddr = kv!("network/start_address").get()?.convert()?;
-    let used_addresses: Vec<IpAddr> = match kv!("nodes/**").get() {
-        Ok(item) => item
-            .into_iter()
-            .filter_key_value("initialized", true)
-            .try_get("network/start_address")
-            .and_convert()
-            .collect::<Result<_, _>>()?,
-        Err(context::Error::KeyDoesNotExist(_)) => Vec::new(),
-        Err(err) => throw!(err),
-    };
     let prefix_len: u32 = kv!("network/prefix_len").get()?.convert()?;
+
+    let used_addresses = if files!("admin/kube/config").exists()? {
+        let output = process!(
+            "kubectl get nodes \
+            -o=jsonpath='{{.items[?(@.kind==\"Node\")]\
+                           .status\
+                           .addresses[?(@.type==\"InternalIP\")]\
+                           .address}}'",
+        )
+        .run()?;
+        output
+            .stdout
+            .split_whitespace()
+            .map(str::parse::<IpAddr>)
+            .collect::<Result<Vec<_>, _>>()?
+    } else {
+        Vec::new()
+    };
 
     let addresses = Cidr {
         ip_addr: start_address,
@@ -343,7 +363,11 @@ fn modify_image(mount_dir: &Path, node_name: &str, ip_address: Cidr) {
     fs::write(network_config_path, network_config)?;
 
     let cmdline_path = mount_dir.join("cmdline.txt");
-    process!("sed -i '' -E 's/ *cgroup_(memory|enable)=[^ ]*//g;s/$/ cgroup_memory=1 cgroup_enable=memory/' {cmdline_path:?}").run()?;
+    process!(
+        "sed -i '' -E 's/ *cgroup_(memory|enable)=[^ ]*//g;\
+                       s/$/ cgroup_memory=1 cgroup_enable=memory/' {cmdline_path:?}"
+    )
+    .run()?;
 }
 
 #[throws(Error)]

@@ -34,7 +34,7 @@ fn check_not_initialized(node_name: &str) {
     if !kv!("nodes/{node_name}").exists() {
         let output = process!(
             "kubectl get node {node_name} \
-            -o=jsonpath='{{.status.conditions[?(@.type==\"Ready\")].status}}'",
+                -o=jsonpath='{{.status.conditions[?(@.type==\"Ready\")].status}}'",
         )
         .run()?;
 
