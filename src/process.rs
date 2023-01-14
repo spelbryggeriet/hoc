@@ -1,5 +1,6 @@
 use std::{
     borrow::Cow,
+    collections::HashMap,
     env,
     io::{self, Cursor, Read, Write},
     net::{IpAddr, TcpStream},
@@ -14,7 +15,10 @@ use once_cell::sync::OnceCell;
 use thiserror::Error;
 
 use crate::{
-    context::kv::{self, Item, Value},
+    context::{
+        self,
+        kv::{Item, Value},
+    },
     ledger::{Ledger, Transaction},
     prelude::*,
     prompt,
@@ -108,6 +112,11 @@ impl ProcessBuilder {
         self
     }
 
+    pub fn sudo_password<P: Into<Cow<'static, str>>>(mut self, sudo_password: P) -> Self {
+        self.settings.sudo_password(sudo_password);
+        self
+    }
+
     pub fn current_dir<P: Into<Cow<'static, str>>>(mut self, current_dir: P) -> Self {
         self.settings.current_dir(current_dir);
         self
@@ -147,6 +156,20 @@ impl ProcessBuilder {
         self
     }
 
+    pub fn env_var<N, V>(mut self, name: N, value: Option<V>) -> Self
+    where
+        N: Into<Cow<'static, str>>,
+        V: Into<Cow<'static, str>>,
+    {
+        self.settings.env_var(name, value);
+        self
+    }
+
+    pub fn prefix_env_vars(mut self) -> Self {
+        self.settings.prefix_env_vars();
+        self
+    }
+
     pub fn success_codes<I: IntoIterator<Item = i32>>(mut self, success_codes: I) -> Self {
         self.success_codes = success_codes.into_iter().collect();
         self
@@ -175,19 +198,25 @@ impl ProcessBuilder {
     fn spawn_no_settings_update(mut self, debug_desc: &str) -> Process {
         let mut password_to_cache = None;
         if self.settings.is_sudo() {
-            let password = match self.settings.get_mode() {
-                ProcessMode::Local => get_local_password()?,
-                ProcessMode::Remote { .. } => get_remote_password()?,
-                ProcessMode::Shell { mode, .. } => match &**mode {
+            let password = if let Some(temp_password) = self.settings.get_sudo_password() {
+                Secret::new(temp_password.into_owned())
+            } else {
+                let password = match self.settings.get_mode() {
                     ProcessMode::Local => get_local_password()?,
                     ProcessMode::Remote { .. } => get_remote_password()?,
-                    ProcessMode::Container => unreachable!(),
-                    ProcessMode::Shell { .. } => unreachable!(),
-                },
-                ProcessMode::Container => unreachable!(), // container mode is always non-sudo
+                    ProcessMode::Shell { mode, .. } => match &**mode {
+                        ProcessMode::Local => get_local_password()?,
+                        ProcessMode::Remote { .. } => get_remote_password()?,
+                        ProcessMode::Container => unreachable!(),
+                        ProcessMode::Shell { .. } => unreachable!(),
+                    },
+                    ProcessMode::Container => unreachable!(), // container mode is always non-sudo
+                };
+
+                password_to_cache.replace(password.clone());
+                password
             };
 
-            password_to_cache.replace(password.clone());
             self.input_data = password.into_non_secret() + "\n" + &self.input_data;
         }
 
@@ -205,6 +234,14 @@ impl ProcessBuilder {
                 ProcessMode::Remote { node_name } => debug!("Mode: remote shell => {node_name}"),
                 ProcessMode::Shell { .. } => unreachable!(),
             },
+        }
+
+        let env_vars = self.settings.get_env_vars();
+        if !env_vars.is_empty() {
+            debug!("Environment variables:");
+            for (key, value) in env_vars {
+                debug!(" => {key}={}", value.as_ref().unwrap_or(&Cow::Borrowed("")));
+            }
         }
 
         match self.settings.get_mode() {
@@ -305,7 +342,13 @@ impl ProcessBuilder {
         progress_handle: ProgressHandle,
     ) -> Process {
         let mut cmd = std::process::Command::new("sh");
-        cmd.args(["-c", &*util::get_runnable_raw(&self)])
+        cmd.args(["-c", &*util::get_prefixed_raw(&self)])
+            .envs(
+                self.settings
+                    .get_env_vars()
+                    .iter()
+                    .map(|(key, value)| (&**key, &**value.as_ref().unwrap_or(&Cow::Borrowed("")))),
+            )
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
@@ -343,15 +386,15 @@ impl ProcessBuilder {
         progress_handle: ProgressHandle,
     ) -> Process {
         let raw: Cow<_> = if let Some(current_dir) = &self.settings.get_current_dir() {
-            format!("cd {current_dir} ; {}", util::get_runnable_raw(&self)).into()
+            format!("cd {current_dir} ; {}", util::get_prefixed_raw(&self)).into()
         } else {
-            util::get_runnable_raw(&self)
+            util::get_prefixed_raw(&self)
         };
 
         let mut cmd = std::process::Command::new("docker");
         cmd.args([
             "run",
-            "-i",
+            "--interactive",
             "--mount",
             &format!(
                 "type=bind,source={},target={},readonly",
@@ -377,6 +420,13 @@ impl ProcessBuilder {
                 crate::container_source_dir().to_string_lossy(),
             ),
         ]);
+
+        for (key, value) in self.settings.get_env_vars() {
+            cmd.args([
+                "--env",
+                &format!("{key}={}", value.as_ref().unwrap_or(&Cow::Borrowed(""))),
+            ]);
+        }
 
         let mut child = cmd
             .args([&container_image(), "sh", "-c", &*raw])
@@ -414,10 +464,14 @@ impl ProcessBuilder {
     ) -> Process {
         let mut channel = session.channel_session()?;
 
+        for (key, value) in self.settings.get_env_vars() {
+            channel.setenv(key, value.as_ref().unwrap_or(&Cow::Borrowed("")))?;
+        }
+
         let raw: Cow<_> = if let Some(current_dir) = &self.settings.get_current_dir() {
-            format!("cd {current_dir} ; {}", util::get_runnable_raw(&self)).into()
+            format!("cd {current_dir} ; {}", util::get_prefixed_raw(&self)).into()
         } else {
-            util::get_runnable_raw(&self)
+            util::get_prefixed_raw(&self)
         };
 
         let raw = if !self.input_data.is_empty() {
@@ -457,68 +511,61 @@ impl ProcessBuilder {
         password_to_cache: Option<Secret<String>>,
         progress_handle: ProgressHandle,
     ) -> Process {
-        enum StdinLock<'a> {
-            Std(MutexGuard<'a, std::process::ChildStdin>),
-            Ssh(MutexGuard<'a, ssh2::Channel>),
-        }
-
-        impl Write for StdinLock<'_> {
-            #[throws(io::Error)]
-            fn write(&mut self, buf: &[u8]) -> usize {
-                match self {
-                    Self::Std(stdin) => stdin.write(buf)?,
-                    Self::Ssh(channel) => channel.write(buf)?,
-                }
-            }
-
-            #[throws(io::Error)]
-            fn flush(&mut self) {
-                match self {
-                    Self::Std(stdin) => stdin.flush()?,
-                    Self::Ssh(channel) => channel.flush()?,
-                }
-            }
-        }
-
-        let mut stdin_mut = match &stdin {
-            Stdin::Std(stdin) => StdinLock::Std(stdin.lock().expect(EXPECT_THREAD_NOT_POSIONED)),
-            Stdin::Ssh(channel) => {
-                StdinLock::Ssh(channel.lock().expect(EXPECT_THREAD_NOT_POSIONED))
-            }
-        };
-
         let token = crate::util::random_string(crate::util::RAND_CHARS, 10);
 
-        if let Some(current_dir) = &self.settings.get_current_dir() {
-            stdin_mut.write_all(b"cd ")?;
-            stdin_mut.write_all(current_dir.as_bytes())?;
-            stdin_mut.write_all(b"\n")?;
-        };
+        {
+            let mut std_stdin;
+            let mut ssh_stdin;
+            let stdin_mut: &mut dyn Write = match &stdin {
+                Stdin::Std(stdin) => {
+                    std_stdin = stdin.lock().expect(EXPECT_THREAD_NOT_POSIONED);
+                    &mut *std_stdin
+                }
+                Stdin::Ssh(channel) => {
+                    ssh_stdin = channel.lock().expect(EXPECT_THREAD_NOT_POSIONED);
+                    &mut *ssh_stdin
+                }
+            };
 
-        stdin_mut.write_all(b"echo '")?;
-        stdin_mut.write_all(SHELL_TOKEN_START_PREFIX.as_bytes())?;
-        stdin_mut.write_all(token.as_bytes())?;
-        stdin_mut.write_all(SHELL_TOKEN_SUFFIX.as_bytes())?;
-        stdin_mut.write_all(b"' | tee /dev/stderr\n")?;
-
-        stdin_mut.write_all(util::get_runnable_raw(&self).as_bytes())?;
-        if !self.input_data.is_empty() {
-            stdin_mut.write_all(b" <<EOT\n")?;
-            stdin_mut.write_all(self.input_data.as_bytes())?;
-            if !self.input_data.ends_with('\n') {
+            if let Some(current_dir) = &self.settings.get_current_dir() {
+                stdin_mut.write_all(b"cd ")?;
+                stdin_mut.write_all(current_dir.as_bytes())?;
                 stdin_mut.write_all(b"\n")?;
-            }
-            stdin_mut.write_all(b"EOT")?;
-        }
-        stdin_mut.write_all(b"\n")?;
+            };
 
-        stdin_mut.write_all(b"echo '")?;
-        stdin_mut.write_all(SHELL_TOKEN_END_PREFIX.as_bytes())?;
-        stdin_mut.write_all(token.as_bytes())?;
-        stdin_mut.write_all(b":'$?'")?;
-        stdin_mut.write_all(SHELL_TOKEN_SUFFIX.as_bytes())?;
-        stdin_mut.write_all(b"' | tee /dev/stderr\n")?;
-        drop(stdin_mut);
+            stdin_mut.write_all(b"echo '")?;
+            stdin_mut.write_all(SHELL_TOKEN_START_PREFIX.as_bytes())?;
+            stdin_mut.write_all(token.as_bytes())?;
+            stdin_mut.write_all(SHELL_TOKEN_SUFFIX.as_bytes())?;
+            stdin_mut.write_all(b"' | tee /dev/stderr\n")?;
+
+            for (key, value) in self.settings.get_env_vars() {
+                stdin_mut.write_all(key.as_bytes())?;
+                stdin_mut.write_all(b"=")?;
+                if let Some(value) = value {
+                    stdin_mut.write_all(value.as_bytes())?;
+                }
+                stdin_mut.write_all(b" ")?;
+            }
+
+            stdin_mut.write_all(util::get_prefixed_raw(&self).as_bytes())?;
+            if !self.input_data.is_empty() {
+                stdin_mut.write_all(b" <<EOT\n")?;
+                stdin_mut.write_all(self.input_data.as_bytes())?;
+                if !self.input_data.ends_with('\n') {
+                    stdin_mut.write_all(b"\n")?;
+                }
+                stdin_mut.write_all(b"EOT")?;
+            }
+            stdin_mut.write_all(b"\n")?;
+
+            stdin_mut.write_all(b"echo '")?;
+            stdin_mut.write_all(SHELL_TOKEN_END_PREFIX.as_bytes())?;
+            stdin_mut.write_all(token.as_bytes())?;
+            stdin_mut.write_all(b":'$?'")?;
+            stdin_mut.write_all(SHELL_TOKEN_SUFFIX.as_bytes())?;
+            stdin_mut.write_all(b"' | tee /dev/stderr\n")?;
+        }
 
         Process {
             builder: self,
@@ -638,7 +685,7 @@ impl Process {
                             .with_options([Opt::Yes, Opt::No])
                             .get()?;
                         if opt == Opt::Yes {
-                            Box::new(transaction).revert()?;
+                            Box::new(transaction).revert().map_err(Error::Transaction)?;
                         }
                     }
                 }
@@ -948,29 +995,43 @@ impl Output {
     }
 }
 
+type EnvVarMap = HashMap<Cow<'static, str>, Option<Cow<'static, str>>>;
+
 #[derive(Clone)]
 pub struct Settings {
     sudo: Option<bool>,
+    sudo_password: Option<Option<Cow<'static, str>>>,
     current_dir: Option<Option<Cow<'static, str>>>,
     mode: Option<ProcessMode>,
+    env_vars: EnvVarMap,
+    prefix_env_vars: Option<bool>,
 }
 
 impl Settings {
     const DEFAULT_SUDO: bool = false;
+    const DEFAULT_SUDO_PASSWORD: Option<Cow<'static, str>> = None;
     const DEFAULT_CURRENT_DIR: Option<Cow<'static, str>> = None;
     const DEFAULT_MODE: ProcessMode = ProcessMode::Container;
+    const DEFAULT_PREFIX_ENV_VARS: bool = false;
 
     fn new() -> Self {
         Self {
             sudo: None,
+            sudo_password: None,
             current_dir: None,
             mode: None,
+            env_vars: EnvVarMap::new(),
+            prefix_env_vars: None,
         }
     }
 
     fn apply(&mut self, other: &Self) {
         if let Some(sudo) = other.sudo {
             self.sudo.replace(sudo);
+        }
+
+        if let Some(sudo_password) = &other.sudo_password {
+            self.sudo_password.replace(sudo_password.clone());
         }
 
         if let Some(current_dir) = &other.current_dir {
@@ -980,6 +1041,12 @@ impl Settings {
         if let Some(mode) = &other.mode {
             self.mode.replace(mode.clone());
         }
+
+        self.env_vars.extend(other.env_vars.clone());
+
+        if let Some(prefix_env_vars) = other.prefix_env_vars {
+            self.prefix_env_vars.replace(prefix_env_vars);
+        }
     }
 
     pub fn sudo(&mut self) -> &mut Self {
@@ -987,21 +1054,14 @@ impl Settings {
         self
     }
 
-    fn is_sudo(&self) -> bool {
-        !matches!(self.get_mode(), ProcessMode::Container)
-            && self.sudo.unwrap_or(Self::DEFAULT_SUDO)
+    pub fn sudo_password<P: Into<Cow<'static, str>>>(&mut self, sudo_password: P) -> &mut Self {
+        self.sudo_password.replace(Some(sudo_password.into()));
+        self
     }
 
     pub fn current_dir<P: Into<Cow<'static, str>>>(&mut self, current_dir: P) -> &mut Self {
         self.current_dir.replace(Some(current_dir.into()));
         self
-    }
-
-    fn get_current_dir(&self) -> Option<Cow<str>> {
-        self.current_dir
-            .as_ref()
-            .map(|opt| opt.as_ref().map(|v| Cow::Borrowed(&**v)))
-            .unwrap_or(Self::DEFAULT_CURRENT_DIR)
     }
 
     pub fn local_mode(&mut self) -> &mut Self {
@@ -1040,8 +1100,50 @@ impl Settings {
         self
     }
 
+    pub fn env_var<N, V>(&mut self, name: N, value: Option<V>) -> &mut Self
+    where
+        N: Into<Cow<'static, str>>,
+        V: Into<Cow<'static, str>>,
+    {
+        self.env_vars.insert(name.into(), value.map(V::into));
+        self
+    }
+
+    pub fn prefix_env_vars(&mut self) -> &mut Self {
+        self.prefix_env_vars.replace(true);
+        self
+    }
+
+    fn is_sudo(&self) -> bool {
+        !matches!(self.get_mode(), ProcessMode::Container)
+            && self.sudo.unwrap_or(Self::DEFAULT_SUDO)
+    }
+
+    fn get_sudo_password(&self) -> Option<Cow<str>> {
+        self.sudo_password
+            .as_ref()
+            .map(|opt| opt.as_ref().map(|v| Cow::Borrowed(&**v)))
+            .unwrap_or(Self::DEFAULT_SUDO_PASSWORD)
+    }
+
+    fn get_current_dir(&self) -> Option<Cow<str>> {
+        self.current_dir
+            .as_ref()
+            .map(|opt| opt.as_ref().map(|v| Cow::Borrowed(&**v)))
+            .unwrap_or(Self::DEFAULT_CURRENT_DIR)
+    }
+
     fn get_mode(&self) -> &ProcessMode {
         self.mode.as_ref().unwrap_or(&Self::DEFAULT_MODE)
+    }
+
+    fn get_env_vars(&self) -> &EnvVarMap {
+        &self.env_vars
+    }
+
+    fn should_prefix_env_vars(&self) -> bool {
+        self.prefix_env_vars
+            .unwrap_or(Self::DEFAULT_PREFIX_ENV_VARS)
     }
 }
 
@@ -1076,13 +1178,13 @@ pub enum Error {
     Prompt(#[from] prompt::Error),
 
     #[error(transparent)]
-    Kv(#[from] kv::Error),
+    Context(#[from] context::Error),
 
     #[error(transparent)]
     Io(#[from] io::Error),
 
     #[error(transparent)]
-    Transaction(#[from] anyhow::Error),
+    Transaction(anyhow::Error),
 
     #[error(transparent)]
     Ssh(#[from] ssh2::Error),
@@ -1101,14 +1203,28 @@ mod util {
         }
     }
 
-    pub fn get_runnable_raw(process: &ProcessBuilder) -> Cow<'static, str> {
+    pub fn get_prefixed_raw(process: &ProcessBuilder) -> Cow<'static, str> {
         let maybe_sudo = if process.settings.is_sudo() {
             "sudo -kSp '' "
         } else {
             ""
         };
 
-        format!("{maybe_sudo}{}", process.raw).into()
+        let env_vars = if process.settings.should_prefix_env_vars() {
+            process
+                .settings
+                .get_env_vars()
+                .iter()
+                .map(|(key, value)| {
+                    format!("{key}={} ", value.as_ref().unwrap_or(&Cow::Borrowed("")))
+                })
+                .collect::<Vec<_>>()
+                .join("")
+        } else {
+            String::new()
+        };
+
+        format!("{maybe_sudo}{env_vars}{}", process.raw).into()
     }
 
     #[throws(Error)]

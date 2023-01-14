@@ -1,17 +1,17 @@
 use std::io::{Seek, SeekFrom};
 
 use crate::{
-    context::{self, fs::ContextFile, key::Key},
+    context::{fs::ContextFile, key::Key, Error},
     prelude::*,
     util::Opt,
 };
 
-#[throws(context::Error)]
+#[throws(Error)]
 pub fn cache_loop<C>(key: &Key, file: &mut ContextFile, on_cache: C)
 where
-    C: Fn(&mut ContextFile, bool) -> Result<(), context::Error>,
+    C: Fn(&mut ContextFile, bool) -> Result<(), Error>,
 {
-    progress!("Caching file for key {key}");
+    progress!("Caching file for key {key:?}");
 
     let mut retrying = false;
     loop {

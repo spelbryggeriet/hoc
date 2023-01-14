@@ -1,5 +1,6 @@
 use std::{
     borrow::Cow,
+    convert::Infallible,
     fmt::Display,
     fs::File,
     io,
@@ -14,7 +15,7 @@ use thiserror::Error;
 
 use self::{
     fs::{cache::Cache, files::Files, temp::Temp},
-    key::Key,
+    key::{Key, KeyOwned},
     kv::{Item, Kv, PutOptions, Value},
 };
 use crate::{ledger::Ledger, prelude::*, prompt};
@@ -220,22 +221,44 @@ impl<'a> KvBuilder<'a, All> {
         }
     }
 
-    #[throws(kv::Error)]
+    #[throws(Error)]
     pub fn get(self) -> Item {
         Context::get_or_init().kv().get_item(&self.key)?
     }
 
-    #[throws(kv::Error)]
+    #[allow(unused)]
+    pub fn exists(self) -> bool {
+        Context::get_or_init().kv().item_exists(&self.key)
+    }
+
+    #[throws(Error)]
     pub fn update<V>(self, value: V)
     where
         V: Into<Value> + Clone + Display + Send + 'static,
     {
         self.put_or_update(value, true)?;
     }
+
+    #[allow(unused)]
+    #[throws(Error)]
+    pub fn drop(self) {
+        let item =
+            Context::get_or_init()
+                .kv_mut()
+                .drop_item(&self.key, |value, is_temporary| {
+                    if is_temporary {
+                        value.take();
+                    }
+                })?;
+
+        if let Some(item) = item {
+            Ledger::get_or_init().add(ledger::Drop::new(self.key.into_owned(), item));
+        }
+    }
 }
 
 impl<'a, O> KvBuilder<'a, O> {
-    #[throws(kv::Error)]
+    #[throws(Error)]
     fn put_or_update<V>(self, value: V, update: bool)
     where
         V: Into<Value> + Clone + Display + Send + 'static,
@@ -258,7 +281,7 @@ impl<'a, O> KvBuilder<'a, O> {
         }
     }
 
-    #[throws(kv::Error)]
+    #[throws(Error)]
     pub fn put<V>(self, value: V)
     where
         V: Into<Value> + Clone + Display + Send + 'static,
@@ -269,17 +292,38 @@ impl<'a, O> KvBuilder<'a, O> {
 
 #[derive(Debug, Error)]
 pub enum Error {
-    #[error(transparent)]
-    Io(#[from] io::Error),
+    #[error("Key already exists: {0:?}")]
+    KeyAlreadyExists(KeyOwned),
+
+    #[error("Key does not exist: {0:?}")]
+    KeyDoesNotExist(KeyOwned),
+
+    #[error("Mismatched value types: expected {expected} ≠ actual {actual}")]
+    MismatchedTypes {
+        expected: kv::TypeDescription,
+        actual: kv::TypeDescription,
+    },
+
+    #[error("{0} out of range for `{1}`")]
+    OverflowingNumber(i128, &'static str),
 
     #[error(transparent)]
-    Key(#[from] key::Error),
+    Io(#[from] io::Error),
 
     #[error(transparent)]
     Prompt(#[from] prompt::Error),
 
     #[error(transparent)]
+    Serialization(#[from] serde_json::Error),
+
+    #[error(transparent)]
     Custom(#[from] anyhow::Error),
+}
+
+impl From<Infallible> for Error {
+    fn from(x: Infallible) -> Self {
+        x.into()
+    }
 }
 
 pub mod ledger {
@@ -287,11 +331,12 @@ pub mod ledger {
 
     use crate::{
         context::{
-            key::KeyOwned,
-            kv::{PutOptions, Value},
+            key::{self, KeyOwned},
+            kv::{Item, PutOptions, Value},
             Context,
         },
         ledger::Transaction,
+        prelude::*,
         util::Secret,
     };
 
@@ -311,7 +356,10 @@ pub mod ledger {
         }
     }
 
-    impl<V: Into<Value> + Display + Send + 'static> Transaction for Put<V> {
+    impl<V> Transaction for Put<V>
+    where
+        V: Into<Value> + Display + Send + 'static,
+    {
         fn description(&self) -> Cow<'static, str> {
             "Put value".into()
         }
@@ -328,7 +376,8 @@ pub mod ledger {
             detail.into()
         }
 
-        fn revert(mut self: Box<Self>) -> anyhow::Result<()> {
+        #[throws(anyhow::Error)]
+        fn revert(mut self: Box<Self>) {
             let mut kv = Context::get_or_init().kv_mut();
             match self.previous_value.take() {
                 Some(previous_value) => {
@@ -342,10 +391,50 @@ pub mod ledger {
                     )?;
                 }
                 None => {
-                    kv.drop_value(&self.key)?;
+                    kv.drop_item(&self.key, |_, _| ())?;
                 }
             }
-            Ok(())
+        }
+    }
+
+    pub struct Drop {
+        template: KeyOwned,
+        item: Item,
+    }
+
+    impl Drop {
+        pub fn new(template: KeyOwned, item: Item) -> Self {
+            Self { template, item }
+        }
+    }
+
+    impl Transaction for Drop {
+        fn description(&self) -> Cow<'static, str> {
+            "Drop value".into()
+        }
+
+        fn detail(&self) -> Cow<'static, str> {
+            let mut detail = "Key: ".to_owned();
+            detail += self.template.as_str();
+            detail += "\nItem:\n";
+            detail += &self.item.to_string();
+            detail.into()
+        }
+
+        #[throws(anyhow::Error)]
+        fn revert(self: Box<Self>) {
+            let known_prefix = key::get_known_prefix_for_template(&self.template);
+            let mut kv = Context::get_or_init().kv_mut();
+            for (key, value) in self.item.into_key_values() {
+                kv.put_value(
+                    known_prefix.join(&key),
+                    value,
+                    PutOptions {
+                        update: false,
+                        temporary: false,
+                    },
+                )?;
+            }
         }
     }
 }

@@ -17,6 +17,7 @@ pub mod temp;
 
 pub struct FileBuilder<S> {
     key: Cow<'static, Key>,
+    permissions: Option<u32>,
     state: S,
 }
 
@@ -29,25 +30,34 @@ impl FileBuilder<Persisted> {
     pub fn new(key: Cow<'static, Key>) -> Self {
         Self {
             key,
+            permissions: None,
             state: Persisted(()),
         }
     }
 
-    #[throws(anyhow::Error)]
+    #[throws(Error)]
+    pub fn exists(self) -> bool {
+        Context::get_or_init().files().exists(self.key)?
+    }
+
+    #[throws(Error)]
     pub fn get(self) -> ContextFile {
         Context::get_or_init().files().get_file(self.key)?
     }
 
-    #[throws(anyhow::Error)]
+    #[throws(Error)]
     pub fn create(self) -> ContextFile {
         let context = Context::get_or_init();
         let mut previous_path = None;
-        let (had_previous_file, file) = context.files_mut().create_file(&self.key, |path| {
-            let temp_file = temp_file!()?;
-            fs::rename(path, &temp_file.local_path)?;
-            previous_path.replace(temp_file.local_path);
-            Ok(())
-        })?;
+        let (had_previous_file, file) =
+            context
+                .files_mut()
+                .create_file(&self.key, self.permissions, |path| {
+                    let temp_file = temp_file!()?;
+                    fs::rename(path, &temp_file.local_path)?;
+                    previous_path.replace(temp_file.local_path);
+                    Ok(())
+                })?;
 
         if !had_previous_file || previous_path.is_some() {
             Ledger::get_or_init().add(files::ledger::Create::new(
@@ -66,6 +76,7 @@ impl FileBuilder<Persisted> {
     {
         FileBuilder {
             key: self.key,
+            permissions: self.permissions,
             state: Cached { file_cacher },
         }
     }
@@ -75,19 +86,27 @@ impl<F> FileBuilder<Cached<F>>
 where
     F: Fn(&mut ContextFile, bool) -> Result<(), Error>,
 {
-    #[throws(anyhow::Error)]
+    #[allow(unused)]
+    #[throws(Error)]
+    pub fn exists(self) -> bool {
+        Context::get_or_init().cache_mut().exists(self.key)?
+    }
+
+    #[throws(Error)]
     pub fn get_or_create(self) -> ContextFile {
         let context = Context::get_or_init();
         let mut previous_path = None;
-        let (had_previous_file, file) =
-            context
-                .cache_mut()
-                .get_or_create_file(&self.key, &self.state.file_cacher, |path| {
-                    let temp_file = temp_file!()?;
-                    fs::rename(path, &temp_file.local_path)?;
-                    previous_path.replace(temp_file.local_path);
-                    Ok(())
-                })?;
+        let (had_previous_file, file) = context.cache_mut().get_or_create_file(
+            &self.key,
+            self.permissions,
+            &self.state.file_cacher,
+            |path| {
+                let temp_file = temp_file!()?;
+                fs::rename(path, &temp_file.local_path)?;
+                previous_path.replace(temp_file.local_path);
+                Ok(())
+            },
+        )?;
 
         if !had_previous_file || previous_path.is_some() {
             Ledger::get_or_init().add(cache::ledger::Create::new(
@@ -101,12 +120,13 @@ where
     }
 
     #[allow(unused)]
-    #[throws(anyhow::Error)]
+    #[throws(Error)]
     pub fn create_or_overwrite(self) -> ContextFile {
         let context = Context::get_or_init();
         let mut previous_path = None;
         let (had_previous_file, file) = context.cache_mut().create_or_overwrite_file(
             self.key.as_ref(),
+            self.permissions,
             self.state.file_cacher,
             |path| {
                 let temp_file = temp_file!()?;
@@ -125,6 +145,13 @@ where
         }
 
         file
+    }
+}
+
+impl<T> FileBuilder<T> {
+    pub fn permissions(mut self, permissions: u32) -> Self {
+        self.permissions.replace(permissions);
+        self
     }
 }
 
@@ -147,7 +174,7 @@ impl ContextFile {
         }
     }
 
-    #[throws(io::Error)]
+    #[throws(Error)]
     pub fn set_len(&self, size: u64) {
         self.file.set_len(size)?
     }

@@ -2,6 +2,7 @@ use std::{
     borrow::Cow,
     fs::{self, File},
     io,
+    os::unix::prelude::OpenOptionsExt,
     path::{Path, PathBuf},
 };
 
@@ -11,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     context::{
         fs::ContextFile,
-        key::{self, Key, KeyOwned},
+        key::{Key, KeyOwned},
         Error,
     },
     prelude::*,
@@ -36,7 +37,22 @@ impl Files {
     }
 
     #[throws(Error)]
-    pub fn create_file<K, F>(&mut self, key: K, on_overwrite: F) -> (bool, ContextFile)
+    pub fn exists<'key, K>(&self, key: K) -> bool
+    where
+        K: Into<Cow<'key, Key>>,
+    {
+        self.map
+            .get(&*key.into())
+            .map_or(Ok(false), |path| path.try_exists())?
+    }
+
+    #[throws(Error)]
+    pub fn create_file<K, F>(
+        &mut self,
+        key: K,
+        permissions: Option<u32>,
+        on_overwrite: F,
+    ) -> (bool, ContextFile)
     where
         K: Into<KeyOwned>,
         F: FnOnce(&Path) -> Result<(), Error>,
@@ -44,12 +60,18 @@ impl Files {
         let key = key.into();
 
         let mut file_options = File::options();
+
+        // Set permissions (mode) if provided
+        if let Some(permissions) = permissions {
+            file_options.mode(permissions);
+        }
+
         file_options.read(true).write(true);
 
         let mut had_previous_file = false;
         let mut should_overwrite = false;
         if let Some(path) = self.map.get(&*key) {
-            error!("File for key {key} has already been created");
+            error!("File for key {key:?} has already been created");
 
             had_previous_file = true;
             let opt = select!("How do you want to resolve the key conflict?")
@@ -58,7 +80,7 @@ impl Files {
 
             should_overwrite = opt == Opt::Overwrite;
             if !should_overwrite {
-                warn!("Creating file: {key} (skipping)");
+                warn!("Creating file: {key:?} (skipping)");
                 let file = ContextFile::new(
                     file_options.open(path)?,
                     path.clone(),
@@ -91,7 +113,7 @@ impl Files {
 
                 should_overwrite = opt == Opt::Overwrite;
                 if !should_overwrite {
-                    warn!("Creating file: {key} (skipping)");
+                    warn!("Creating file: {key:?} (skipping)");
                     let file = ContextFile::new(
                         file_options.open(&path)?,
                         path,
@@ -106,9 +128,9 @@ impl Files {
         };
 
         if !should_overwrite {
-            debug!("Creating file: {key}");
+            debug!("Creating file: {key:?}");
         } else {
-            warn!("Creating file: {key} (overwriting)");
+            warn!("Creating file: {key:?} (overwriting)");
         }
 
         let file = ContextFile::new(
@@ -128,7 +150,7 @@ impl Files {
     {
         let key = key.into();
 
-        debug!("Getting file for key: {key}");
+        debug!("Getting file for key: {key:?}");
 
         let mut file_options = File::options();
         file_options.write(true).read(true);
@@ -138,7 +160,7 @@ impl Files {
             return ContextFile::new(file, path, crate::container_files_dir().join(key.as_str()));
         }
 
-        throw!(key::Error::KeyDoesNotExist(key.into_owned()));
+        throw!(Error::KeyDoesNotExist(key.into_owned()));
     }
 
     #[throws(Error)]
@@ -150,17 +172,17 @@ impl Files {
 
         match self.map.remove(key) {
             Some(path) => {
-                debug!("Remove file: {key}");
+                debug!("Remove file: {key:?}");
                 fs::remove_file(path)?;
             }
             None if !force => {
-                error!("Key {key} does not exist.");
+                error!("Key {key:?} does not exist.");
 
                 select!("How do you want to resolve the key conflict?")
                     .with_option(Opt::Skip)
                     .get()?;
 
-                warn!("Remove file: {key} (skipping)");
+                warn!("Remove file: {key:?} (skipping)");
             }
             None => (),
         }

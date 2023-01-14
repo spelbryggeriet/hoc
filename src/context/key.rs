@@ -1,13 +1,24 @@
 use std::{
     borrow::{Borrow, Cow},
-    fmt::{self, Display, Formatter},
-    ops::Deref,
+    fmt::{self, Debug, Formatter},
+    ops::{Deref, Index, RangeFrom},
 };
 
 use serde::{Deserialize, Serialize};
-use thiserror::Error;
 
 use crate::prelude::*;
+
+pub fn get_known_prefix_for_template(template: &Key) -> &Key {
+    let len: usize = template
+        .components()
+        .take_while(|comp| !comp.contains_wildcard())
+        .map(|comp| comp.as_str().len())
+        .enumerate()
+        .fold(0, |len, (index, comp_len)| {
+            len + usize::from(index > 0) + comp_len
+        });
+    Key::new(&template.as_str()[..len])
+}
 
 #[derive(PartialEq, Eq, Hash)]
 pub struct Key {
@@ -25,7 +36,7 @@ impl Key {
     }
 
     pub fn contains_wildcard(&self) -> bool {
-        self.inner.contains('*')
+        self.components().any(|comp| comp.contains_wildcard())
     }
 
     pub fn components(&self) -> Components {
@@ -55,7 +66,7 @@ impl ToOwned for Key {
     }
 }
 
-impl Display for Key {
+impl Debug for Key {
     #[throws(fmt::Error)]
     fn fmt(&self, f: &mut Formatter) {
         write!(f, "{:?}", &self.inner)?;
@@ -92,6 +103,22 @@ impl AsRef<Key> for KeyComponent<'_> {
     }
 }
 
+impl Index<RangeFrom<usize>> for &'_ Key {
+    type Output = Key;
+
+    fn index(&self, index: RangeFrom<usize>) -> &Self::Output {
+        let len: usize = self
+            .components()
+            .take(index.start)
+            .map(|comp| comp.as_str().len())
+            .enumerate()
+            .fold(0, |len, (index, comp_len)| {
+                len + usize::from(index > 0) + comp_len
+            });
+        Key::new(&self.as_str()[..len])
+    }
+}
+
 impl<'a> From<&'a str> for &'a Key {
     fn from(s: &'a str) -> Self {
         Key::new(s)
@@ -104,10 +131,22 @@ impl<'a> From<&'a String> for &'a Key {
     }
 }
 
-#[derive(Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Default, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct KeyOwned {
     inner: String,
+}
+
+impl KeyOwned {
+    pub fn empty() -> Self {
+        Self {
+            inner: String::new(),
+        }
+    }
+
+    pub fn into_string(self) -> String {
+        self.inner
+    }
 }
 
 impl Borrow<Key> for KeyOwned {
@@ -124,10 +163,10 @@ impl Deref for KeyOwned {
     }
 }
 
-impl Display for KeyOwned {
+impl Debug for KeyOwned {
     #[throws(fmt::Error)]
     fn fmt(&self, f: &mut Formatter) {
-        Key::fmt(self, f)?;
+        <Key as Debug>::fmt(self, f)?;
     }
 }
 
@@ -178,7 +217,7 @@ impl<'a> Iterator for Components<'a> {
         loop {
             let inner = self.inner.next()?;
             if !inner.is_empty() {
-                break KeyComponent::new(inner);
+                break KeyComponent(inner);
             }
         }
     }
@@ -190,40 +229,25 @@ impl DoubleEndedIterator for Components<'_> {
         loop {
             let inner = self.inner.next_back()?;
             if !inner.is_empty() {
-                break KeyComponent::new(inner);
+                break KeyComponent(inner);
             }
         }
     }
 }
 
-#[derive(Clone, Copy)]
-pub struct KeyComponent<'a> {
-    inner: &'a str,
-}
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct KeyComponent<'a>(pub &'a str);
 
 impl<'a> KeyComponent<'a> {
-    pub fn new(component: &'a str) -> Self {
-        Self { inner: component }
-    }
-
-    pub fn is_flat_wildcard(&self) -> bool {
-        self.inner == "*"
+    pub fn contains_wildcard(&self) -> bool {
+        self.0.contains('*')
     }
 
     pub fn is_nested_wildcard(&self) -> bool {
-        self.inner == "**"
+        self.0 == "**"
     }
 
     pub fn as_str(&self) -> &str {
-        self.inner
+        self.0
     }
-}
-
-#[derive(Debug, Error)]
-pub enum Error {
-    #[error("Key already exists: {0}")]
-    KeyAlreadyExists(KeyOwned),
-
-    #[error("Key does not exist: {0}")]
-    KeyDoesNotExist(KeyOwned),
 }

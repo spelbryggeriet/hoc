@@ -11,7 +11,7 @@ use xz2::read::XzDecoder;
 
 use crate::{
     cidr::Cidr,
-    context::{self, fs::ContextFile, key, kv},
+    context::{self, fs::ContextFile, kv},
     prelude::*,
     process,
     util::{self, DiskInfo, DiskPartitionInfo, Opt},
@@ -44,14 +44,6 @@ pub fn run() {
     unmount_partition(&partition)?;
 
     report(&node_name);
-}
-
-#[throws(Error)]
-fn get_os_image_path() -> PathBuf {
-    files!("images/os")
-        .cached(get_os_image)
-        .get_or_create()?
-        .local_path
 }
 
 #[throws(context::Error)]
@@ -171,6 +163,14 @@ fn unmount_sd_card(disk: &DiskInfo) {
 }
 
 #[throws(Error)]
+fn get_os_image_path() -> PathBuf {
+    files!("images/os")
+        .cached(get_os_image)
+        .get_or_create()?
+        .local_path
+}
+
+#[throws(Error)]
 fn flash_image(disk: &DiskInfo, os_image_path: &Path) {
     let opt = select!("Do you want to flash target disk {:?}?", disk.description())
         .with_options([Opt::Yes, Opt::No])
@@ -209,7 +209,7 @@ fn mount_sd_card() -> DiskPartitionInfo {
             .get()?;
     };
 
-    process!("diskutil mount {id}", id = partition.id).run()?;
+    process!("diskutil mount -mountOptions sync {id}", id = partition.id).run()?;
 
     partition
 }
@@ -235,16 +235,56 @@ fn find_mount_dir(disk: &DiskInfo) -> PathBuf {
 fn generate_node_name() -> String {
     progress!("Generating node name");
 
-    let num_nodes = match kv!("nodes/**").get() {
-        Ok(item) => item
-            .into_iter()
-            .filter_key_value("initialized", true)
-            .count(),
-        Err(kv::Error::Key(key::Error::KeyDoesNotExist(_))) => 0,
-        Err(err) => throw!(err),
+    let mut used_indices = if files!("admin/kube/config").exists()? {
+        process!("kubectl get nodes -o name")
+            .container_mode()
+            .run()?
+            .stdout
+            .trim()
+            .lines()
+            .map(|line| util::numeral_to_int(line.trim_start_matches("node/node-")))
+            .collect::<Option<Vec<_>>>()
+            .context("Could not parse cluster node names")?
+    } else {
+        Vec::new()
     };
 
-    let node_name = format!("node-{}", util::numeral(num_nodes as u64 + 1));
+    match kv!("nodes/**").get() {
+        Ok(kv::Item::Map(map)) => used_indices.extend(
+            map.into_iter()
+                .filter_map(|(key, item)| {
+                    let is_initialized = item
+                        .take("initialized")
+                        .and_then(|item| item.convert::<bool>().ok())
+                        .unwrap_or(false);
+                    if is_initialized {
+                        None
+                    } else {
+                        Some(util::numeral_to_int(key.trim_start_matches("node-")))
+                    }
+                })
+                .collect::<Option<Vec<_>>>()
+                .context("Could not parse pending node names")?,
+        ),
+        Ok(_) => bail!("Could not determine available node names due to invalid context"),
+        Err(context::Error::KeyDoesNotExist(_)) => (),
+        Err(err) => throw!(err),
+    }
+
+    used_indices.sort();
+
+    let count_before_dedup = used_indices.len();
+    used_indices.dedup();
+    if used_indices.len() != count_before_dedup {
+        bail!("Could not determine available node names due to invalid context");
+    }
+
+    let available_index = (1..)
+        .zip(&used_indices)
+        .find(|(i, j)| i != *j)
+        .map_or(used_indices.len() as u64 + 1, |(i, _)| i);
+
+    let node_name = format!("node-{}", util::int_to_numeral(available_index));
     kv!("nodes/{node_name}/initialized").put(false)?;
     info!("Node name: {node_name}");
 
@@ -256,38 +296,63 @@ fn assign_ip_address(node_name: &str) -> Cidr {
     progress!("Assigning IP address");
 
     let start_address: IpAddr = kv!("network/start_address").get()?.convert()?;
-    let used_addresses: Vec<IpAddr> = match kv!("nodes/**").get() {
-        Ok(item) => item
-            .into_iter()
-            .filter_key_value("initialized", true)
-            .try_get_key("network/start_address")
-            .and_convert()
-            .collect::<Result<_, _>>()?,
-        Err(kv::Error::Key(key::Error::KeyDoesNotExist(_))) => Vec::new(),
+    let prefix_len: u32 = kv!("network/prefix_len").get()?.convert()?;
+
+    let mut used_addresses = if files!("admin/kube/config").exists()? {
+        process!(
+            "kubectl get nodes \
+            -o=jsonpath='{{.items[?(@.kind==\"Node\")]\
+                           .status\
+                           .addresses[?(@.type==\"InternalIP\")]\
+                           .address}}'",
+        )
+        .run()?
+        .stdout
+        .split_whitespace()
+        .map(str::parse::<IpAddr>)
+        .collect::<Result<Vec<_>, _>>()?
+    } else {
+        Vec::new()
+    };
+
+    match kv!("nodes/**").get() {
+        Ok(item) => used_addresses.extend(
+            item.into_iter()
+                .filter_key_value("initialized", false)
+                .try_get("network/address")
+                .and_convert::<IpAddr>()
+                .collect::<Result<Vec<_>, _>>()?,
+        ),
+        Err(context::Error::KeyDoesNotExist(_)) => (),
         Err(err) => throw!(err),
     };
-    let prefix_len: u32 = kv!("network/prefix_len").get()?.convert()?;
+
+    used_addresses.sort();
+
+    let count_before_dedup = used_addresses.len();
+    used_addresses.dedup();
+    if used_addresses.len() != count_before_dedup {
+        bail!("Can't determine available node names due to invalid context");
+    }
 
     let addresses = Cidr {
         ip_addr: start_address,
         prefix_len,
     };
 
-    let mut step = 0;
-    loop {
-        let next_address = addresses
-            .step(step)
-            .context("No more IP addresses available")?;
-        if !used_addresses.contains(&next_address) {
-            kv!("nodes/{node_name}/network/address").put(next_address.to_string())?;
-            info!("Assigned IP Address: {next_address}");
-            break Cidr {
-                ip_addr: next_address,
-                prefix_len,
-            };
-        }
+    let available_address = (0..)
+        .zip(&used_addresses)
+        .map(|(i, address)| (addresses.offset(i), address))
+        .find(|(a, b)| *a != Some(**b))
+        .map_or(addresses.offset(used_addresses.len() as u128), |(i, _)| i)
+        .context("No more IP addresses available")?;
 
-        step += 1;
+    kv!("nodes/{node_name}/network/address").put(available_address.to_string())?;
+    info!("Assigned IP Address: {available_address}");
+
+    Cidr {
+        ip_addr: available_address,
+        prefix_len,
     }
 }
 
@@ -343,7 +408,11 @@ fn modify_image(mount_dir: &Path, node_name: &str, ip_address: Cidr) {
     fs::write(network_config_path, network_config)?;
 
     let cmdline_path = mount_dir.join("cmdline.txt");
-    process!("sed -i '' -E 's/ *cgroup_(memory|enable)=[^ ]*//g;s/$/ cgroup_memory=1 cgroup_enable=memory/' {cmdline_path:?}").run()?;
+    process!(
+        "sed -i '' -E 's/ *cgroup_(memory|enable)=[^ ]*//g;\
+                       s/$/ cgroup_memory=1 cgroup_enable=memory/' {cmdline_path:?}"
+    )
+    .run()?;
 }
 
 #[throws(Error)]
