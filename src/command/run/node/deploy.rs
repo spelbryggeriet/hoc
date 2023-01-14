@@ -32,16 +32,27 @@ pub fn run(node_name: String) {
 #[throws(Error)]
 fn check_not_initialized(node_name: &str) {
     if !kv!("nodes/{node_name}").exists() {
-        let output = process!(
-            "kubectl get node {node_name} \
-                -o=jsonpath='{{.status.conditions[?(@.type==\"Ready\")].status}}'",
-        )
-        .run()?;
-
-        if output.stdout == "True" {
-            bail!("{node_name} has already been deployed");
+        if !files!("admin/kube/config").exists()? {
+            error!("{node_name} is not a known prepared node name");
+            info!(
+                "Run the following to prepare an SD card for a node:\
+                 \n\
+                 \n  hoc sd-card prepare\
+                 \n "
+            );
+            bail!("Failed to deploy {node_name}");
         } else {
-            bail!("{node_name} has already been deployed, but is not ready yet")
+            let output = process!(
+                "kubectl get node {node_name} \
+                -o=jsonpath='{{.status.conditions[?(@.type==\"Ready\")].status}}'",
+            )
+            .run()?;
+
+            if output.stdout == "True" {
+                bail!("{node_name} has already been deployed");
+            } else {
+                bail!("{node_name} has already been deployed, but is not ready yet")
+            }
         }
     }
 }
