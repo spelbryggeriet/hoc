@@ -136,10 +136,13 @@ fn await_node_initialization() {
 #[throws(Error)]
 fn change_password() {
     let check_pass = progress_with_handle!("Checking password");
-    match process!(sudo "true").run() {
-        Ok(_) => return,
-        Err(process::Error::Failed(_)) => (),
-        Err(error) => throw!(error),
+    let code = process!(sudo "true")
+        .sudo_password("temporary_password")
+        .success_codes([0, 1])
+        .run()?
+        .code;
+    if code == 1 {
+        return;
     }
     check_pass.finish();
 
