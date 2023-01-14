@@ -209,7 +209,7 @@ fn mount_sd_card() -> DiskPartitionInfo {
             .get()?;
     };
 
-    process!("diskutil mount {id}", id = partition.id).run()?;
+    process!("diskutil mount -mountOptions sync {id}", id = partition.id).run()?;
 
     partition
 }
