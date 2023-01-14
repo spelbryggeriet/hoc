@@ -233,6 +233,13 @@ impl ProcessBuilder {
             },
         }
 
+        if !self.env_vars.is_empty() {
+            debug!("Environment variables:");
+            for (key, value) in &self.env_vars {
+                debug!(" => {key}={}", value.as_ref().unwrap_or(&Cow::Borrowed("")));
+            }
+        }
+
         match self.settings.get_mode() {
             ProcessMode::Local => self.spawn_local(password_to_cache, progress_handle)?,
             ProcessMode::Container => {

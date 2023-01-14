@@ -259,14 +259,14 @@ fn join_cluster() {
             let k3s_token = output.stdout.trim();
 
             process!(
-                K3S_URL = "https://{k3s_host}:6443"
+                K3S_URL = "{k3s_host}"
                 K3S_TOKEN = "{k3s_token}"
-                sudo "k3s-init.sh"
+                sudo "sh /usr/local/bin/k3s-init.sh"
             )
             .run()?;
         }
         Err(context::Error::KeyDoesNotExist(_)) => {
-            process!(sudo "k3s-init.sh").run()?;
+            process!(sudo "sh /usr/local/bin/k3s-init.sh").run()?;
         }
         Err(error) => throw!(error),
     }
