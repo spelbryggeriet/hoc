@@ -272,6 +272,6 @@ fn verify_installation() {
 
 #[throws(Error)]
 fn report(node_name: &str) {
-    kv!("nodes/{node_name}/**").drop()?;
+    kv!("nodes/{node_name}/initialized").put(true)?;
     info!("{node_name} has been successfully deployed");
 }

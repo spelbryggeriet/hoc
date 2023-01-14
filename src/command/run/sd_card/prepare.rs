@@ -251,8 +251,13 @@ fn generate_node_name() -> String {
 
     match kv!("nodes/**").get() {
         Ok(kv::Item::Map(map)) => used_indices.extend(
-            map.keys()
-                .map(|key| util::numeral_to_int(key.trim_start_matches("node-")))
+            map.iter()
+                .filter(|(_, item)| {
+                    item.get("initialized")
+                        .and_then(|item| item.convert::<bool>().ok())
+                        .map_or(true, |inititialized| !inititialized)
+                })
+                .map(|(key, _)| util::numeral_to_int(key.trim_start_matches("node-")))
                 .collect::<Option<Vec<_>>>()
                 .context("Could not parse pending node names")?,
         ),
@@ -307,6 +312,7 @@ fn assign_ip_address(node_name: &str) -> Cidr {
     match kv!("nodes/**").get() {
         Ok(item) => used_addresses.extend(
             item.into_iter()
+                .filter_key_value("initialized", false)
                 .try_get("network/address")
                 .and_convert::<IpAddr>()
                 .collect::<Result<Vec<_>, _>>()?,

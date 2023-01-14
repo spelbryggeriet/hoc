@@ -969,10 +969,12 @@ where
 
     #[throws(as Option)]
     fn next(&mut self) -> Self::Item {
-        let elem = self.inner.next()?;
-        match elem.get(self.key)? {
-            Item::Value(value) if value == &self.value => elem,
-            _ => throw!(),
+        loop {
+            let elem = self.inner.next()?;
+            match elem.get(self.key) {
+                Some(Item::Value(value)) if value == &self.value => break elem,
+                _ => (),
+            }
         }
     }
 }
