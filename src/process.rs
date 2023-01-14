@@ -85,7 +85,6 @@ pub struct ProcessBuilder {
     raw: Cow<'static, str>,
     settings: Settings,
     input_data: String,
-    env_vars: HashMap<Cow<'static, str>, Option<Cow<'static, str>>>,
     success_codes: Vec<i32>,
     revert_process: Option<Box<Self>>,
     should_retry: bool,
@@ -97,7 +96,6 @@ impl ProcessBuilder {
             raw: process.into(),
             settings: Settings::new(),
             input_data: String::new(),
-            env_vars: HashMap::new(),
             success_codes: vec![0],
             revert_process: None,
             should_retry: true,
@@ -163,7 +161,12 @@ impl ProcessBuilder {
         N: Into<Cow<'static, str>>,
         V: Into<Cow<'static, str>>,
     {
-        self.env_vars.insert(name.into(), value.map(V::into));
+        self.settings.env_var(name, value);
+        self
+    }
+
+    pub fn prefix_env_vars(mut self) -> Self {
+        self.settings.prefix_env_vars();
         self
     }
 
@@ -233,9 +236,10 @@ impl ProcessBuilder {
             },
         }
 
-        if !self.env_vars.is_empty() {
+        let env_vars = self.settings.get_env_vars();
+        if !env_vars.is_empty() {
             debug!("Environment variables:");
-            for (key, value) in &self.env_vars {
+            for (key, value) in env_vars {
                 debug!(" => {key}={}", value.as_ref().unwrap_or(&Cow::Borrowed("")));
             }
         }
@@ -338,9 +342,10 @@ impl ProcessBuilder {
         progress_handle: ProgressHandle,
     ) -> Process {
         let mut cmd = std::process::Command::new("sh");
-        cmd.args(["-c", &*util::get_sudo_raw(&self)])
+        cmd.args(["-c", &*util::get_prefixed_raw(&self)])
             .envs(
-                self.env_vars
+                self.settings
+                    .get_env_vars()
                     .iter()
                     .map(|(key, value)| (&**key, &**value.as_ref().unwrap_or(&Cow::Borrowed("")))),
             )
@@ -381,9 +386,9 @@ impl ProcessBuilder {
         progress_handle: ProgressHandle,
     ) -> Process {
         let raw: Cow<_> = if let Some(current_dir) = &self.settings.get_current_dir() {
-            format!("cd {current_dir} ; {}", util::get_sudo_raw(&self)).into()
+            format!("cd {current_dir} ; {}", util::get_prefixed_raw(&self)).into()
         } else {
-            util::get_sudo_raw(&self)
+            util::get_prefixed_raw(&self)
         };
 
         let mut cmd = std::process::Command::new("docker");
@@ -416,7 +421,7 @@ impl ProcessBuilder {
             ),
         ]);
 
-        for (key, value) in &self.env_vars {
+        for (key, value) in self.settings.get_env_vars() {
             cmd.args([
                 "--env",
                 &format!("{key}={}", value.as_ref().unwrap_or(&Cow::Borrowed(""))),
@@ -459,14 +464,14 @@ impl ProcessBuilder {
     ) -> Process {
         let mut channel = session.channel_session()?;
 
-        for (key, value) in &self.env_vars {
+        for (key, value) in self.settings.get_env_vars() {
             channel.setenv(key, value.as_ref().unwrap_or(&Cow::Borrowed("")))?;
         }
 
         let raw: Cow<_> = if let Some(current_dir) = &self.settings.get_current_dir() {
-            format!("cd {current_dir} ; {}", util::get_sudo_raw(&self)).into()
+            format!("cd {current_dir} ; {}", util::get_prefixed_raw(&self)).into()
         } else {
-            util::get_sudo_raw(&self)
+            util::get_prefixed_raw(&self)
         };
 
         let raw = if !self.input_data.is_empty() {
@@ -534,7 +539,7 @@ impl ProcessBuilder {
             stdin_mut.write_all(SHELL_TOKEN_SUFFIX.as_bytes())?;
             stdin_mut.write_all(b"' | tee /dev/stderr\n")?;
 
-            for (key, value) in &self.env_vars {
+            for (key, value) in self.settings.get_env_vars() {
                 stdin_mut.write_all(key.as_bytes())?;
                 stdin_mut.write_all(b"=")?;
                 if let Some(value) = value {
@@ -543,7 +548,7 @@ impl ProcessBuilder {
                 stdin_mut.write_all(b" ")?;
             }
 
-            stdin_mut.write_all(util::get_sudo_raw(&self).as_bytes())?;
+            stdin_mut.write_all(util::get_prefixed_raw(&self).as_bytes())?;
             if !self.input_data.is_empty() {
                 stdin_mut.write_all(b" <<EOT\n")?;
                 stdin_mut.write_all(self.input_data.as_bytes())?;
@@ -990,12 +995,16 @@ impl Output {
     }
 }
 
+type EnvVarMap = HashMap<Cow<'static, str>, Option<Cow<'static, str>>>;
+
 #[derive(Clone)]
 pub struct Settings {
     sudo: Option<bool>,
     sudo_password: Option<Option<Cow<'static, str>>>,
     current_dir: Option<Option<Cow<'static, str>>>,
     mode: Option<ProcessMode>,
+    env_vars: EnvVarMap,
+    prefix_env_vars: Option<bool>,
 }
 
 impl Settings {
@@ -1003,6 +1012,7 @@ impl Settings {
     const DEFAULT_SUDO_PASSWORD: Option<Cow<'static, str>> = None;
     const DEFAULT_CURRENT_DIR: Option<Cow<'static, str>> = None;
     const DEFAULT_MODE: ProcessMode = ProcessMode::Container;
+    const DEFAULT_PREFIX_ENV_VARS: bool = false;
 
     fn new() -> Self {
         Self {
@@ -1010,6 +1020,8 @@ impl Settings {
             sudo_password: None,
             current_dir: None,
             mode: None,
+            env_vars: EnvVarMap::new(),
+            prefix_env_vars: None,
         }
     }
 
@@ -1028,6 +1040,12 @@ impl Settings {
 
         if let Some(mode) = &other.mode {
             self.mode.replace(mode.clone());
+        }
+
+        self.env_vars.extend(other.env_vars.clone());
+
+        if let Some(prefix_env_vars) = other.prefix_env_vars {
+            self.prefix_env_vars.replace(prefix_env_vars);
         }
     }
 
@@ -1082,6 +1100,20 @@ impl Settings {
         self
     }
 
+    pub fn env_var<N, V>(&mut self, name: N, value: Option<V>) -> &mut Self
+    where
+        N: Into<Cow<'static, str>>,
+        V: Into<Cow<'static, str>>,
+    {
+        self.env_vars.insert(name.into(), value.map(V::into));
+        self
+    }
+
+    pub fn prefix_env_vars(&mut self) -> &mut Self {
+        self.prefix_env_vars.replace(true);
+        self
+    }
+
     fn is_sudo(&self) -> bool {
         !matches!(self.get_mode(), ProcessMode::Container)
             && self.sudo.unwrap_or(Self::DEFAULT_SUDO)
@@ -1103,6 +1135,15 @@ impl Settings {
 
     fn get_mode(&self) -> &ProcessMode {
         self.mode.as_ref().unwrap_or(&Self::DEFAULT_MODE)
+    }
+
+    fn get_env_vars(&self) -> &EnvVarMap {
+        &self.env_vars
+    }
+
+    fn should_prefix_env_vars(&self) -> bool {
+        self.prefix_env_vars
+            .unwrap_or(Self::DEFAULT_PREFIX_ENV_VARS)
     }
 }
 
@@ -1162,14 +1203,28 @@ mod util {
         }
     }
 
-    pub fn get_sudo_raw(process: &ProcessBuilder) -> Cow<'static, str> {
+    pub fn get_prefixed_raw(process: &ProcessBuilder) -> Cow<'static, str> {
         let maybe_sudo = if process.settings.is_sudo() {
             "sudo -kSp '' "
         } else {
             ""
         };
 
-        format!("{maybe_sudo}{}", process.raw).into()
+        let env_vars = if process.settings.should_prefix_env_vars() {
+            process
+                .settings
+                .get_env_vars()
+                .iter()
+                .map(|(key, value)| {
+                    format!("{key}={} ", value.as_ref().unwrap_or(&Cow::Borrowed("")))
+                })
+                .collect::<Vec<_>>()
+                .join("")
+        } else {
+            String::new()
+        };
+
+        format!("{maybe_sudo}{env_vars}{}", process.raw).into()
     }
 
     #[throws(Error)]

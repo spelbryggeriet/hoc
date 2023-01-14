@@ -49,7 +49,7 @@ macro_rules! temp_file {
 }
 
 /// ## Example
-///  
+///
 /// ```no_run
 /// let captured = "one";
 /// let payload = 10;
@@ -63,6 +63,7 @@ macro_rules! process {
         stdin_data: [],
         env: [$($env:tt)*],
         sudo: $sudo:tt,
+        prefix_env_vars: $prefix_env_vars:tt,
     }) => {{
         process!(@impl ($($rest)*) => {
             fmt: [$fmt],
@@ -70,6 +71,7 @@ macro_rules! process {
             stdin_data: [],
             env: [$($env)*],
             sudo: $sudo,
+            prefix_env_vars: $prefix_env_vars,
         })
     }};
 
@@ -79,6 +81,7 @@ macro_rules! process {
         stdin_data: [],
         env: [$($env:tt)*],
         sudo: false,
+        prefix_env_vars: $prefix_env_vars:tt,
     }) => {{
         process!(@impl ($($rest)*) => {
             fmt: [],
@@ -86,6 +89,7 @@ macro_rules! process {
             stdin_data: [],
             env: [$($env)*],
             sudo: true,
+            prefix_env_vars: $prefix_env_vars,
         })
     }};
 
@@ -95,6 +99,7 @@ macro_rules! process {
         stdin_data: [],
         env: [$($env:tt)*],
         sudo: false,
+        prefix_env_vars: $prefix_env_vars:tt,
     }) => {{
         process!(@impl ($($rest)*) => {
             fmt: [],
@@ -102,6 +107,7 @@ macro_rules! process {
             stdin_data: [],
             env: [$($env)* $env_name=$env_value,],
             sudo: false,
+            prefix_env_vars: true,
         })
     }};
 
@@ -111,6 +117,7 @@ macro_rules! process {
         stdin_data: [],
         env: [$($env:tt)*],
         sudo: false,
+        prefix_env_vars: $prefix_env_vars:tt,
     }) => {{
         process!(@impl ($($rest)*) => {
             fmt: [],
@@ -118,6 +125,7 @@ macro_rules! process {
             stdin_data: [],
             env: [$($env)* $env_name,],
             sudo: false,
+            prefix_env_vars: $prefix_env_vars,
         })
     }};
 
@@ -127,6 +135,7 @@ macro_rules! process {
         stdin_data: [],
         env: [$($env:tt)*],
         sudo: $sudo:tt,
+        prefix_env_vars: $prefix_env_vars:tt,
     }) => {{
         process!(@impl ($($rest)*) => {
             fmt: [$fmt],
@@ -134,6 +143,7 @@ macro_rules! process {
             stdin_data: [$stdin_data],
             env: [$($env)*],
             sudo: $sudo,
+            prefix_env_vars: $prefix_env_vars,
         })
     }};
 
@@ -143,6 +153,7 @@ macro_rules! process {
         stdin_data: [$($stdin_data:tt)?],
         env: [$($env:tt)*],
         sudo: $sudo:tt,
+        prefix_env_vars: $prefix_env_vars:tt,
     }) => {{
         process!(@impl () => {
             fmt: [$fmt],
@@ -150,6 +161,7 @@ macro_rules! process {
             stdin_data: [$($stdin_data)?],
             env: [$($env)*],
             sudo: $sudo,
+            prefix_env_vars: $prefix_env_vars,
         })
     }};
 
@@ -159,6 +171,7 @@ macro_rules! process {
         stdin_data: [$($stdin_data:literal)?],
         env: [$($env_name:ident$(=$env_value:literal)?,)*],
         sudo: $sudo:literal,
+        prefix_env_vars: $prefix_env_vars:literal,
     }) => {{
         $(
         #[deny(unused)]
@@ -181,6 +194,10 @@ macro_rules! process {
             builder = builder.sudo();
         }
 
+        if $prefix_env_vars {
+            builder = builder.prefix_env_vars();
+        }
+
         $(
         builder = builder.write_stdin(&format!($stdin_data));
         )?
@@ -199,6 +216,7 @@ macro_rules! process {
             stdin_data: [],
             env: [],
             sudo: false,
+            prefix_env_vars: false,
         })
     }};
 }
