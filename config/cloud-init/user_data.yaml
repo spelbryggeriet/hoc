@@ -33,7 +33,7 @@ chpasswd:
   expire: false
 
 write_files:
-  - path: /etc/ssh/sshd_config.d/00-cloud-init
+  - path: /etc/ssh/sshd_config.d/00-cloud-init.conf
     content: |
       AcceptEnv K3S_*
 
