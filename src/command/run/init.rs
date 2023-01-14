@@ -61,7 +61,7 @@ fn store_ssh_keys(pub_key: &str, priv_key: &str) {
 
 #[throws(anyhow::Error)]
 fn create_file_with_content(key: &'static str, content: &str) {
-    let mut file = files!("{key}").create()?;
+    let mut file = files!("{key}").permissions(0o600).create()?;
     file.write_all(content.as_bytes())?;
 }
 
