@@ -147,9 +147,10 @@ fn change_password() {
 
     let username: String = kv!("admin/username").get()?.convert()?;
     let password = process::get_remote_password()?.into_non_secret();
-    process!("sudo chpasswd" < ("temporary_password\n{username}:{password}"))
+    process!(sudo "chpasswd" < ("{username}:{password}"))
+        .sudo_password("temporary_password")
         .revertible(process!(
-            "sudo chpasswd" < ("{password}\n{username}:temporary_password")
+            sudo "chpasswd" < ("{username}:temporary_password")
         ))
         .run()?
 }

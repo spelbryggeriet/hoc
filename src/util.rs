@@ -344,6 +344,10 @@ impl<T> Secret<T> {
         Self(inner)
     }
 
+    pub fn map<U>(self, f: impl FnOnce(T) -> U) -> Secret<U> {
+        Secret(f(self.0))
+    }
+
     pub fn into_non_secret(self) -> T {
         self.0
     }

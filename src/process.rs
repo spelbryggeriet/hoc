@@ -114,6 +114,11 @@ impl ProcessBuilder {
         self
     }
 
+    pub fn sudo_password<P: Into<Cow<'static, str>>>(mut self, sudo_password: P) -> Self {
+        self.settings.sudo_password(sudo_password);
+        self
+    }
+
     pub fn current_dir<P: Into<Cow<'static, str>>>(mut self, current_dir: P) -> Self {
         self.settings.current_dir(current_dir);
         self
@@ -190,19 +195,25 @@ impl ProcessBuilder {
     fn spawn_no_settings_update(mut self, debug_desc: &str) -> Process {
         let mut password_to_cache = None;
         if self.settings.is_sudo() {
-            let password = match self.settings.get_mode() {
-                ProcessMode::Local => get_local_password()?,
-                ProcessMode::Remote { .. } => get_remote_password()?,
-                ProcessMode::Shell { mode, .. } => match &**mode {
+            let password = if let Some(temp_password) = self.settings.get_sudo_password() {
+                Secret::new(temp_password.into_owned())
+            } else {
+                let password = match self.settings.get_mode() {
                     ProcessMode::Local => get_local_password()?,
                     ProcessMode::Remote { .. } => get_remote_password()?,
-                    ProcessMode::Container => unreachable!(),
-                    ProcessMode::Shell { .. } => unreachable!(),
-                },
-                ProcessMode::Container => unreachable!(), // container mode is always non-sudo
+                    ProcessMode::Shell { mode, .. } => match &**mode {
+                        ProcessMode::Local => get_local_password()?,
+                        ProcessMode::Remote { .. } => get_remote_password()?,
+                        ProcessMode::Container => unreachable!(),
+                        ProcessMode::Shell { .. } => unreachable!(),
+                    },
+                    ProcessMode::Container => unreachable!(), // container mode is always non-sudo
+                };
+
+                password_to_cache.replace(password.clone());
+                password
             };
 
-            password_to_cache.replace(password.clone());
             self.input_data = password.into_non_secret() + "\n" + &self.input_data;
         }
 
@@ -975,18 +986,21 @@ impl Output {
 #[derive(Clone)]
 pub struct Settings {
     sudo: Option<bool>,
+    sudo_password: Option<Option<Cow<'static, str>>>,
     current_dir: Option<Option<Cow<'static, str>>>,
     mode: Option<ProcessMode>,
 }
 
 impl Settings {
     const DEFAULT_SUDO: bool = false;
+    const DEFAULT_SUDO_PASSWORD: Option<Cow<'static, str>> = None;
     const DEFAULT_CURRENT_DIR: Option<Cow<'static, str>> = None;
     const DEFAULT_MODE: ProcessMode = ProcessMode::Container;
 
     fn new() -> Self {
         Self {
             sudo: None,
+            sudo_password: None,
             current_dir: None,
             mode: None,
         }
@@ -995,6 +1009,10 @@ impl Settings {
     fn apply(&mut self, other: &Self) {
         if let Some(sudo) = other.sudo {
             self.sudo.replace(sudo);
+        }
+
+        if let Some(sudo_password) = &other.sudo_password {
+            self.sudo_password.replace(sudo_password.clone());
         }
 
         if let Some(current_dir) = &other.current_dir {
@@ -1011,21 +1029,14 @@ impl Settings {
         self
     }
 
-    fn is_sudo(&self) -> bool {
-        !matches!(self.get_mode(), ProcessMode::Container)
-            && self.sudo.unwrap_or(Self::DEFAULT_SUDO)
+    pub fn sudo_password<P: Into<Cow<'static, str>>>(&mut self, sudo_password: P) -> &mut Self {
+        self.sudo_password.replace(Some(sudo_password.into()));
+        self
     }
 
     pub fn current_dir<P: Into<Cow<'static, str>>>(&mut self, current_dir: P) -> &mut Self {
         self.current_dir.replace(Some(current_dir.into()));
         self
-    }
-
-    fn get_current_dir(&self) -> Option<Cow<str>> {
-        self.current_dir
-            .as_ref()
-            .map(|opt| opt.as_ref().map(|v| Cow::Borrowed(&**v)))
-            .unwrap_or(Self::DEFAULT_CURRENT_DIR)
     }
 
     pub fn local_mode(&mut self) -> &mut Self {
@@ -1062,6 +1073,25 @@ impl Settings {
             stderr,
         });
         self
+    }
+
+    fn is_sudo(&self) -> bool {
+        !matches!(self.get_mode(), ProcessMode::Container)
+            && self.sudo.unwrap_or(Self::DEFAULT_SUDO)
+    }
+
+    fn get_sudo_password(&self) -> Option<Cow<str>> {
+        self.sudo_password
+            .as_ref()
+            .map(|opt| opt.as_ref().map(|v| Cow::Borrowed(&**v)))
+            .unwrap_or(Self::DEFAULT_SUDO_PASSWORD)
+    }
+
+    fn get_current_dir(&self) -> Option<Cow<str>> {
+        self.current_dir
+            .as_ref()
+            .map(|opt| opt.as_ref().map(|v| Cow::Borrowed(&**v)))
+            .unwrap_or(Self::DEFAULT_CURRENT_DIR)
     }
 
     fn get_mode(&self) -> &ProcessMode {
