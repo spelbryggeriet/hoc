@@ -251,13 +251,18 @@ fn generate_node_name() -> String {
 
     match kv!("nodes/**").get() {
         Ok(kv::Item::Map(map)) => used_indices.extend(
-            map.iter()
-                .filter(|(_, item)| {
-                    item.get("initialized")
+            map.into_iter()
+                .filter_map(|(key, item)| {
+                    let is_initialized = item
+                        .take("initialized")
                         .and_then(|item| item.convert::<bool>().ok())
-                        .map_or(true, |inititialized| !inititialized)
+                        .unwrap_or(false);
+                    if is_initialized {
+                        None
+                    } else {
+                        Some(util::numeral_to_int(key.trim_start_matches("node-")))
+                    }
                 })
-                .map(|(key, _)| util::numeral_to_int(key.trim_start_matches("node-")))
                 .collect::<Option<Vec<_>>>()
                 .context("Could not parse pending node names")?,
         ),

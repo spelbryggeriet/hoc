@@ -239,6 +239,7 @@ impl<'a> KvBuilder<'a, All> {
         self.put_or_update(value, true)?;
     }
 
+    #[allow(unused)]
     #[throws(Error)]
     pub fn drop(self) {
         let item =
