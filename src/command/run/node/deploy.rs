@@ -12,7 +12,7 @@ use crate::{
 
 #[throws(Error)]
 pub fn run(node_name: String) {
-    check_not_initialized(&node_name)?;
+    check_node(&node_name)?;
 
     let ip_address = get_node_ip_address(&node_name)?;
     await_node_startup(&node_name, ip_address)?;
@@ -30,7 +30,9 @@ pub fn run(node_name: String) {
 }
 
 #[throws(Error)]
-fn check_not_initialized(node_name: &str) {
+fn check_node(node_name: &str) {
+    progress!("Checking node");
+
     if !kv!("nodes/{node_name}").exists() {
         error!("{node_name} is not a known prepared node name");
         info!(
@@ -223,7 +225,7 @@ fn join_cluster(node_name: &str) {
     match files!("admin/kube/config").get() {
         Ok(kubeconfig_file) => {
             let kubeconfig: kv::Item = serde_yaml::from_reader(kubeconfig_file)?;
-            let k3s_host: String = kubeconfig
+            let k3s_url: String = kubeconfig
                 .take("clusters")
                 .into_iter()
                 .flatten()
@@ -234,7 +236,7 @@ fn join_cluster(node_name: &str) {
                 .and_then(Result::ok)
                 .context("Could not read server address from the kubeconfig")?;
 
-            let configured_ip_address: IpAddr = k3s_host
+            let configured_ip_address: IpAddr = k3s_url
                 .trim_start_matches("https://")
                 .trim_end_matches(":6443")
                 .parse()
@@ -266,7 +268,7 @@ fn join_cluster(node_name: &str) {
             let k3s_token = output.stdout.trim();
 
             process!(
-                K3S_URL = "{k3s_host}"
+                K3S_URL = "{k3s_url}"
                 K3S_TOKEN = "{k3s_token}"
                 sudo "k3s-init.sh"
             )

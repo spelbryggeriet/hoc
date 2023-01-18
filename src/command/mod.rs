@@ -42,6 +42,11 @@ commands_summary! {
             help = "The name of the node",
         }
     }
+    node_migrate {
+        node_name {
+            help = "The name of the node",
+        }
+    }
     deploy {
         timeout {
             default = "5m0s",
@@ -188,12 +193,21 @@ pub struct SdCardPrepareCommand {}
 #[derive(clap::Subcommand)]
 pub enum NodeCommand {
     Deploy(NodeDeployCommand),
+    Migrate(NodeMigrateCommand),
 }
 
 /// Deploy a node
 #[derive(Parser)]
 #[clap(name = "node-deploy")]
 pub struct NodeDeployCommand {
+    #[clap(help = help::node_deploy::node_name())]
+    node_name: String,
+}
+
+/// Migrate a node to the newest version
+#[derive(Parser)]
+#[clap(name = "node-migrate")]
+pub struct NodeMigrateCommand {
     #[clap(help = help::node_deploy::node_name())]
     node_name: String,
 }
@@ -260,6 +274,13 @@ impl Command {
                     arg_diagnostics!(node_name, deploy_command.node_name);
 
                     node::deploy::run(deploy_command.node_name)?;
+                }
+                NodeCommand::Migrate(migrate_command) => {
+                    cmd_diagnostics!(NodeMigrateCommand);
+
+                    arg_diagnostics!(node_name, migrate_command.node_name);
+
+                    node::migrate::run(migrate_command.node_name)?;
                 }
             },
 
