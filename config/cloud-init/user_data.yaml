@@ -4,6 +4,9 @@ manage_etc_hosts: true
 
 package_update: true
 package_upgrade: false
+packages:
+  - libpam-systemd
+  - dbus
 
 users:
   - name: {admin_username}

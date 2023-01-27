@@ -203,7 +203,7 @@ fn mount_storage() {
         .context("UUID should be first match")?
         .as_str();
 
-    let fstab_line = format!("UUID={uuid} /media auto nosuid,nodev,nofail 0 0");
+    let fstab_line = format!("UUID={uuid} /var/lib/rancher/k3s auto nosuid,nodev,nofail 0 0");
     let fstab_line = fstab_line.replace('/', r"\/");
     let fstab_sed = format!(
         "/^UUID={uuid}/{{h;s/^UUID={uuid}.*$/{fstab_line}/}};${{x;/^$/{{s//{fstab_line}/;H}};x}}"

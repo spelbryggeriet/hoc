@@ -24,18 +24,17 @@ const UBUNTU_VERSION: UbuntuVersion = UbuntuVersion {
 };
 
 #[throws(Error)]
-pub fn run() {
+pub fn run(migrate_node: Option<String>) {
     process::global_settings().local_mode();
 
     let disk = choose_sd_card()?;
-    if !has_system_boot_partition(&disk) || wants_to_flash()? {
+    if is_migrate_mode(&migrate_node) || !has_system_boot_partition(&disk) || wants_to_flash()? {
         unmount_sd_card(&disk)?;
         let os_image_path = get_os_image_path()?;
         flash_image(&disk, &os_image_path)?;
     }
 
-    let node_name = generate_node_name()?;
-    let ip_address = assign_ip_address(&node_name)?;
+    let (node_name, ip_address) = get_node_name_and_ip_address(migrate_node)?;
 
     let partition = mount_sd_card()?;
     let mount_dir = find_mount_dir(&disk)?;
@@ -44,6 +43,49 @@ pub fn run() {
     unmount_partition(&partition)?;
 
     report(&node_name);
+}
+
+fn is_migrate_mode(migrate_node: &Option<String>) -> bool {
+    migrate_node.is_some()
+}
+
+#[throws(Error)]
+fn choose_sd_card() -> DiskInfo {
+    progress!("Choosing SD card");
+
+    loop {
+        let disks = util::get_attached_disks()?;
+        let select = select!("Which disk is your SD card?").with_options(disks);
+        if select.option_count() > 0 {
+            break select.get()?;
+        }
+
+        error!("No mounted disk detected");
+
+        let opt = select!("Do you want to proceed?")
+            .with_options([Opt::Yes, Opt::No])
+            .get()?;
+
+        if opt == Opt::No {
+            throw!(inquire::InquireError::OperationCanceled);
+        }
+    }
+}
+
+#[throws(Error)]
+fn unmount_sd_card(disk: &DiskInfo) {
+    progress!("Unmounting SD card");
+
+    let id = &disk.id;
+    process!("diskutil unmountDisk {id}").run()?;
+}
+
+#[throws(Error)]
+fn get_os_image_path() -> PathBuf {
+    files!("images/os")
+        .cached(get_os_image)
+        .get_or_create()?
+        .local_path
 }
 
 #[throws(context::Error)]
@@ -132,57 +174,37 @@ fn decompress_xz_file(os_image_file: &mut ContextFile) {
 }
 
 #[throws(Error)]
-fn choose_sd_card() -> DiskInfo {
-    progress!("Choosing SD card");
-
-    loop {
-        let disks = util::get_attached_disks()?;
-        let select = select!("Which disk is your SD card?").with_options(disks);
-        if select.option_count() > 0 {
-            break select.get()?;
-        }
-
-        error!("No mounted disk detected");
-
-        let opt = select!("Do you want to proceed?")
-            .with_options([Opt::Yes, Opt::No])
-            .get()?;
-
-        if opt == Opt::No {
-            throw!(inquire::InquireError::OperationCanceled);
-        }
-    }
-}
-
-#[throws(Error)]
-fn unmount_sd_card(disk: &DiskInfo) {
-    progress!("Unmounting SD card");
-
-    let id = &disk.id;
-    process!("diskutil unmountDisk {id}").run()?;
-}
-
-#[throws(Error)]
-fn get_os_image_path() -> PathBuf {
-    files!("images/os")
-        .cached(get_os_image)
-        .get_or_create()?
-        .local_path
-}
-
-#[throws(Error)]
 fn flash_image(disk: &DiskInfo, os_image_path: &Path) {
     let opt = select!("Do you want to flash target disk {:?}?", disk.description())
         .with_options([Opt::Yes, Opt::No])
         .get()?;
     if opt == Opt::No {
-        return;
+        throw!(inquire::InquireError::OperationCanceled);
     }
 
     progress!("Flashing image");
 
     let id = &disk.id;
     process!(sudo "dd bs=1m if={os_image_path:?} of=/dev/r{id}").run()?;
+}
+
+#[throws(Error)]
+fn get_node_name_and_ip_address(migrate_node: Option<String>) -> (String, Cidr) {
+    if let Some(node_name) = migrate_node {
+        let ip_addr = kv!("nodes/{node_name}/network/address").get()?.convert()?;
+        let prefix_len = kv!("network/prefix_len").get()?.convert()?;
+        (
+            node_name,
+            Cidr {
+                ip_addr,
+                prefix_len,
+            },
+        )
+    } else {
+        let node_name = generate_node_name()?;
+        let ip_address = assign_ip_address(&node_name)?;
+        (node_name, ip_address)
+    }
 }
 
 #[throws(Error)]
@@ -209,7 +231,8 @@ fn mount_sd_card() -> DiskPartitionInfo {
             .get()?;
     };
 
-    process!("diskutil mount -mountOptions sync {id}", id = partition.id).run()?;
+    process!("sync").run()?;
+    process!("diskutil mount {id}", id = partition.id).run()?;
 
     partition
 }

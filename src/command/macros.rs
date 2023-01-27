@@ -5,6 +5,12 @@ macro_rules! cmd_diagnostics {
 }
 
 macro_rules! arg_diagnostics {
+    ($command:ident.$field:ident) => {{
+        if let Some(__inner) = &$command.$field {
+            arg_diagnostics!($field, __inner);
+        }
+    }};
+
     ($field:ident) => {{
         if let Some(__inner) = &$field {
             arg_diagnostics!($field, __inner);

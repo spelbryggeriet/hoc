@@ -145,7 +145,6 @@ impl ProcessBuilder {
         self
     }
 
-    #[allow(unused)]
     pub fn remote_mode<S: Into<Cow<'static, str>>>(mut self, node_name: S) -> Self {
         self.settings.remote_mode(node_name);
         self

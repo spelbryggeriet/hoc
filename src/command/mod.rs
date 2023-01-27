@@ -37,6 +37,13 @@ commands_summary! {
             help = "The prefix for the container registry where images are pulled from",
         }
     }
+    sd_card_prepare {
+        migrate {
+            help = "Prepare the SD card for a node in migration mode",
+            long_help = "This option should only be used after having run `hoc node migrate` \
+                prior.",
+        }
+    }
     node_deploy {
         node_name {
             help = "The name of the node",
@@ -187,7 +194,22 @@ pub enum SdCardCommand {
 /// Prepare an SD card for a node to be deployed
 #[derive(Parser)]
 #[clap(name = "sd-card-prepare")]
-pub struct SdCardPrepareCommand {}
+pub struct SdCardPrepareCommand {
+    #[clap(
+        help = help::sd_card_prepare::migrate(),
+        long_help = long_help::sd_card_prepare::migrate(),
+        required_if_eq("migrate", "true"),
+        requires = "migrate",
+    )]
+    node_name: Option<String>,
+
+    #[clap(
+        long,
+        help = help::sd_card_prepare::migrate(),
+        long_help = long_help::sd_card_prepare::migrate(),
+    )]
+    migrate: bool,
+}
 
 /// Manage a node
 #[derive(clap::Subcommand)]
@@ -208,7 +230,7 @@ pub struct NodeDeployCommand {
 #[derive(Parser)]
 #[clap(name = "node-migrate")]
 pub struct NodeMigrateCommand {
-    #[clap(help = help::node_deploy::node_name())]
+    #[clap(help = help::node_migrate::node_name())]
     node_name: String,
 }
 
@@ -261,9 +283,13 @@ impl Command {
             }
 
             SdCard(sd_card_command) => match sd_card_command {
-                SdCardCommand::Prepare(_prepare_command) => {
+                SdCardCommand::Prepare(prepare_command) => {
                     cmd_diagnostics!(SdCardPrepareCommand);
-                    sd_card::prepare::run()?;
+
+                    arg_diagnostics!(prepare_command.node_name);
+                    arg_diagnostics!(migrate, prepare_command.migrate);
+
+                    sd_card::prepare::run(prepare_command.node_name)?;
                 }
             },
 
