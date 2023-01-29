@@ -63,7 +63,7 @@ fn drain_node(node_name: &str) {
 fn shutdown_node(node_name: &str) {
     progress!("Shutting down node");
 
-    process!(sudo "shutdown now")
+    process!(sudo "shutdown-node.sh")
         .remote_mode(node_name.to_owned())
         .run()?;
 }

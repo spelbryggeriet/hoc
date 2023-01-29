@@ -4,9 +4,6 @@ manage_etc_hosts: true
 
 package_update: true
 package_upgrade: false
-packages:
-  - libpam-systemd
-  - dbus
 
 users:
   - name: {admin_username}
@@ -39,6 +36,11 @@ write_files:
   - path: /etc/ssh/sshd_config.d/00-cloud-init.conf
     content: |
       AcceptEnv K3S_*
+  - path: /usr/local/bin/shutdown-node.sh
+    content: |
+      #/usr/bin/env sh
+      (sleep 3 && shutdown now) &
+    permissions: '0755'
 
 runcmd:
   - curl -sfL -o /usr/local/bin/k3s-init.sh https://get.k3s.io
