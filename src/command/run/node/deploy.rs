@@ -11,8 +11,8 @@ use crate::{
 };
 
 #[throws(Error)]
-pub fn run(node_name: String) {
-    check_node(&node_name)?;
+pub fn run(node_name: String, migrate_mode: bool) {
+    check_node(&node_name, migrate_mode)?;
 
     let ip_address = get_node_ip_address(&node_name)?;
     await_node_startup(&node_name, ip_address)?;
@@ -30,7 +30,7 @@ pub fn run(node_name: String) {
 }
 
 #[throws(Error)]
-fn check_node(node_name: &str) {
+fn check_node(node_name: &str, migrate_mode: bool) {
     progress!("Checking node");
 
     if !kv!("nodes/{node_name}").exists() {
@@ -60,7 +60,7 @@ fn check_node(node_name: &str) {
 
         if output.stdout.trim() == "True" {
             bail!("{node_name} has already been deployed");
-        } else {
+        } else if !migrate_mode {
             bail!("{node_name} has already been deployed, but it is not ready")
         }
     }

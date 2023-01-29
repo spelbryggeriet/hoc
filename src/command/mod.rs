@@ -38,6 +38,10 @@ commands_summary! {
         }
     }
     sd_card_prepare {
+        node_name {
+            help = "The name of the node",
+            long_help = "Should only be provided when `--migrate` is present."
+        }
         migrate {
             help = "Prepare the SD card for a node in migration mode",
             long_help = "This option should only be used after having run `hoc node migrate` \
@@ -47,6 +51,11 @@ commands_summary! {
     node_deploy {
         node_name {
             help = "The name of the node",
+        }
+        migrate {
+            help = "Deploy the node in migration mode",
+            long_help = "This option should only be used after having run `hoc sd-card prepare \
+                --migrate` prior.",
         }
     }
     node_migrate {
@@ -196,8 +205,8 @@ pub enum SdCardCommand {
 #[clap(name = "sd-card-prepare")]
 pub struct SdCardPrepareCommand {
     #[clap(
-        help = help::sd_card_prepare::migrate(),
-        long_help = long_help::sd_card_prepare::migrate(),
+        help = help::sd_card_prepare::node_name(),
+        long_help = long_help::sd_card_prepare::node_name(),
         required_if_eq("migrate", "true"),
         requires = "migrate",
     )]
@@ -224,6 +233,13 @@ pub enum NodeCommand {
 pub struct NodeDeployCommand {
     #[clap(help = help::node_deploy::node_name())]
     node_name: String,
+
+    #[clap(
+        long,
+        help = help::node_deploy::migrate(),
+        long_help = long_help::node_deploy::migrate(),
+    )]
+    migrate: bool,
 }
 
 /// Migrate a node to the newest version
@@ -298,8 +314,9 @@ impl Command {
                     cmd_diagnostics!(NodeDeployCommand);
 
                     arg_diagnostics!(node_name, deploy_command.node_name);
+                    arg_diagnostics!(migrate, deploy_command.migrate);
 
-                    node::deploy::run(deploy_command.node_name)?;
+                    node::deploy::run(deploy_command.node_name, deploy_command.migrate)?;
                 }
                 NodeCommand::Migrate(migrate_command) => {
                     cmd_diagnostics!(NodeMigrateCommand);

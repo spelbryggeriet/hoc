@@ -193,6 +193,7 @@ fn get_node_name_and_ip_address(migrate_node: Option<String>) -> (String, Cidr) 
     if let Some(node_name) = migrate_node {
         let ip_addr = kv!("nodes/{node_name}/network/address").get()?.convert()?;
         let prefix_len = kv!("network/prefix_len").get()?.convert()?;
+
         (
             node_name,
             Cidr {
