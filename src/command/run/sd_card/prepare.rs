@@ -264,18 +264,8 @@ fn generate_node_name() -> String {
 
     let mut used_indices: Vec<_> = match kv!("nodes/**").get() {
         Ok(kv::Item::Map(map)) => map
-            .into_iter()
-            .filter_map(|(key, item)| {
-                let is_initialized = item
-                    .take("initialized")
-                    .and_then(|item| item.convert::<bool>().ok())
-                    .unwrap_or(false);
-                if is_initialized {
-                    None
-                } else {
-                    Some(util::numeral_to_int(key.trim_start_matches("node-")))
-                }
-            })
+            .into_keys()
+            .map(|key| util::numeral_to_int(key.trim_start_matches("node-")))
             .collect::<Option<_>>()
             .context("Could not parse pending node names")?,
         Ok(_) => bail!("Could not determine available node names due to invalid context"),
