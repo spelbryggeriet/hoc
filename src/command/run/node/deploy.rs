@@ -25,6 +25,12 @@ pub fn run(node_name: String, migrate_mode: bool) {
     join_cluster(&node_name)?;
     copy_kubeconfig(ip_address)?;
 
+    process::global_settings().container_mode();
+
+    if migrate_mode {
+        uncordon_node(&node_name)?;
+    }
+
     verify_installation(&node_name)?;
     report(&node_name)?;
 }
@@ -302,11 +308,15 @@ fn copy_kubeconfig(ip_address: IpAddr) {
 }
 
 #[throws(Error)]
+fn uncordon_node(node_name: &str) {
+    progress!("Uncordoning node");
+    process!("kubectl uncordon {node_name}").run()?;
+}
+
+#[throws(Error)]
 fn verify_installation(node_name: &str) {
     progress!("Verifying installation");
-    process!("kubectl wait --for=condition=ready node {node_name} --timeout=120s")
-        .container_mode()
-        .run()?;
+    process!("kubectl wait --for=condition=ready node {node_name} --timeout=120s").run()?;
 }
 
 #[throws(Error)]
