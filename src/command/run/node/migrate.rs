@@ -74,7 +74,7 @@ fn report(node_name: &str) {
         "{node_name} is now being shut down. When the node has shut down, remove the SD card, put \
         it in this computer, and run the following command:\
         \n\
-        \n  hoc sd-card prepare --migrate={node_name}",
+        \n  hoc sd-card prepare {node_name} --migrate",
     );
 
     let opt = select!("Do you want to continue?")

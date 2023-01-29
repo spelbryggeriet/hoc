@@ -1,7 +1,7 @@
 use std::{
     fmt::{self, Display, Formatter},
     fs::{self, File},
-    io::{Read, Seek, SeekFrom, Write},
+    io::{Read, Seek, Write},
     net::IpAddr,
     path::{Path, PathBuf},
 };
@@ -28,7 +28,8 @@ pub fn run(migrate_node: Option<String>) {
     process::global_settings().local_mode();
 
     let disk = choose_sd_card()?;
-    if is_migrate_mode(&migrate_node) || !has_system_boot_partition(&disk) || wants_to_flash()? {
+    let is_migrate_mode = is_migrate_mode(&migrate_node);
+    if is_migrate_mode || !has_system_boot_partition(&disk) || wants_to_flash()? {
         unmount_sd_card(&disk)?;
         let os_image_path = get_os_image_path()?;
         flash_image(&disk, &os_image_path)?;
@@ -42,11 +43,26 @@ pub fn run(migrate_node: Option<String>) {
     modify_image(&mount_dir, &node_name, ip_address)?;
     unmount_partition(&partition)?;
 
-    report(&node_name);
+    report(&node_name, is_migrate_mode);
 }
 
 fn is_migrate_mode(migrate_node: &Option<String>) -> bool {
     migrate_node.is_some()
+}
+
+fn has_system_boot_partition(disk: &DiskInfo) -> bool {
+    disk.partitions
+        .iter()
+        .any(|part| part.name == "system-boot")
+}
+
+#[throws(Error)]
+fn wants_to_flash() -> bool {
+    let flash_anyway = Opt::Custom("Flash anyway");
+    let opt = select!("Selected SD card seems to have already been flashed with Ubuntu.")
+        .with_options([Opt::Custom("Skip flashing"), flash_anyway])
+        .get()?;
+    opt == flash_anyway
 }
 
 #[throws(Error)]
@@ -112,7 +128,7 @@ fn download_os_image(file: &mut ContextFile, prompt_url: bool) {
     reqwest::blocking::get(os_image_url)?.copy_to(file)?;
 
     // Reset file.
-    file.seek(SeekFrom::Start(0))?;
+    file.rewind()?;
 }
 
 fn ubuntu_image_url<T: Display>(version: T) -> String {
@@ -393,26 +409,17 @@ fn unmount_partition(partition: &DiskPartitionInfo) {
     process!("diskutil unmount {id}", id = partition.id).run()?;
 }
 
-fn report(node_name: &str) {
+fn report(node_name: &str, is_migrate_mode: bool) {
     info!(
-        "SD card prepared. Deploy the node using the following command:\n\nhoc node deploy \
-        {node_name}",
+        "SD card prepared. Deploy the node using the following command:\
+        \n\
+        \n  {}",
+        if is_migrate_mode {
+            format!("hoc node deploy {node_name} --migrate")
+        } else {
+            format!("hoc node deploy {node_name}")
+        }
     );
-}
-
-fn has_system_boot_partition(disk: &DiskInfo) -> bool {
-    disk.partitions
-        .iter()
-        .any(|part| part.name == "system-boot")
-}
-
-#[throws(Error)]
-fn wants_to_flash() -> bool {
-    let flash_anyway = Opt::Custom("Flash anyway");
-    let opt = select!("Selected SD card seems to have already been flashed with Ubuntu.")
-        .with_options([Opt::Custom("Skip flashing"), flash_anyway])
-        .get()?;
-    opt == flash_anyway
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
