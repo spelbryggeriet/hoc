@@ -11,8 +11,8 @@ use crate::{
 };
 
 #[throws(Error)]
-pub fn run(node_name: String, migrate_mode: bool) {
-    check_node(&node_name, migrate_mode)?;
+pub fn run(node_name: String) {
+    check_node(&node_name)?;
 
     let ip_address = get_node_ip_address(&node_name)?;
     await_node_startup(&node_name, ip_address)?;
@@ -27,16 +27,12 @@ pub fn run(node_name: String, migrate_mode: bool) {
 
     process::global_settings().container_mode();
 
-    if migrate_mode {
-        uncordon_node(&node_name)?;
-    }
-
     verify_installation(&node_name)?;
     report(&node_name)?;
 }
 
 #[throws(Error)]
-fn check_node(node_name: &str, migrate_mode: bool) {
+fn check_node(node_name: &str) {
     progress!("Checking node");
 
     if !kv!("nodes/{node_name}").exists() {
@@ -66,7 +62,7 @@ fn check_node(node_name: &str, migrate_mode: bool) {
 
         if output.stdout.trim() == "True" {
             bail!("{node_name} has already been deployed");
-        } else if !migrate_mode {
+        } else {
             bail!("{node_name} has already been deployed, but it is not ready")
         }
     }
@@ -308,12 +304,6 @@ fn copy_kubeconfig(ip_address: IpAddr) {
 }
 
 #[throws(Error)]
-fn uncordon_node(node_name: &str) {
-    progress!("Uncordoning node");
-    process!("kubectl uncordon {node_name}").run()?;
-}
-
-#[throws(Error)]
 fn verify_installation(node_name: &str) {
     progress!("Verifying installation");
     process!("kubectl wait --for=condition=ready node {node_name} --timeout=120s").run()?;
@@ -322,5 +312,9 @@ fn verify_installation(node_name: &str) {
 #[throws(Error)]
 fn report(node_name: &str) {
     kv!("nodes/{node_name}/initialized").update(true)?;
-    info!("{node_name} has been successfully deployed");
+    info!(
+        "{node_name} has been successfully deployed. Upgrade it using the following command:\
+        \n\
+        \n  hoc node upgrade {node_name}"
+    );
 }

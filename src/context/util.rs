@@ -1,4 +1,4 @@
-use std::io::{Seek, SeekFrom};
+use std::io::Seek;
 
 use crate::{
     context::{fs::ContextFile, key::Key, Error},
@@ -27,7 +27,7 @@ where
 
         if retrying {
             file.file.set_len(0)?;
-            file.file.seek(SeekFrom::Start(0))?;
+            file.file.rewind()?;
         }
     }
 }

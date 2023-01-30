@@ -1,2 +1,2 @@
 pub mod deploy;
-pub mod migrate;
+pub mod upgrade;

@@ -37,28 +37,12 @@ commands_summary! {
             help = "The prefix for the container registry where images are pulled from",
         }
     }
-    sd_card_prepare {
-        node_name {
-            help = "The name of the node",
-            long_help = "Should only be provided when `--migrate` is present."
-        }
-        migrate {
-            help = "Prepare the SD card for a node in migration mode",
-            long_help = "This option should only be used after having run `hoc node migrate` \
-                prior.",
-        }
-    }
     node_deploy {
         node_name {
             help = "The name of the node",
         }
-        migrate {
-            help = "Deploy the node in migration mode",
-            long_help = "This option should only be used after having run `hoc sd-card prepare \
-                --migrate` prior.",
-        }
     }
-    node_migrate {
+    node_upgrade {
         node_name {
             help = "The name of the node",
         }
@@ -203,28 +187,13 @@ pub enum SdCardCommand {
 /// Prepare an SD card for a node to be deployed
 #[derive(Parser)]
 #[clap(name = "sd-card-prepare")]
-pub struct SdCardPrepareCommand {
-    #[clap(
-        help = help::sd_card_prepare::node_name(),
-        long_help = long_help::sd_card_prepare::node_name(),
-        required_if_eq("migrate", "true"),
-        requires = "migrate",
-    )]
-    node_name: Option<String>,
-
-    #[clap(
-        long,
-        help = help::sd_card_prepare::migrate(),
-        long_help = long_help::sd_card_prepare::migrate(),
-    )]
-    migrate: bool,
-}
+pub struct SdCardPrepareCommand {}
 
 /// Manage a node
 #[derive(clap::Subcommand)]
 pub enum NodeCommand {
     Deploy(NodeDeployCommand),
-    Migrate(NodeMigrateCommand),
+    Upgrade(NodeUpgradeCommand),
 }
 
 /// Deploy a node
@@ -233,20 +202,13 @@ pub enum NodeCommand {
 pub struct NodeDeployCommand {
     #[clap(help = help::node_deploy::node_name())]
     node_name: String,
-
-    #[clap(
-        long,
-        help = help::node_deploy::migrate(),
-        long_help = long_help::node_deploy::migrate(),
-    )]
-    migrate: bool,
 }
 
-/// Migrate a node to the newest version
+/// Upgrades a node to use the latest features
 #[derive(Parser)]
-#[clap(name = "node-migrate")]
-pub struct NodeMigrateCommand {
-    #[clap(help = help::node_migrate::node_name())]
+#[clap(name = "node-upgrade")]
+pub struct NodeUpgradeCommand {
+    #[clap(help = help::node_upgrade::node_name())]
     node_name: String,
 }
 
@@ -299,13 +261,10 @@ impl Command {
             }
 
             SdCard(sd_card_command) => match sd_card_command {
-                SdCardCommand::Prepare(prepare_command) => {
+                SdCardCommand::Prepare(_prepare_command) => {
                     cmd_diagnostics!(SdCardPrepareCommand);
 
-                    arg_diagnostics!(prepare_command.node_name);
-                    arg_diagnostics!(migrate, prepare_command.migrate);
-
-                    sd_card::prepare::run(prepare_command.node_name)?;
+                    sd_card::prepare::run()?;
                 }
             },
 
@@ -314,16 +273,15 @@ impl Command {
                     cmd_diagnostics!(NodeDeployCommand);
 
                     arg_diagnostics!(node_name, deploy_command.node_name);
-                    arg_diagnostics!(migrate, deploy_command.migrate);
 
-                    node::deploy::run(deploy_command.node_name, deploy_command.migrate)?;
+                    node::deploy::run(deploy_command.node_name)?;
                 }
-                NodeCommand::Migrate(migrate_command) => {
-                    cmd_diagnostics!(NodeMigrateCommand);
+                NodeCommand::Upgrade(upgrade_command) => {
+                    cmd_diagnostics!(NodeUpgradeCommand);
 
-                    arg_diagnostics!(node_name, migrate_command.node_name);
+                    arg_diagnostics!(node_name, upgrade_command.node_name);
 
-                    node::migrate::run(migrate_command.node_name)?;
+                    node::upgrade::run(upgrade_command.node_name)?;
                 }
             },
 

@@ -24,18 +24,19 @@ const UBUNTU_VERSION: UbuntuVersion = UbuntuVersion {
 };
 
 #[throws(Error)]
-pub fn run(migrate_node: Option<String>) {
+pub fn run() {
     process::global_settings().local_mode();
 
     let disk = choose_sd_card()?;
-    let is_migrate_mode = is_migrate_mode(&migrate_node);
-    if is_migrate_mode || !has_system_boot_partition(&disk) || wants_to_flash()? {
+    if !has_system_boot_partition(&disk) || wants_to_flash()? {
         unmount_sd_card(&disk)?;
         let os_image_path = get_os_image_path()?;
         flash_image(&disk, &os_image_path)?;
     }
 
-    let (node_name, ip_address) = get_node_name_and_ip_address(migrate_node)?;
+    let node_name = generate_node_name()?;
+    let ip_address = assign_ip_address(&node_name)?;
+    set_not_initialized(&node_name)?;
 
     let partition = mount_sd_card()?;
     let mount_dir = find_mount_dir(&disk)?;
@@ -43,11 +44,7 @@ pub fn run(migrate_node: Option<String>) {
     modify_image(&mount_dir, &node_name, ip_address)?;
     unmount_partition(&partition)?;
 
-    report(&node_name, is_migrate_mode);
-}
-
-fn is_migrate_mode(migrate_node: &Option<String>) -> bool {
-    migrate_node.is_some()
+    report(&node_name);
 }
 
 fn has_system_boot_partition(disk: &DiskInfo) -> bool {
@@ -205,26 +202,8 @@ fn flash_image(disk: &DiskInfo, os_image_path: &Path) {
 }
 
 #[throws(Error)]
-fn get_node_name_and_ip_address(migrate_node: Option<String>) -> (String, Cidr) {
-    if let Some(node_name) = migrate_node {
-        let ip_addr = kv!("nodes/{node_name}/network/address").get()?.convert()?;
-        let prefix_len = kv!("network/prefix_len").get()?.convert()?;
-
-        (
-            node_name,
-            Cidr {
-                ip_addr,
-                prefix_len,
-            },
-        )
-    } else {
-        let node_name = generate_node_name()?;
-        let ip_address = assign_ip_address(&node_name)?;
-
-        kv!("nodes/{node_name}/initialized").put(false)?;
-
-        (node_name, ip_address)
-    }
+fn set_not_initialized(node_name: &str) {
+    kv!("nodes/{node_name}/initialized").put(false)?;
 }
 
 #[throws(Error)]
@@ -409,16 +388,11 @@ fn unmount_partition(partition: &DiskPartitionInfo) {
     process!("diskutil unmount {id}", id = partition.id).run()?;
 }
 
-fn report(node_name: &str, is_migrate_mode: bool) {
+fn report(node_name: &str) {
     info!(
         "SD card prepared. Deploy the node using the following command:\
         \n\
-        \n  {}",
-        if is_migrate_mode {
-            format!("hoc node deploy {node_name} --migrate")
-        } else {
-            format!("hoc node deploy {node_name}")
-        }
+        \n  hoc node deploy {node_name}",
     );
 }
 
