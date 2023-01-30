@@ -32,17 +32,6 @@ chpasswd:
     - "{admin_username}:temporary_password"
   expire: false
 
-write_files:
-  - path: /etc/ssh/sshd_config.d/00-cloud-init.conf
-    content: |
-      AcceptEnv K3S_*
-  - path: /usr/local/bin/shutdown-node.sh
-    content: |
-      #/usr/bin/env sh
-      (sleep 3 && shutdown now) &
-    permissions: '0755'
-
 runcmd:
   - curl -sfL -o /usr/local/bin/k3s-init.sh https://get.k3s.io
   - chmod 0755 /usr/local/bin/k3s-init.sh
-  - service ssh restart

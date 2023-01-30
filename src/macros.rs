@@ -150,7 +150,7 @@ macro_rules! process {
     (@impl ($(, $arg_name:ident = $arg_value:expr)+ $(,)?) => {
         fmt: [$fmt:tt],
         args: [],
-        stdin_data: [$($stdin_data:tt)?],
+        stdin_data: [$($stdin_data:tt)*],
         env: [$($env:tt)*],
         sudo: $sudo:tt,
         prefix_env_vars: $prefix_env_vars:tt,
