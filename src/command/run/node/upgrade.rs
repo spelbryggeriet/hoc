@@ -15,11 +15,11 @@ pub fn run(node_name: String) {
 
     process::global_settings().remote_mode(node_name.clone());
 
-    let mut did_change = set_up_ssh()?;
-    did_change |= copying_scripts()?;
-    did_change |= mount_storage()?;
+    set_up_ssh()?;
+    copying_scripts()?;
+    mount_storage()?;
 
-    report(&node_name, did_change);
+    report(&node_name);
 }
 
 #[throws(Error)]
@@ -191,10 +191,6 @@ fn find_attached_storage() -> Vec<DiskPartitionInfo> {
         .collect()
 }
 
-fn report(node_name: &str, did_change: bool) {
-    if did_change {
-        info!("{node_name} has been successfully upgraded");
-    } else {
-        info!("No upgrade needed");
-    }
+fn report(node_name: &str) {
+    info!("{node_name} has been successfully upgraded");
 }
