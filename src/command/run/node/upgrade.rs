@@ -10,8 +10,10 @@ use crate::{
 };
 
 #[throws(Error)]
-pub fn run(node_name: String) {
-    check_node(&node_name)?;
+pub fn run(node_name: String, inline_upgrade: bool) {
+    if !inline_upgrade {
+        check_node(&node_name)?;
+    }
 
     process::global_settings().remote_mode(node_name.clone());
 
@@ -19,7 +21,9 @@ pub fn run(node_name: String) {
     copying_scripts()?;
     mount_storage()?;
 
-    report(&node_name);
+    if !inline_upgrade {
+        report(&node_name);
+    }
 }
 
 #[throws(Error)]

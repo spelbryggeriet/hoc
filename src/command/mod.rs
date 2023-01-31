@@ -281,7 +281,7 @@ impl Command {
 
                     arg_diagnostics!(node_name, upgrade_command.node_name);
 
-                    node::upgrade::run(upgrade_command.node_name)?;
+                    node::upgrade::run(upgrade_command.node_name, false)?;
                 }
             },
 

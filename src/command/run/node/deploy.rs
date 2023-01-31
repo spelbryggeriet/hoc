@@ -3,6 +3,7 @@ use std::{io::Write, net::IpAddr};
 use anyhow::Error;
 
 use crate::{
+    command,
     context::{self, kv},
     prelude::*,
     process,
@@ -20,6 +21,9 @@ pub fn run(node_name: String) {
 
     await_node_initialization()?;
     change_password()?;
+
+    command::node::upgrade::run(node_name.clone(), true)?;
+
     join_cluster(&node_name)?;
     copy_kubeconfig(ip_address)?;
 
@@ -261,9 +265,5 @@ fn verify_installation(node_name: &str) {
 #[throws(Error)]
 fn report(node_name: &str) {
     kv!("nodes/{node_name}/initialized").update(true)?;
-    info!(
-        "{node_name} has been successfully deployed. Upgrade it using the following command:\
-        \n\
-        \n  hoc node upgrade {node_name}"
-    );
+    info!("{node_name} has been successfully deployed");
 }
