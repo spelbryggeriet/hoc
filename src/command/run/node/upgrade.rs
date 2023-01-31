@@ -1,8 +1,13 @@
 use std::path::Path;
 
 use anyhow::Error;
+use lazy_regex::regex;
 
-use crate::{prelude::*, process};
+use crate::{
+    prelude::*,
+    process,
+    util::{self, DiskPartitionInfo},
+};
 
 #[throws(Error)]
 pub fn run(node_name: String) {
@@ -12,6 +17,7 @@ pub fn run(node_name: String) {
 
     let mut did_change = set_up_ssh()?;
     did_change |= copying_scripts()?;
+    did_change |= mount_storage()?;
 
     report(&node_name, did_change);
 }
@@ -87,6 +93,57 @@ fn copying_scripts() -> bool {
 }
 
 #[throws(Error)]
+fn mount_storage() -> bool {
+    const MOUNT_DIR: &str = "/media";
+
+    let partitions = find_attached_storage()?;
+    if partitions.is_empty() {
+        return false;
+    }
+
+    progress!("Mounting permanent storage");
+
+    let opt = select!("Which storage do you want to mount?")
+        .with_options(partitions)
+        .get()?;
+
+    let output = process!("blkid /dev/{id}", id = opt.id).run()?;
+    let uuid = regex!(r#"^.*UUID="([^"]*)".*$"#)
+        .captures(output.stdout.trim())
+        .context("output should contain UUID")?
+        .get(1)
+        .context("UUID should be first match")?
+        .as_str();
+
+    let previous_fstab = process!("cat /etc/fstab").run()?.stdout;
+    if previous_fstab
+        .lines()
+        .find(|line| line.contains(uuid))
+        .filter(|line| line.contains(MOUNT_DIR))
+        .is_some()
+    {
+        return false;
+    }
+
+    let fstab_line = format!("UUID={uuid} {MOUNT_DIR} auto nosuid,nodev,nofail 0 0");
+    let fstab_line = fstab_line.replace('/', r"\/");
+    let fstab_sed = format!(
+        "/^UUID={uuid}/{{h;s/^UUID={uuid}.*$/{fstab_line}/}};${{x;/^$/{{s//{fstab_line}/;H}};x}}"
+    );
+
+    process!(sudo "sed -i '{fstab_sed}' /etc/fstab")
+        .revertible(process!(sudo "tee /etc/fstab" <("{previous_fstab}")))
+        .run()?;
+    let output = process!("cat /etc/fstab").run()?;
+
+    debug!("{}", output.stdout);
+
+    process!(sudo "mount --source /dev/{id}", id = opt.id).run()?;
+
+    true
+}
+
+#[throws(Error)]
 fn write_file(content: &str, path: impl AsRef<Path>, permissions: Option<u32>) -> bool {
     let path = path.as_ref();
 
@@ -117,6 +174,21 @@ fn file_exists(path: &Path) -> bool {
         .success_codes([0, 1])
         .run()?;
     output.code == 0
+}
+
+#[throws(Error)]
+fn find_attached_storage() -> Vec<DiskPartitionInfo> {
+    progress!("Finding attached storage");
+
+    util::get_attached_disks()?
+        .into_iter()
+        .filter(|disk| {
+            disk.partitions
+                .iter()
+                .all(|part| part.name != "system-boot")
+        })
+        .flat_map(|disk| disk.partitions)
+        .collect()
 }
 
 fn report(node_name: &str, did_change: bool) {

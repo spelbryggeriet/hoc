@@ -1,13 +1,12 @@
 use std::{io::Write, net::IpAddr};
 
 use anyhow::Error;
-use lazy_regex::regex;
 
 use crate::{
     context::{self, kv},
     prelude::*,
     process,
-    util::{self, DiskPartitionInfo, Opt},
+    util::Opt,
 };
 
 #[throws(Error)]
@@ -21,7 +20,6 @@ pub fn run(node_name: String) {
 
     await_node_initialization()?;
     change_password()?;
-    mount_storage()?;
     join_cluster(&node_name)?;
     copy_kubeconfig(ip_address)?;
 
@@ -167,57 +165,6 @@ fn change_password() {
             sudo "chpasswd" < ("{username}:temporary_password")
         ))
         .run()?
-}
-
-#[throws(Error)]
-fn find_attached_storage() -> Vec<DiskPartitionInfo> {
-    progress!("Finding attached storage");
-
-    util::get_attached_disks()?
-        .into_iter()
-        .filter(|disk| {
-            disk.partitions
-                .iter()
-                .all(|part| part.name != "system-boot")
-        })
-        .flat_map(|disk| disk.partitions)
-        .collect()
-}
-
-#[throws(Error)]
-fn mount_storage() {
-    let partitions = find_attached_storage()?;
-    if partitions.is_empty() {
-        return;
-    }
-
-    progress!("Mounting permanent storage");
-
-    let opt = select!("Which storage do you want to mount?")
-        .with_options(partitions)
-        .get()?;
-
-    let output = process!("blkid /dev/{id}", id = opt.id).run()?;
-    let uuid = regex!(r#"^.*UUID="([^"]*)".*$"#)
-        .captures(output.stdout.trim())
-        .context("output should contain UUID")?
-        .get(1)
-        .context("UUID should be first match")?
-        .as_str();
-
-    let fstab_line = format!("UUID={uuid} /var/lib/rancher/k3s auto nosuid,nodev,nofail 0 0");
-    let fstab_line = fstab_line.replace('/', r"\/");
-    let fstab_sed = format!(
-        "/^UUID={uuid}/{{h;s/^UUID={uuid}.*$/{fstab_line}/}};${{x;/^$/{{s//{fstab_line}/;H}};x}}"
-    );
-
-    let previous_fstab = process!("cat /etc/fstab").run()?.stdout;
-    process!(sudo "sed -i '{fstab_sed}' /etc/fstab")
-        .revertible(process!(sudo "tee /etc/fstab" <("{previous_fstab}")))
-        .run()?;
-    let output = process!("cat /etc/fstab").run()?;
-
-    debug!("{}", output.stdout);
 }
 
 #[throws(Error)]
