@@ -11,6 +11,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - Multiple nodes can now be deployed to the cluster. Prepare each node's SD card with
   `hoc sd-card prepare` and then deploy them one by one using `hoc node deploy <node-name>`.
+- `node-upgrade` command was added. Existing nodes can now be upgraded with new functionality
+  without being redeployed.
 
 ### Changed
 
