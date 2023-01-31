@@ -474,10 +474,19 @@ impl ProcessBuilder {
         };
 
         let raw = if !self.input_data.is_empty() {
+            let heredoc_id = crate::util::random_string(crate::util::RAND_CHARS, 16);
             if !self.input_data.ends_with('\n') {
-                format!("{raw} <<EOT\n{}\nEOT", self.input_data).into()
+                format!(
+                    "{raw} <<'EOT-{heredoc_id}'\n{}\nEOT-{heredoc_id}",
+                    self.input_data
+                )
+                .into()
             } else {
-                format!("{raw} <<EOT\n{}EOT", self.input_data).into()
+                format!(
+                    "{raw} <<'EOT-{heredoc_id}'\n{}EOT-{heredoc_id}",
+                    self.input_data
+                )
+                .into()
             }
         } else {
             raw
