@@ -171,6 +171,8 @@ fn change_password() {
 fn join_cluster(node_name: &str) {
     progress!("Joining cluster");
 
+    let k3s_script = reqwest::blocking::get("https://get.k3s.io")?.text()?;
+
     match files!("admin/kube/config").get() {
         Ok(kubeconfig_file) => {
             let kubeconfig: kv::Item = serde_yaml::from_reader(kubeconfig_file)?;
@@ -216,8 +218,6 @@ fn join_cluster(node_name: &str) {
                 .run()?;
             let k3s_token = output.stdout.trim();
 
-            let k3s_script = reqwest::blocking::get("https://get.k3s.io")?.text()?;
-
             process!(
                 K3S_URL = "{k3s_url}"
                 K3S_TOKEN = "{k3s_token}"
@@ -226,7 +226,7 @@ fn join_cluster(node_name: &str) {
             .run()?;
         }
         Err(context::Error::KeyDoesNotExist(_)) => {
-            process!(sudo "k3s-init.sh").run()?;
+            process!(sudo "sh -" < ("{k3s_script}")).run()?;
         }
         Err(error) => throw!(error),
     }
