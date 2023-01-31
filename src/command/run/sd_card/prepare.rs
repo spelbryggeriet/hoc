@@ -4,6 +4,7 @@ use std::{
     io::{Read, Seek, Write},
     net::IpAddr,
     path::{Path, PathBuf},
+    time::Duration,
 };
 
 use anyhow::Error;
@@ -230,8 +231,25 @@ fn mount_sd_card() -> DiskPartitionInfo {
             .get()?;
     };
 
-    process!("sync").run()?;
-    process!("diskutil mount {id}", id = partition.id).run()?;
+    const MAX_ATTEMPTS: u32 = 3;
+    let mut attempts = 0;
+    loop {
+        let success_codes: &[i32] = if attempts < MAX_ATTEMPTS - 1 {
+            &[0, 1]
+        } else {
+            &[0]
+        };
+        let output = process!("diskutil mount {id}", id = partition.id)
+            .success_codes(success_codes.iter().copied())
+            .run()?;
+        if output.code == 0 {
+            break;
+        }
+
+        attempts += 1;
+
+        spin_sleep::sleep(Duration::from_secs(3));
+    }
 
     partition
 }
