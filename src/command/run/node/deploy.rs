@@ -216,10 +216,12 @@ fn join_cluster(node_name: &str) {
                 .run()?;
             let k3s_token = output.stdout.trim();
 
+            let k3s_script = reqwest::blocking::get("https://get.k3s.io")?.text()?;
+
             process!(
                 K3S_URL = "{k3s_url}"
                 K3S_TOKEN = "{k3s_token}"
-                sudo "k3s-init.sh"
+                sudo "sh -" < ("{k3s_script}")
             )
             .run()?;
         }

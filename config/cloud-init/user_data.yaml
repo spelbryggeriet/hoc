@@ -31,7 +31,3 @@ chpasswd:
   list:
     - "{admin_username}:temporary_password"
   expire: false
-
-runcmd:
-  - curl -sfL -o /usr/local/bin/k3s-init.sh https://get.k3s.io
-  - chmod 0755 /usr/local/bin/k3s-init.sh
