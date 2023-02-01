@@ -1,9 +1,10 @@
 use std::{
     fmt::{self, Display, Formatter},
     fs::{self, File},
-    io::{Read, Seek, SeekFrom, Write},
+    io::{Read, Seek, Write},
     net::IpAddr,
     path::{Path, PathBuf},
+    time::Duration,
 };
 
 use anyhow::Error;
@@ -36,6 +37,7 @@ pub fn run() {
 
     let node_name = generate_node_name()?;
     let ip_address = assign_ip_address(&node_name)?;
+    set_not_initialized(&node_name)?;
 
     let partition = mount_sd_card()?;
     let mount_dir = find_mount_dir(&disk)?;
@@ -44,6 +46,60 @@ pub fn run() {
     unmount_partition(&partition)?;
 
     report(&node_name);
+}
+
+fn has_system_boot_partition(disk: &DiskInfo) -> bool {
+    disk.partitions
+        .iter()
+        .any(|part| part.name == "system-boot")
+}
+
+#[throws(Error)]
+fn wants_to_flash() -> bool {
+    let flash_anyway = Opt::Custom("Flash anyway");
+    let opt = select!("Selected SD card seems to have already been flashed with Ubuntu.")
+        .with_options([Opt::Custom("Skip flashing"), flash_anyway])
+        .get()?;
+    opt == flash_anyway
+}
+
+#[throws(Error)]
+fn choose_sd_card() -> DiskInfo {
+    progress!("Choosing SD card");
+
+    loop {
+        let disks = util::get_attached_disks()?;
+        let select = select!("Which disk is your SD card?").with_options(disks);
+        if select.option_count() > 0 {
+            break select.get()?;
+        }
+
+        error!("No mounted disk detected");
+
+        let opt = select!("Do you want to proceed?")
+            .with_options([Opt::Yes, Opt::No])
+            .get()?;
+
+        if opt == Opt::No {
+            throw!(inquire::InquireError::OperationCanceled);
+        }
+    }
+}
+
+#[throws(Error)]
+fn unmount_sd_card(disk: &DiskInfo) {
+    progress!("Unmounting SD card");
+
+    let id = &disk.id;
+    process!("diskutil unmountDisk {id}").run()?;
+}
+
+#[throws(Error)]
+fn get_os_image_path() -> PathBuf {
+    files!("images/os")
+        .cached(get_os_image)
+        .get_or_create()?
+        .local_path
 }
 
 #[throws(context::Error)]
@@ -70,7 +126,7 @@ fn download_os_image(file: &mut ContextFile, prompt_url: bool) {
     reqwest::blocking::get(os_image_url)?.copy_to(file)?;
 
     // Reset file.
-    file.seek(SeekFrom::Start(0))?;
+    file.rewind()?;
 }
 
 fn ubuntu_image_url<T: Display>(version: T) -> String {
@@ -132,57 +188,23 @@ fn decompress_xz_file(os_image_file: &mut ContextFile) {
 }
 
 #[throws(Error)]
-fn choose_sd_card() -> DiskInfo {
-    progress!("Choosing SD card");
-
-    loop {
-        let disks = util::get_attached_disks()?;
-        let select = select!("Which disk is your SD card?").with_options(disks);
-        if select.option_count() > 0 {
-            break select.get()?;
-        }
-
-        error!("No mounted disk detected");
-
-        let opt = select!("Do you want to proceed?")
-            .with_options([Opt::Yes, Opt::No])
-            .get()?;
-
-        if opt == Opt::No {
-            throw!(inquire::InquireError::OperationCanceled);
-        }
-    }
-}
-
-#[throws(Error)]
-fn unmount_sd_card(disk: &DiskInfo) {
-    progress!("Unmounting SD card");
-
-    let id = &disk.id;
-    process!("diskutil unmountDisk {id}").run()?;
-}
-
-#[throws(Error)]
-fn get_os_image_path() -> PathBuf {
-    files!("images/os")
-        .cached(get_os_image)
-        .get_or_create()?
-        .local_path
-}
-
-#[throws(Error)]
 fn flash_image(disk: &DiskInfo, os_image_path: &Path) {
     let opt = select!("Do you want to flash target disk {:?}?", disk.description())
         .with_options([Opt::Yes, Opt::No])
         .get()?;
     if opt == Opt::No {
-        return;
+        throw!(inquire::InquireError::OperationCanceled);
     }
 
     progress!("Flashing image");
 
     let id = &disk.id;
     process!(sudo "dd bs=1m if={os_image_path:?} of=/dev/r{id}").run()?;
+}
+
+#[throws(Error)]
+fn set_not_initialized(node_name: &str) {
+    kv!("nodes/{node_name}/initialized").put(false)?;
 }
 
 #[throws(Error)]
@@ -209,7 +231,25 @@ fn mount_sd_card() -> DiskPartitionInfo {
             .get()?;
     };
 
-    process!("diskutil mount -mountOptions sync {id}", id = partition.id).run()?;
+    const MAX_ATTEMPTS: u32 = 3;
+    let mut attempts = 0;
+    loop {
+        let success_codes: &[i32] = if attempts < MAX_ATTEMPTS - 1 {
+            &[0, 1]
+        } else {
+            &[0]
+        };
+        let output = process!("diskutil mount {id}", id = partition.id)
+            .success_codes(success_codes.iter().copied())
+            .run()?;
+        if output.code == 0 {
+            break;
+        }
+
+        attempts += 1;
+
+        spin_sleep::sleep(Duration::from_secs(3));
+    }
 
     partition
 }
@@ -235,49 +275,18 @@ fn find_mount_dir(disk: &DiskInfo) -> PathBuf {
 fn generate_node_name() -> String {
     progress!("Generating node name");
 
-    let mut used_indices = if files!("admin/kube/config").exists()? {
-        process!("kubectl get nodes -o name")
-            .container_mode()
-            .run()?
-            .stdout
-            .trim()
-            .lines()
-            .map(|line| util::numeral_to_int(line.trim_start_matches("node/node-")))
-            .collect::<Option<Vec<_>>>()
-            .context("Could not parse cluster node names")?
-    } else {
-        Vec::new()
+    let mut used_indices: Vec<_> = match kv!("nodes/**").get() {
+        Ok(kv::Item::Map(map)) => map
+            .into_keys()
+            .map(|key| util::numeral_to_int(key.trim_start_matches("node-")))
+            .collect::<Option<_>>()
+            .context("Could not parse pending node names")?,
+        Ok(_) => bail!("Could not determine available node names due to invalid context"),
+        Err(context::Error::KeyDoesNotExist(_)) => Vec::new(),
+        Err(err) => throw!(err),
     };
 
-    match kv!("nodes/**").get() {
-        Ok(kv::Item::Map(map)) => used_indices.extend(
-            map.into_iter()
-                .filter_map(|(key, item)| {
-                    let is_initialized = item
-                        .take("initialized")
-                        .and_then(|item| item.convert::<bool>().ok())
-                        .unwrap_or(false);
-                    if is_initialized {
-                        None
-                    } else {
-                        Some(util::numeral_to_int(key.trim_start_matches("node-")))
-                    }
-                })
-                .collect::<Option<Vec<_>>>()
-                .context("Could not parse pending node names")?,
-        ),
-        Ok(_) => bail!("Could not determine available node names due to invalid context"),
-        Err(context::Error::KeyDoesNotExist(_)) => (),
-        Err(err) => throw!(err),
-    }
-
     used_indices.sort();
-
-    let count_before_dedup = used_indices.len();
-    used_indices.dedup();
-    if used_indices.len() != count_before_dedup {
-        bail!("Could not determine available node names due to invalid context");
-    }
 
     let available_index = (1..)
         .zip(&used_indices)
@@ -285,7 +294,6 @@ fn generate_node_name() -> String {
         .map_or(used_indices.len() as u64 + 1, |(i, _)| i);
 
     let node_name = format!("node-{}", util::int_to_numeral(available_index));
-    kv!("nodes/{node_name}/initialized").put(false)?;
     info!("Node name: {node_name}");
 
     node_name
@@ -298,42 +306,17 @@ fn assign_ip_address(node_name: &str) -> Cidr {
     let start_address: IpAddr = kv!("network/start_address").get()?.convert()?;
     let prefix_len: u32 = kv!("network/prefix_len").get()?.convert()?;
 
-    let mut used_addresses = if files!("admin/kube/config").exists()? {
-        process!(
-            "kubectl get nodes \
-            -o=jsonpath='{{.items[?(@.kind==\"Node\")]\
-                           .status\
-                           .addresses[?(@.type==\"InternalIP\")]\
-                           .address}}'",
-        )
-        .run()?
-        .stdout
-        .split_whitespace()
-        .map(str::parse::<IpAddr>)
-        .collect::<Result<Vec<_>, _>>()?
-    } else {
-        Vec::new()
-    };
-
-    match kv!("nodes/**").get() {
-        Ok(item) => used_addresses.extend(
-            item.into_iter()
-                .filter_key_value("initialized", false)
-                .try_get("network/address")
-                .and_convert::<IpAddr>()
-                .collect::<Result<Vec<_>, _>>()?,
-        ),
-        Err(context::Error::KeyDoesNotExist(_)) => (),
+    let mut used_addresses: Vec<_> = match kv!("nodes/**").get() {
+        Ok(item) => item
+            .into_iter()
+            .try_get("network/address")
+            .and_convert::<IpAddr>()
+            .collect::<Result<_, _>>()?,
+        Err(context::Error::KeyDoesNotExist(_)) => Vec::new(),
         Err(err) => throw!(err),
     };
 
     used_addresses.sort();
-
-    let count_before_dedup = used_addresses.len();
-    used_addresses.dedup();
-    if used_addresses.len() != count_before_dedup {
-        bail!("Can't determine available node names due to invalid context");
-    }
 
     let addresses = Cidr {
         ip_addr: start_address,
@@ -425,24 +408,10 @@ fn unmount_partition(partition: &DiskPartitionInfo) {
 
 fn report(node_name: &str) {
     info!(
-        "SD card prepared. Deploy the node using the following command:\n\nhoc node deploy \
-        {node_name}",
+        "SD card prepared. Deploy the node using the following command:\
+        \n\
+        \n  hoc node deploy {node_name}",
     );
-}
-
-fn has_system_boot_partition(disk: &DiskInfo) -> bool {
-    disk.partitions
-        .iter()
-        .any(|part| part.name == "system-boot")
-}
-
-#[throws(Error)]
-fn wants_to_flash() -> bool {
-    let flash_anyway = Opt::Custom("Flash anyway");
-    let opt = select!("Selected SD card seems to have already been flashed with Ubuntu.")
-        .with_options([Opt::Custom("Skip flashing"), flash_anyway])
-        .get()?;
-    opt == flash_anyway
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

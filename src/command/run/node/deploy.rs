@@ -1,18 +1,18 @@
 use std::{io::Write, net::IpAddr};
 
 use anyhow::Error;
-use lazy_regex::regex;
 
 use crate::{
+    command,
     context::{self, kv},
     prelude::*,
     process,
-    util::{self, DiskPartitionInfo, Opt},
+    util::Opt,
 };
 
 #[throws(Error)]
 pub fn run(node_name: String) {
-    check_not_initialized(&node_name)?;
+    check_node(&node_name)?;
 
     let ip_address = get_node_ip_address(&node_name)?;
     await_node_startup(&node_name, ip_address)?;
@@ -21,16 +21,22 @@ pub fn run(node_name: String) {
 
     await_node_initialization()?;
     change_password()?;
-    mount_storage()?;
+
+    command::node::upgrade::run(node_name.clone(), true)?;
+
     join_cluster(&node_name)?;
     copy_kubeconfig(ip_address)?;
+
+    process::global_settings().container_mode();
 
     verify_installation(&node_name)?;
     report(&node_name)?;
 }
 
 #[throws(Error)]
-fn check_not_initialized(node_name: &str) {
+fn check_node(node_name: &str) {
+    progress!("Checking node");
+
     if !kv!("nodes/{node_name}").exists() {
         error!("{node_name} is not a known prepared node name");
         info!(
@@ -166,64 +172,15 @@ fn change_password() {
 }
 
 #[throws(Error)]
-fn find_attached_storage() -> Vec<DiskPartitionInfo> {
-    progress!("Finding attached storage");
-
-    util::get_attached_disks()?
-        .into_iter()
-        .filter(|disk| {
-            disk.partitions
-                .iter()
-                .all(|part| part.name != "system-boot")
-        })
-        .flat_map(|disk| disk.partitions)
-        .collect()
-}
-
-#[throws(Error)]
-fn mount_storage() {
-    let partitions = find_attached_storage()?;
-    if partitions.is_empty() {
-        return;
-    }
-
-    progress!("Mounting permanent storage");
-
-    let opt = select!("Which storage do you want to mount?")
-        .with_options(partitions)
-        .get()?;
-
-    let output = process!("blkid /dev/{id}", id = opt.id).run()?;
-    let uuid = regex!(r#"^.*UUID="([^"]*)".*$"#)
-        .captures(output.stdout.trim())
-        .context("output should contain UUID")?
-        .get(1)
-        .context("UUID should be first match")?
-        .as_str();
-
-    let fstab_line = format!("UUID={uuid} /media auto nosuid,nodev,nofail 0 0");
-    let fstab_line = fstab_line.replace('/', r"\/");
-    let fstab_sed = format!(
-        "/^UUID={uuid}/{{h;s/^UUID={uuid}.*$/{fstab_line}/}};${{x;/^$/{{s//{fstab_line}/;H}};x}}"
-    );
-
-    let previous_fstab = process!("cat /etc/fstab").run()?.stdout;
-    process!(sudo "sed -i '{fstab_sed}' /etc/fstab")
-        .revertible(process!(sudo "tee /etc/fstab" <("{previous_fstab}")))
-        .run()?;
-    let output = process!("cat /etc/fstab").run()?;
-
-    debug!("{}", output.stdout);
-}
-
-#[throws(Error)]
 fn join_cluster(node_name: &str) {
     progress!("Joining cluster");
+
+    let k3s_script = reqwest::blocking::get("https://get.k3s.io")?.text()?;
 
     match files!("admin/kube/config").get() {
         Ok(kubeconfig_file) => {
             let kubeconfig: kv::Item = serde_yaml::from_reader(kubeconfig_file)?;
-            let k3s_host: String = kubeconfig
+            let k3s_url: String = kubeconfig
                 .take("clusters")
                 .into_iter()
                 .flatten()
@@ -234,7 +191,7 @@ fn join_cluster(node_name: &str) {
                 .and_then(Result::ok)
                 .context("Could not read server address from the kubeconfig")?;
 
-            let configured_ip_address: IpAddr = k3s_host
+            let configured_ip_address: IpAddr = k3s_url
                 .trim_start_matches("https://")
                 .trim_end_matches(":6443")
                 .parse()
@@ -266,14 +223,14 @@ fn join_cluster(node_name: &str) {
             let k3s_token = output.stdout.trim();
 
             process!(
-                K3S_URL = "{k3s_host}"
+                K3S_URL = "{k3s_url}"
                 K3S_TOKEN = "{k3s_token}"
-                sudo "k3s-init.sh"
+                sudo "sh -" < ("{k3s_script}")
             )
             .run()?;
         }
         Err(context::Error::KeyDoesNotExist(_)) => {
-            process!(sudo "k3s-init.sh").run()?;
+            process!(sudo "sh -" < ("{k3s_script}")).run()?;
         }
         Err(error) => throw!(error),
     }
@@ -302,9 +259,7 @@ fn copy_kubeconfig(ip_address: IpAddr) {
 #[throws(Error)]
 fn verify_installation(node_name: &str) {
     progress!("Verifying installation");
-    process!("kubectl wait --for=condition=ready node {node_name} --timeout=120s")
-        .container_mode()
-        .run()?;
+    process!("kubectl wait --for=condition=ready node {node_name} --timeout=120s").run()?;
 }
 
 #[throws(Error)]

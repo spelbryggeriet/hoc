@@ -2,7 +2,7 @@ use std::{
     borrow::Cow,
     env,
     fs::File,
-    io::{self, Seek, SeekFrom},
+    io::{self, Seek},
     path::PathBuf,
 };
 
@@ -158,7 +158,7 @@ fn download(client: &Client, version: &str) -> ContextFile {
         .send()?
         .copy_to(&mut file)?;
 
-    file.seek(SeekFrom::Start(0))?;
+    file.rewind()?;
     file
 }
 
