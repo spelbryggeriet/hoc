@@ -7,6 +7,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.0.9] - 2023-02-01
+
+Image tag: ghcr.io/spelbryggeriet/game-box-backend:0.0.9
+
 ### Added
 
 - Multiple nodes can now be deployed to the cluster. Prepare each node's SD card with
