@@ -163,6 +163,7 @@ jobs:
         tags: ghcr.io/${{ github.repository_owner }}/hoc-runtime:${{ env.VERSION }}
         cache-from: type=gha
         cache-to: type=gha,mode=max
+        provenance: false
 
   create_release:
     needs: [prepare_version, build_app, build_container]
