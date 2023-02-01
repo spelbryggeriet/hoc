@@ -201,13 +201,6 @@ jobs:
         draft: true
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-    - name: Get release number
-      id: grn
-      uses: sergeysova/jq-action@v2
-      with:
-        cmd: echo '${{ steps.crd.outputs.data }}' | jq .id -r
-      env:
-        JSON_DATA: ${{ steps.cpr.outputs.data }}
     - name: Upload artifact
       run: |
         curl \
@@ -219,7 +212,7 @@ jobs:
           https://uploads.github.com/repos/${{ github.repository }}/releases/${RELEASE_ID}/assets?name=${ARTIFACT_NAME}.zip
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        RELEASE_ID: ${{ steps.grn.outputs.value }}
+        RELEASE_ID: ${{ fromJson(steps.crd.outputs.data).id }}
     - name: Publish release
       uses: octokit/request-action@v2.x
       with:
@@ -227,4 +220,4 @@ jobs:
         draft: false
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        RELEASE_ID: ${{ steps.grn.outputs.value }}
+        RELEASE_ID: ${{ fromJson(steps.crd.outputs.data).id }}
