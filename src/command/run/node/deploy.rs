@@ -1,9 +1,11 @@
-use std::{io::Write, net::IpAddr};
+use std::{io::Write, net::IpAddr, path::Path};
 
 use anyhow::Error;
+use indexmap::IndexMap;
+use lazy_regex::regex;
 
 use crate::{
-    command,
+    command::util::{self, DiskPartitionInfo},
     context::{self, kv},
     prelude::*,
     process,
@@ -22,10 +24,14 @@ pub fn run(node_name: String) {
     await_node_initialization()?;
     change_password()?;
 
-    command::node::upgrade::run(node_name.clone(), true)?;
+    set_up_ssh()?;
+    copying_scripts()?;
+    mount_storage()?;
 
     join_cluster(&node_name)?;
-    copy_kubeconfig(ip_address)?;
+
+    copy_kubeconfig(&node_name)?;
+    install_dependencies()?;
 
     process::global_settings().container_mode();
 
@@ -48,26 +54,7 @@ fn check_node(node_name: &str) {
         bail!("Failed to deploy {node_name}");
     }
 
-    if kv!("nodes/{node_name}/initialized")
-        .get()?
-        .convert::<bool>()?
-    {
-        if !files!("admin/kube/config").exists()? {
-            bail!("Could not check status on {node_name} since kubeconfig is missing")
-        }
-
-        let output = process!(
-            "kubectl get node {node_name} \
-                -o=jsonpath='{{.status.conditions[?(@.type==\"Ready\")].status}}'",
-        )
-        .run()?;
-
-        if output.stdout.trim() == "True" {
-            bail!("{node_name} has already been deployed");
-        } else {
-            bail!("{node_name} has already been deployed, but it is not ready")
-        }
-    }
+    kv!("nodes/{node_name}/initialized").update(false)?;
 }
 
 #[throws(Error)]
@@ -172,6 +159,79 @@ fn change_password() {
 }
 
 #[throws(Error)]
+fn set_up_ssh() {
+    progress!("Setting up SSH settings");
+
+    write_file(
+        include_str!("../../../../config/ssh/00-hoc.conf"),
+        "/etc/ssh/sshd_config.d/00-hoc.conf",
+        None,
+    )?;
+
+    process!(sudo "service ssh restart").run()?;
+}
+
+#[throws(Error)]
+fn copying_scripts() {
+    progress!("Copying scripts");
+
+    write_file(
+        include_str!("../../../../config/scripts/shutdown-node.sh"),
+        "/usr/local/bin/shutdown-node.sh",
+        Some(0o755),
+    )?;
+}
+
+#[throws(Error)]
+fn mount_storage() {
+    const MOUNT_DIR: &str = "/media";
+
+    let partitions = find_attached_storage()?;
+    if partitions.is_empty() {
+        return;
+    }
+
+    progress!("Mounting permanent storage");
+
+    let opt = select!("Which storage do you want to mount?")
+        .with_options(partitions)
+        .get()?;
+
+    let output = process!("blkid /dev/{id}", id = opt.id).run()?;
+    let uuid = regex!(r#"^.*UUID="([^"]*)".*$"#)
+        .captures(output.stdout.trim())
+        .context("output should contain UUID")?
+        .get(1)
+        .context("UUID should be first match")?
+        .as_str();
+
+    let previous_fstab = process!("cat /etc/fstab").run()?.stdout;
+    if previous_fstab
+        .lines()
+        .find(|line| line.contains(uuid))
+        .filter(|line| line.contains(MOUNT_DIR))
+        .is_some()
+    {
+        return;
+    }
+
+    let fstab_line = format!("UUID={uuid} {MOUNT_DIR} auto nosuid,nodev,nofail 0 0");
+    let fstab_line = fstab_line.replace('/', r"\/");
+    let fstab_sed = format!(
+        "/^UUID={uuid}/{{h;s/^UUID={uuid}.*$/{fstab_line}/}};${{x;/^$/{{s//{fstab_line}/;H}};x}}"
+    );
+
+    process!(sudo "sed -i '{fstab_sed}' /etc/fstab")
+        .revertible(process!(sudo "tee /etc/fstab" <("{previous_fstab}")))
+        .run()?;
+    let output = process!("cat /etc/fstab").run()?;
+
+    debug!("{}", output.stdout);
+
+    process!(sudo "mount --source /dev/{id}", id = opt.id).run()?;
+}
+
+#[throws(Error)]
 fn join_cluster(node_name: &str) {
     progress!("Joining cluster");
 
@@ -200,34 +260,34 @@ fn join_cluster(node_name: &str) {
                 kv!("nodes/{node_name}/network/address").get()?.convert()?;
 
             if self_ip_address == configured_ip_address {
-                bail!("Node IP address can not be the same as the host node IP address");
-            }
+                process!(sudo "sh -" < ("{k3s_script}")).run()?;
+            } else {
+                let configured_node_name = match kv!("nodes/**").get()? {
+                    kv::Item::Map(map) => map
+                        .into_iter()
+                        .find_map(|(key, item)| {
+                            item.take("network/address")?
+                                .convert::<IpAddr>()
+                                .ok()
+                                .filter(|ip_addr| *ip_addr == configured_ip_address)
+                                .map(|_| key)
+                        })
+                        .context("Could not find server node name in context")?,
+                    _ => bail!("Could not determine server node name due to invalid context"),
+                };
 
-            let configured_node_name = match kv!("nodes/**").get()? {
-                kv::Item::Map(map) => map
-                    .into_iter()
-                    .find_map(|(key, item)| {
-                        item.take("network/address")?
-                            .convert::<IpAddr>()
-                            .ok()
-                            .filter(|ip_addr| *ip_addr == configured_ip_address)
-                            .map(|_| key)
-                    })
-                    .context("Could not find server node name in context")?,
-                _ => bail!("Could not determine server node name due to invalid context"),
-            };
+                let output = process!(sudo "cat /var/lib/rancher/k3s/server/node-token")
+                    .remote_mode(configured_node_name)
+                    .run()?;
+                let k3s_token = output.stdout.trim();
 
-            let output = process!(sudo "cat /var/lib/rancher/k3s/server/node-token")
-                .remote_mode(configured_node_name)
+                process!(
+                    K3S_URL = "{k3s_url}"
+                    K3S_TOKEN = "{k3s_token}"
+                    sudo "sh -" < ("{k3s_script}")
+                )
                 .run()?;
-            let k3s_token = output.stdout.trim();
-
-            process!(
-                K3S_URL = "{k3s_url}"
-                K3S_TOKEN = "{k3s_token}"
-                sudo "sh -" < ("{k3s_script}")
-            )
-            .run()?;
+            }
         }
         Err(context::Error::KeyDoesNotExist(_)) => {
             process!(sudo "sh -" < ("{k3s_script}")).run()?;
@@ -237,23 +297,68 @@ fn join_cluster(node_name: &str) {
 }
 
 #[throws(Error)]
-fn copy_kubeconfig(ip_address: IpAddr) {
-    let check_kubeconf = progress_with_handle!("Checking existing kubeconfig");
-    if files!("admin/kube/config").exists()? {
-        return;
+fn copy_kubeconfig(node_name: &str) {
+    let ip_address: IpAddr = kv!("nodes/{node_name}/network/address").get()?.convert()?;
+
+    if !files!("admin/kube/config").exists()? {
+        progress!("Copying kubeconfig to this computer");
+
+        let admin_username: String = kv!("admin/username").get()?.convert()?;
+
+        process!(sudo "chown {admin_username} /etc/rancher/k3s/k3s.yaml").run()?;
+        let output = process!("kubectl config view --raw").run()?;
+        let mut kubeconfig_file = files!("admin/kube/config").permissions(0o600).create()?;
+        let contents = output.stdout.replace(
+            "server: https://127.0.0.1:6443",
+            &format!("server: https://{ip_address}:6443"),
+        );
+        kubeconfig_file.write_all(contents.as_bytes())?;
     }
-    info!("Config was not found");
-    check_kubeconf.finish();
 
-    progress!("Copying kubeconfig");
+    let mut initialized_nodes = kv!("nodes/**")
+        .get()?
+        .convert::<IndexMap<String, kv::Item>>()?
+        .into_keys()
+        .filter(|k| *k != node_name);
+    let (kubeconfig, _progress_handle) = if let Some(initialized_node) = initialized_nodes.next() {
+        let handle = progress_with_handle!("Copying kubeconfig to node");
+        let output = process!("cat ~/.kube/config")
+            .remote_mode(initialized_node)
+            .run()?;
 
-    let output = process!(sudo "cat /etc/rancher/k3s/k3s.yaml").run()?;
-    let mut kubeconfig_file = files!("admin/kube/config").permissions(0o600).create()?;
-    let contents = output.stdout.replace(
-        "server: https://127.0.0.1:6443",
-        &format!("server: https://{ip_address}:6443"),
-    );
-    kubeconfig_file.write_all(contents.as_bytes())?;
+        (output.stdout, handle)
+    } else {
+        let handle = progress_with_handle!("Copying kubeconfig on node");
+        let output = process!(sudo "kubectl config view --raw").run()?;
+        let kubeconfig = output.stdout.replace(
+            "server: https://127.0.0.1:6443",
+            &format!("server: https://{ip_address}:6443"),
+        );
+
+        (kubeconfig, handle)
+    };
+
+    process!("mkdir -p ~/.kube").run()?;
+    process!("tee ~/.kube/config" < ("{kubeconfig}")).run()?;
+    process!("chmod 600 ~/.kube/config").run()?;
+}
+
+#[throws(Error)]
+fn install_dependencies() {
+    progress!("Installing dependencies");
+
+    process!(
+        DEBIAN_FRONTEND="noninteractive"
+        sudo "apt-get install -y jq open-iscsi nfs-common"
+    )
+    .run()?;
+
+    let longhorn_check_script = reqwest::blocking::get(
+        "https://raw.githubusercontent.com/longhorn/longhorn/v1.4.0/scripts/environment_check.sh",
+    )?
+    .text()?;
+
+    process!("bash -" < ("{longhorn_check_script}")).run()?;
 }
 
 #[throws(Error)]
@@ -266,4 +371,35 @@ fn verify_installation(node_name: &str) {
 fn report(node_name: &str) {
     kv!("nodes/{node_name}/initialized").update(true)?;
     info!("{node_name} has been successfully deployed");
+}
+
+#[throws(Error)]
+fn write_file(content: &str, path: impl AsRef<Path>, permissions: Option<u32>) {
+    let path = path.as_ref();
+
+    if let Some(dir) = path.parent() {
+        process!(sudo "mkdir -p {dir}", dir = dir.to_string_lossy()).run()?;
+    }
+
+    let path_str = path.to_string_lossy();
+    process!(sudo "tee {path_str}" < ("{content}")).run()?;
+
+    if let Some(permissions) = permissions {
+        process!(sudo "chmod {permissions:04o} {path_str}").run()?;
+    }
+}
+
+#[throws(Error)]
+fn find_attached_storage() -> Vec<DiskPartitionInfo> {
+    progress!("Finding attached storage");
+
+    util::get_attached_disks()?
+        .into_iter()
+        .filter(|disk| {
+            disk.partitions
+                .iter()
+                .all(|part| part.name != "system-boot")
+        })
+        .flat_map(|disk| disk.partitions)
+        .collect()
 }

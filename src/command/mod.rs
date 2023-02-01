@@ -42,11 +42,6 @@ commands_summary! {
             help = "The name of the node",
         }
     }
-    node_upgrade {
-        node_name {
-            help = "The name of the node",
-        }
-    }
     deploy {
         timeout {
             default = "5m0s",
@@ -193,7 +188,6 @@ pub struct SdCardPrepareCommand {}
 #[derive(clap::Subcommand)]
 pub enum NodeCommand {
     Deploy(NodeDeployCommand),
-    Upgrade(NodeUpgradeCommand),
 }
 
 /// Deploy a node
@@ -201,14 +195,6 @@ pub enum NodeCommand {
 #[clap(name = "node-deploy")]
 pub struct NodeDeployCommand {
     #[clap(help = help::node_deploy::node_name())]
-    node_name: String,
-}
-
-/// Upgrades a node to use the latest features
-#[derive(Parser)]
-#[clap(name = "node-upgrade")]
-pub struct NodeUpgradeCommand {
-    #[clap(help = help::node_upgrade::node_name())]
     node_name: String,
 }
 
@@ -275,13 +261,6 @@ impl Command {
                     arg_diagnostics!(node_name, deploy_command.node_name);
 
                     node::deploy::run(deploy_command.node_name)?;
-                }
-                NodeCommand::Upgrade(upgrade_command) => {
-                    cmd_diagnostics!(NodeUpgradeCommand);
-
-                    arg_diagnostics!(node_name, upgrade_command.node_name);
-
-                    node::upgrade::run(upgrade_command.node_name, false)?;
                 }
             },
 

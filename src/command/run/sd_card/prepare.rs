@@ -12,10 +12,11 @@ use xz2::read::XzDecoder;
 
 use crate::{
     cidr::Cidr,
+    command::util::{self, DiskInfo, DiskPartitionInfo},
     context::{self, fs::ContextFile, kv},
     prelude::*,
     process,
-    util::{self, DiskInfo, DiskPartitionInfo, Opt},
+    util::Opt,
 };
 
 const UBUNTU_VERSION: UbuntuVersion = UbuntuVersion {
@@ -278,7 +279,7 @@ fn generate_node_name() -> String {
     let mut used_indices: Vec<_> = match kv!("nodes/**").get() {
         Ok(kv::Item::Map(map)) => map
             .into_keys()
-            .map(|key| util::numeral_to_int(key.trim_start_matches("node-")))
+            .map(|key| crate::util::numeral_to_int(key.trim_start_matches("node-")))
             .collect::<Option<_>>()
             .context("Could not parse pending node names")?,
         Ok(_) => bail!("Could not determine available node names due to invalid context"),
@@ -293,7 +294,7 @@ fn generate_node_name() -> String {
         .find(|(i, j)| i != *j)
         .map_or(used_indices.len() as u64 + 1, |(i, _)| i);
 
-    let node_name = format!("node-{}", util::int_to_numeral(available_index));
+    let node_name = format!("node-{}", crate::util::int_to_numeral(available_index));
     info!("Node name: {node_name}");
 
     node_name
