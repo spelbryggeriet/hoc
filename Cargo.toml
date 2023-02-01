@@ -7,7 +7,7 @@ edition = "2021"
 anyhow = "1.0.68"
 chrono = { version = "0.4.23", default-features = false, features = ["clock"] }
 clap = { version = "4.1.4", features = ["derive"] }
-crossterm = "0.25.0"
+crossterm = "0.26.0"
 fehler = "1.0.0"
 heck = "0.4.0"
 indexmap = { version = "1.9.2", features = ["serde"] }
