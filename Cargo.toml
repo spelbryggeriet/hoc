@@ -9,7 +9,7 @@ chrono = { version = "0.4.23", default-features = false, features = ["clock"] }
 clap = { version = "4.1.4", features = ["derive"] }
 crossterm = "0.25.0"
 fehler = "1.0.0"
-heck = "0.4.0"
+heck = "0.4.1"
 indexmap = { version = "1.9.2", features = ["serde"] }
 inquire = { git = "https://github.com/hampuslidin/inquire.git", branch = "feature/global-prefix" }
 lazy-regex = "2.4.1"
