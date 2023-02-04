@@ -129,6 +129,7 @@ mod linux {
     #[derive(Deserialize)]
     struct LsblkPartition {
         name: String,
+        #[serde(deserialize_with = "nullable_field")]
         label: String,
         size: usize,
     }

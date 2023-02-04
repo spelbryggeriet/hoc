@@ -41,6 +41,9 @@ commands_summary! {
         node_name {
             help = "The name of the node",
         }
+        format_storage {
+            help = "Format mounted device used for storage",
+        }
     }
     deploy {
         timeout {
@@ -79,6 +82,9 @@ pub enum Command {
 
     #[clap(subcommand)]
     Node(NodeCommand),
+
+    #[clap(subcommand)]
+    Cluster(ClusterCommand),
 
     Deploy(DeployCommand),
 }
@@ -162,17 +168,6 @@ pub struct InitCommand {
     defaults: Defaults,
 }
 
-/// Deploy an application
-#[derive(Parser)]
-pub struct DeployCommand {
-    #[clap(
-        help = help::deploy::timeout(),
-        long,
-        default_value = default::deploy::timeout(),
-    )]
-    timeout: String,
-}
-
 /// Manage an SD card
 #[derive(clap::Subcommand)]
 pub enum SdCardCommand {
@@ -196,6 +191,31 @@ pub enum NodeCommand {
 pub struct NodeDeployCommand {
     #[clap(help = help::node_deploy::node_name())]
     node_name: String,
+
+    #[clap(long, help = help::node_deploy::format_storage())]
+    format_storage: bool,
+}
+
+/// Manage the cluster
+#[derive(clap::Subcommand)]
+pub enum ClusterCommand {
+    Deploy(ClusterDeployCommand),
+}
+
+/// Deploy cluster resources
+#[derive(Parser)]
+#[clap(name = "cluster-deploy")]
+pub struct ClusterDeployCommand {}
+
+/// Deploy an application
+#[derive(Parser)]
+pub struct DeployCommand {
+    #[clap(
+        help = help::deploy::timeout(),
+        long,
+        default_value = default::deploy::timeout(),
+    )]
+    timeout: String,
 }
 
 impl Command {
@@ -259,8 +279,17 @@ impl Command {
                     cmd_diagnostics!(NodeDeployCommand);
 
                     arg_diagnostics!(node_name, deploy_command.node_name);
+                    arg_diagnostics!(format_storage, deploy_command.format_storage);
 
-                    node::deploy::run(deploy_command.node_name)?;
+                    node::deploy::run(deploy_command.node_name, deploy_command.format_storage)?;
+                }
+            },
+
+            Cluster(cluster_command) => match cluster_command {
+                ClusterCommand::Deploy(_deploy_command) => {
+                    cmd_diagnostics!(ClusterDeployCommand);
+
+                    cluster::deploy::run()?;
                 }
             },
 

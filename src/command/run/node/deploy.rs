@@ -2,7 +2,6 @@ use std::{io::Write, net::IpAddr, path::Path};
 
 use anyhow::Error;
 use indexmap::IndexMap;
-use lazy_regex::regex;
 
 use crate::{
     command::util::{self, DiskPartitionInfo},
@@ -12,8 +11,10 @@ use crate::{
     util::Opt,
 };
 
+const MOUNT_DIR: &str = "/var/lib/longhorn";
+
 #[throws(Error)]
-pub fn run(node_name: String) {
+pub fn run(node_name: String, format_storage: bool) {
     check_node(&node_name)?;
 
     let ip_address = get_node_ip_address(&node_name)?;
@@ -26,7 +27,7 @@ pub fn run(node_name: String) {
 
     set_up_ssh()?;
     copying_scripts()?;
-    mount_storage()?;
+    let has_mounted_storage = mount_storage(format_storage)?;
 
     join_cluster(&node_name)?;
 
@@ -34,6 +35,8 @@ pub fn run(node_name: String) {
     install_dependencies()?;
 
     process::global_settings().container_mode();
+
+    label_node_storage(&node_name, has_mounted_storage)?;
 
     verify_installation(&node_name)?;
     report(&node_name)?;
@@ -183,12 +186,10 @@ fn copying_scripts() {
 }
 
 #[throws(Error)]
-fn mount_storage() {
-    const MOUNT_DIR: &str = "/media";
-
+fn mount_storage(format_storage: bool) -> bool {
     let partitions = find_attached_storage()?;
     if partitions.is_empty() {
-        return;
+        return false;
     }
 
     progress!("Mounting permanent storage");
@@ -197,25 +198,23 @@ fn mount_storage() {
         .with_options(partitions)
         .get()?;
 
-    let output = process!("blkid /dev/{id}", id = opt.id).run()?;
-    let uuid = regex!(r#"^.*UUID="([^"]*)".*$"#)
-        .captures(output.stdout.trim())
-        .context("output should contain UUID")?
-        .get(1)
-        .context("UUID should be first match")?
-        .as_str();
-
-    let previous_fstab = process!("cat /etc/fstab").run()?.stdout;
-    if previous_fstab
-        .lines()
-        .find(|line| line.contains(uuid))
-        .filter(|line| line.contains(MOUNT_DIR))
-        .is_some()
-    {
-        return;
+    let output = process!("mount").run()?;
+    let mut is_mounted = output.stdout.contains(&format!("/dev/{id}", id = opt.id));
+    if format_storage {
+        if is_mounted {
+            process!(sudo "umount /dev/{id}", id = opt.id).run()?;
+        }
+        process!(sudo "mkfs -t ext4 /dev/{id}", id = opt.id).run()?;
+        process!(sudo "e2label /dev/{id} hoc-storage", id = opt.id).run()?;
+        is_mounted = false;
     }
 
-    let fstab_line = format!("UUID={uuid} {MOUNT_DIR} auto nosuid,nodev,nofail 0 0");
+    let output = process!("lsblk -nfo UUID /dev/{id}", id = opt.id).run()?;
+    let uuid = output.stdout.trim();
+
+    let previous_fstab = process!("cat /etc/fstab").run()?.stdout;
+
+    let fstab_line = format!("UUID={uuid} {MOUNT_DIR} auto rw,nosuid,nodev,nofail 0 0");
     let fstab_line = fstab_line.replace('/', r"\/");
     let fstab_sed = format!(
         "/^UUID={uuid}/{{h;s/^UUID={uuid}.*$/{fstab_line}/}};${{x;/^$/{{s//{fstab_line}/;H}};x}}"
@@ -228,7 +227,10 @@ fn mount_storage() {
 
     debug!("{}", output.stdout);
 
-    process!(sudo "mount --source /dev/{id}", id = opt.id).run()?;
+    let options = if is_mounted { "--options remount " } else { "" };
+    process!(sudo "mount {options}--source /dev/{id}", id = opt.id).run()?;
+
+    true
 }
 
 #[throws(Error)]
@@ -349,16 +351,44 @@ fn install_dependencies() {
 
     process!(
         DEBIAN_FRONTEND="noninteractive"
+        sudo "apt-get update"
+    )
+    .run()?;
+    process!(
+        DEBIAN_FRONTEND="noninteractive"
         sudo "apt-get install -y jq open-iscsi nfs-common"
     )
     .run()?;
+}
 
-    let longhorn_check_script = reqwest::blocking::get(
-        "https://raw.githubusercontent.com/longhorn/longhorn/v1.4.0/scripts/environment_check.sh",
-    )?
-    .text()?;
+#[throws(Error)]
+fn label_node_storage(node_name: &str, has_mounted_storage: bool) {
+    progress!("Label node storage");
 
-    process!("bash -" < ("{longhorn_check_script}")).run()?;
+    if has_mounted_storage {
+        process!(
+            "kubectl label --overwrite node {node_name} \
+                node.longhorn.io/create-default-disk=config"
+        )
+        .run()?;
+    } else {
+        process!(
+            "kubectl label --overwrite node {node_name} \
+                node.longhorn.io/create-default-disk=false"
+        )
+        .run()?;
+        return;
+    }
+
+    process!(
+        r#"kubectl annotate --overwrite node {node_name} \
+            node.longhorn.io/default-disks-config='[{{
+                "name":"hoc-storage",
+                "path":"{MOUNT_DIR}",
+                "allowScheduling":true
+            }}]'"#
+    )
+    .run()?;
 }
 
 #[throws(Error)]

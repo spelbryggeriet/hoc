@@ -1,6 +1,7 @@
 #[cfg(debug_assertions)]
 pub mod debug;
 
+pub mod cluster;
 pub mod deploy;
 pub mod init;
 pub mod node;
