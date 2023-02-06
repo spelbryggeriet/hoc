@@ -6,6 +6,7 @@ use serde::Deserialize;
 use serde::Serialize;
 use tinytemplate::TinyTemplate;
 
+use crate::command::util::Helm;
 use crate::prelude::*;
 
 #[throws(Error)]
@@ -67,16 +68,16 @@ fn deploy_application(hocfile: &Hocfile, timeout: &str) {
     let registry: String = kv!("registry/prefix").get()?.convert()?;
 
     shell.run(process!("tee /helm/hoc-service/Chart.yaml" < ("{chart}")))?;
-    shell.run(process!(
-        "helm upgrade {name} /helm/hoc-service/ --install --atomic --timeout {timeout} \
-            --set image.repository={registry}/{image_name} \
-            --set ingress.host={host} \
-            --set service.port={port}",
-        host = hocfile.service.domain,
-        image_name = hocfile.image.name,
-        name = hocfile.meta.name,
-        port = hocfile.service.internal_port,
-    ))?;
+    shell.run(
+        Helm.upgrade(&hocfile.meta.name, "/helm/hoc-service/")
+            .timeout(timeout)
+            .set(
+                "image.repository",
+                &format!("{registry}/{image_name}", image_name = hocfile.image.name),
+            )
+            .set("ingress.host", &hocfile.service.domain)
+            .set("service.port", &hocfile.service.internal_port.to_string()),
+    )?;
 
     shell.exit()?;
 }

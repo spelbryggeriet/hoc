@@ -968,8 +968,9 @@ impl Shell<Idle> {
 impl Shell<Running> {
     #[throws(Error)]
     #[allow(unused)]
-    pub fn run(&self, process: ProcessBuilder) -> Output {
+    pub fn run(&self, process: impl Into<ProcessBuilder>) -> Output {
         process
+            .into()
             .shell_mode(
                 self.state.mode.clone(),
                 self.state.process.stdin.clone(),

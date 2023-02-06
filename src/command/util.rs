@@ -1,8 +1,9 @@
 use std::fmt::{self, Display, Formatter};
 
 use clap::Parser;
+use indexmap::IndexMap;
 
-use crate::prelude::*;
+use crate::{prelude::*, process::ProcessBuilder};
 
 #[derive(Parser)]
 pub struct Defaults {
@@ -92,6 +93,133 @@ impl DiskPartitionInfo {
 impl Display for DiskPartitionInfo {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
         self.description().fmt(f)
+    }
+}
+
+pub struct Helm;
+
+impl Helm {
+    pub fn upgrade<'a>(self, name: &'a str, path: &'a str) -> HelmUpgrade<'a> {
+        HelmUpgrade::new(name, path)
+    }
+
+    pub fn repo(self) -> HelmRepo {
+        HelmRepo
+    }
+}
+
+pub struct HelmRepo;
+
+impl HelmRepo {
+    pub fn update(self) -> HelmRepoUpdate {
+        HelmRepoUpdate
+    }
+}
+
+pub struct HelmRepoUpdate;
+
+impl From<HelmRepoUpdate> for ProcessBuilder {
+    fn from(_: HelmRepoUpdate) -> Self {
+        process!("helm repo update")
+    }
+}
+
+pub struct HelmUpgrade<'a> {
+    name: &'a str,
+    path: &'a str,
+    install: bool,
+    atomic: bool,
+    timeout: Option<&'a str>,
+    namespace: Option<&'a str>,
+    create_namespace: bool,
+    version: Option<&'a str>,
+    settings: IndexMap<&'a str, &'a str>,
+}
+
+impl<'a> HelmUpgrade<'a> {
+    fn new(name: &'a str, path: &'a str) -> Self {
+        Self {
+            name,
+            path,
+            install: true,
+            atomic: true,
+            timeout: Some("5m0s"),
+            namespace: None,
+            create_namespace: false,
+            version: None,
+            settings: IndexMap::new(),
+        }
+    }
+
+    pub fn timeout(mut self, timeout: &'a str) -> Self {
+        self.timeout.replace(timeout);
+        self
+    }
+
+    pub fn namespace(mut self, namespace: &'a str) -> Self {
+        self.namespace.replace(namespace);
+        self
+    }
+
+    pub fn create_namespace(mut self) -> Self {
+        self.create_namespace = true;
+        self
+    }
+
+    pub fn version(mut self, version: &'a str) -> Self {
+        self.version.replace(version);
+        self
+    }
+
+    pub fn set(mut self, key: &'a str, value: &'a str) -> Self {
+        self.settings.insert(key, value);
+        self
+    }
+}
+
+impl From<HelmUpgrade<'_>> for ProcessBuilder {
+    fn from(upgrade: HelmUpgrade<'_>) -> Self {
+        let mut process = format!(
+            "helm upgrade {name} {path}",
+            name = upgrade.name,
+            path = upgrade.path,
+        );
+
+        if upgrade.install {
+            process += " --install";
+        }
+
+        if upgrade.atomic {
+            process += " --atomic";
+        }
+
+        if let Some(timeout) = upgrade.timeout {
+            process += " --timeout=";
+            process += timeout;
+        }
+
+        if let Some(namespace) = upgrade.namespace {
+            process += " --namespace=";
+            process += namespace;
+        }
+
+        if upgrade.create_namespace {
+            process += " --create_namespace";
+        }
+
+        if let Some(version) = upgrade.version {
+            process += " --version=";
+            process += version;
+        }
+
+        for (key, value) in upgrade.settings {
+            process += " --set=";
+            process += key;
+            process += "=";
+            process += value;
+        }
+
+        process!("{process}")
     }
 }
 

@@ -1,6 +1,6 @@
 use anyhow::Error;
 
-use crate::prelude::*;
+use crate::{command::util::Helm, prelude::*};
 
 #[throws(Error)]
 pub fn run() {
@@ -12,12 +12,12 @@ fn deploy_storage() {
     progress!("Deploying storage");
 
     let shell = shell!().start()?;
-    shell.run(process!("helm repo update"))?;
-    shell.run(process!(
-        "helm install longhorn longhorn/longhorn \
-            --namespace longhorn-system \
-            --create-namespace \
-            --version 1.4.0 \
-            --set defaultSettings.createDefaultDiskLabeledNodes=true",
-    ))?;
+    shell.run(Helm.repo().update())?;
+    shell.run(
+        Helm.upgrade("longhorn", "longhorn/longhorn")
+            .namespace("longhorn-system")
+            .create_namespace()
+            .version("1.4.0")
+            .set("defaultSettings.createDefaultDiskLabeledNodes", "true"),
+    )?;
 }
