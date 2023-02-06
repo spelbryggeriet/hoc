@@ -27,7 +27,7 @@ pub fn run(node_name: String, format_storage: bool) {
 
     set_up_ssh()?;
     copying_scripts()?;
-    let has_mounted_storage = mount_storage(format_storage)?;
+    mount_storage(format_storage)?;
 
     join_cluster(&node_name)?;
 
@@ -36,7 +36,7 @@ pub fn run(node_name: String, format_storage: bool) {
 
     process::global_settings().container_mode();
 
-    label_node_storage(&node_name, has_mounted_storage)?;
+    label_node_storage(&node_name)?;
 
     verify_installation(&node_name)?;
     report(&node_name)?;
@@ -186,10 +186,10 @@ fn copying_scripts() {
 }
 
 #[throws(Error)]
-fn mount_storage(format_storage: bool) -> bool {
+fn mount_storage(format_storage: bool) {
     let partitions = find_attached_storage()?;
     if partitions.is_empty() {
-        return false;
+        return;
     }
 
     progress!("Mounting permanent storage");
@@ -229,8 +229,6 @@ fn mount_storage(format_storage: bool) -> bool {
 
     let options = if is_mounted { "--options remount " } else { "" };
     process!(sudo "mount {options}--source /dev/{id}", id = opt.id).run()?;
-
-    true
 }
 
 #[throws(Error)]
@@ -362,31 +360,11 @@ fn install_dependencies() {
 }
 
 #[throws(Error)]
-fn label_node_storage(node_name: &str, has_mounted_storage: bool) {
+fn label_node_storage(node_name: &str) {
     progress!("Label node storage");
 
-    if has_mounted_storage {
-        process!(
-            "kubectl label --overwrite node {node_name} \
-                node.longhorn.io/create-default-disk=config"
-        )
-        .run()?;
-    } else {
-        process!(
-            "kubectl label --overwrite node {node_name} \
-                node.longhorn.io/create-default-disk=false"
-        )
-        .run()?;
-        return;
-    }
-
     process!(
-        r#"kubectl annotate --overwrite node {node_name} \
-            node.longhorn.io/default-disks-config='[{{
-                "name":"hoc-storage",
-                "path":"{MOUNT_DIR}",
-                "allowScheduling":true
-            }}]'"#
+        "kubectl label --overwrite node {node_name} node.longhorn.io/create-default-disk=false"
     )
     .run()?;
 }
