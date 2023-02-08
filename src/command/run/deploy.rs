@@ -6,7 +6,7 @@ use serde::Deserialize;
 use serde::Serialize;
 use tinytemplate::TinyTemplate;
 
-use crate::command::util::Helm;
+use crate::command::util::{self, Helm};
 use crate::prelude::*;
 
 #[throws(Error)]
@@ -86,39 +86,7 @@ fn deploy_application(hocfile: &Hocfile, timeout: &str) {
 fn wait_on_pods(hocfile: &Hocfile) {
     progress!("Waiting on pods to be ready");
 
-    const JSON_PATH: &str = "'\
-        {range .items[*]}\
-            {.status.phase}{\"=\"}\
-            {range .status.containerStatuses[*]}\
-                {.ready}{\"-\"}\
-            {end}{\",\"}\
-        {end}'";
-
-    for _ in 0..30 {
-        let output = process!(
-            "kubectl get pods \
-                -l=app.kubernetes.io/managed-by!=Helm,\
-                   app.kubernetes.io/instance={name} \
-                -o=jsonpath={JSON_PATH}",
-            name = hocfile.meta.name,
-        )
-        .run()?;
-
-        let all_ready = output.stdout.split_terminator(',').all(|pod| {
-            pod.split_once('=').map_or(false, |(phase, statuses)| {
-                phase == "Running"
-                    && statuses
-                        .split_terminator('-')
-                        .all(|status| status == "true")
-            })
-        });
-
-        if all_ready {
-            break;
-        };
-
-        spin_sleep::sleep(Duration::from_secs(10));
-    }
+    util::k8s_wait_on_pods(&hocfile.meta.name)?;
 }
 
 #[throws(Error)]

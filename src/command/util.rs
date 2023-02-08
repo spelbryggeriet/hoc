@@ -1,18 +1,15 @@
-use std::fmt::{self, Display, Formatter};
+use std::{
+    fmt::{self, Display, Formatter},
+    time::Duration,
+};
 
 use clap::Parser;
 use indexmap::IndexMap;
 
-use crate::{prelude::*, process::ProcessBuilder};
-
-#[derive(Parser)]
-pub struct Defaults {
-    /// Skip prompts for fields that have defaults
-    ///
-    /// This is equivalent to providing all defaultable flags without a value.
-    #[clap(short, long)]
-    defaults: bool,
-}
+use crate::{
+    prelude::*,
+    process::{self, ProcessBuilder},
+};
 
 #[throws(anyhow::Error)]
 pub fn get_attached_disks() -> Vec<DiskInfo> {
@@ -29,12 +26,65 @@ pub fn get_attached_disks() -> Vec<DiskInfo> {
     }
 }
 
+#[throws(anyhow::Error)]
+pub fn k8s_wait_on_pods(deployment_name: &str) {
+    const JSON_PATH: &str = "'\
+        {range .items[*]}\
+            {.status.phase}{\"=\"}\
+            {range .status.containerStatuses[*]}\
+                {.ready}{\"-\"}\
+            {end}{\",\"}\
+        {end}'";
+    const MAX_ATTEMPTS: usize = 30;
+
+    let mut attempt = 0;
+    loop {
+        if attempt >= MAX_ATTEMPTS {
+            bail!("Timing out waiting for pods to become ready")
+        }
+
+        let output = Kubectl
+            .get()
+            .pods()
+            .not_selector("app.kubernetes.io/managed-by", "Helm")
+            .selector("app.kubernetes.io/instance", deployment_name)
+            .output(&format!("jsonpath={JSON_PATH}"))
+            .run()?;
+
+        let all_ready = output.stdout.split_terminator(',').all(|pod| {
+            pod.split_once('=').map_or(false, |(phase, statuses)| {
+                phase == "Running"
+                    && statuses
+                        .split_terminator('-')
+                        .all(|status| status == "true")
+            })
+        });
+
+        if all_ready {
+            break;
+        };
+
+        spin_sleep::sleep(Duration::from_secs(10));
+
+        attempt += 1;
+    }
+}
+
 fn unnamed_if_empty<S: AsRef<str> + ?Sized>(name: &S) -> String {
     if name.as_ref().trim().is_empty() {
         "<unnamed>".to_owned()
     } else {
         format!(r#""{}""#, name.as_ref())
     }
+}
+
+#[derive(Parser)]
+pub struct Defaults {
+    /// Skip prompts for fields that have defaults
+    ///
+    /// This is equivalent to providing all defaultable flags without a value.
+    #[clap(short, long)]
+    defaults: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -93,6 +143,76 @@ impl DiskPartitionInfo {
 impl Display for DiskPartitionInfo {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
         self.description().fmt(f)
+    }
+}
+
+pub struct Kubectl;
+
+impl Kubectl {
+    pub fn get(self) -> KubectlGet {
+        KubectlGet
+    }
+}
+
+pub struct KubectlGet;
+
+impl KubectlGet {
+    pub fn pods<'a>(self) -> KubectlGetPods<'a> {
+        KubectlGetPods::new()
+    }
+}
+
+pub struct KubectlGetPods<'a> {
+    selectors: IndexMap<&'a str, (&'static str, &'a str)>,
+    output: Option<&'a str>,
+}
+
+impl<'a> KubectlGetPods<'a> {
+    pub fn new() -> Self {
+        Self {
+            selectors: IndexMap::new(),
+            output: None,
+        }
+    }
+
+    pub fn selector(mut self, key: &'a str, value: &'a str) -> Self {
+        self.selectors.insert(key, ("=", value));
+        self
+    }
+
+    pub fn not_selector(mut self, key: &'a str, value: &'a str) -> Self {
+        self.selectors.insert(key, ("!=", value));
+        self
+    }
+
+    pub fn output(mut self, output: &'a str) -> Self {
+        self.output.replace(output);
+        self
+    }
+
+    #[throws(process::Error)]
+    pub fn run(self) -> process::Output {
+        ProcessBuilder::from(self).run()?
+    }
+}
+
+impl From<KubectlGetPods<'_>> for ProcessBuilder {
+    fn from(get_pods: KubectlGetPods) -> Self {
+        let mut process = String::from("kubectl get pods");
+
+        for (key, (constraint, value)) in get_pods.selectors {
+            process += " --selector=";
+            process += key;
+            process += constraint;
+            process += value;
+        }
+
+        if let Some(output) = get_pods.output {
+            process += " --output=";
+            process += output;
+        }
+
+        process!("{process}")
     }
 }
 
@@ -204,7 +324,7 @@ impl From<HelmUpgrade<'_>> for ProcessBuilder {
         }
 
         if upgrade.create_namespace {
-            process += " --create_namespace";
+            process += " --create-namespace";
         }
 
         if let Some(version) = upgrade.version {
