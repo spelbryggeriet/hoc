@@ -1,4 +1,3 @@
-use std::time::Duration;
 use std::{fmt::Write, fs::File};
 
 use anyhow::Error;

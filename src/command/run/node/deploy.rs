@@ -11,8 +11,6 @@ use crate::{
     util::Opt,
 };
 
-const MOUNT_DIR: &str = "/var/lib/longhorn";
-
 #[throws(Error)]
 pub fn run(node_name: String, format_storage: bool) {
     check_node(&node_name)?;
@@ -25,8 +23,9 @@ pub fn run(node_name: String, format_storage: bool) {
     await_node_initialization()?;
     change_password()?;
 
+    create_directories()?;
     set_up_ssh()?;
-    copying_scripts()?;
+    copy_scripts()?;
     mount_storage(format_storage)?;
 
     join_cluster(&node_name)?;
@@ -175,7 +174,18 @@ fn set_up_ssh() {
 }
 
 #[throws(Error)]
-fn copying_scripts() {
+fn create_directories() {
+    progress!("Creating directories");
+
+    process!(sudo "mkdir -p /tmp/hoc").run()?;
+
+    let admin_username: String = kv!("admin/username").get()?.convert()?;
+    process!(sudo "chown {admin_username} /tmp").run()?;
+    process!(sudo "chown {admin_username} /tmp/hoc").run()?;
+}
+
+#[throws(Error)]
+fn copy_scripts() {
     progress!("Copying scripts");
 
     write_file(
@@ -183,6 +193,9 @@ fn copying_scripts() {
         "/usr/local/bin/shutdown-node.sh",
         Some(0o755),
     )?;
+
+    let longhorn_script = reqwest::blocking::get("https://github.com/longhorn/longhorn-tests/raw/v1.4.0/manager/integration/tests/longhorn.py")?.text()?;
+    write_file(&longhorn_script, "/usr/local/lib/python/longhorn.py", None)?;
 }
 
 #[throws(Error)]
@@ -199,14 +212,14 @@ fn mount_storage(format_storage: bool) {
         .get()?;
 
     let output = process!("mount").run()?;
-    let mut is_mounted = output.stdout.contains(&format!("/dev/{id}", id = opt.id));
+    let is_mounted = output.stdout.contains(&format!("/dev/{id}", id = opt.id));
+    if is_mounted {
+        process!(sudo "umount /dev/{id}", id = opt.id).run()?;
+    }
+
     if format_storage {
-        if is_mounted {
-            process!(sudo "umount /dev/{id}", id = opt.id).run()?;
-        }
         process!(sudo "mkfs -t ext4 /dev/{id}", id = opt.id).run()?;
         process!(sudo "e2label /dev/{id} hoc-storage", id = opt.id).run()?;
-        is_mounted = false;
     }
 
     let output = process!("lsblk -nfo UUID /dev/{id}", id = opt.id).run()?;
@@ -214,21 +227,35 @@ fn mount_storage(format_storage: bool) {
 
     let previous_fstab = process!("cat /etc/fstab").run()?.stdout;
 
-    let fstab_line = format!("UUID={uuid} {MOUNT_DIR} auto rw,nosuid,nodev,nofail 0 0");
-    let fstab_line = fstab_line.replace('/', r"\/");
-    let fstab_sed = format!(
-        "/^UUID={uuid}/{{h;s/^UUID={uuid}.*$/{fstab_line}/}};${{x;/^$/{{s//{fstab_line}/;H}};x}}"
-    );
+    let mut occupied_indices: Vec<_> = previous_fstab
+        .lines()
+        .filter(|line| !line.contains(uuid))
+        .filter_map(|line| {
+            crate::util::numeral_to_int(line.split_whitespace().nth(1)?.split_once("/media-")?.1)
+        })
+        .collect();
+    occupied_indices.sort();
 
-    process!(sudo "sed -i '{fstab_sed}' /etc/fstab")
-        .revertible(process!(sudo "tee /etc/fstab" <("{previous_fstab}")))
-        .run()?;
+    let mut index = 1;
+    let numeral = loop {
+        if !occupied_indices.contains(&index) {
+            break crate::util::int_to_numeral(index);
+        }
+
+        index += 1;
+    };
+
+    let fstab_line = format!("UUID={uuid} /media-{numeral} auto rw,nosuid,nodev,nofail 0 0");
+
+    process!(sudo "sed 's/^UUID.*$//' -i /etc/fstab").run()?;
+    process!(sudo "sed -zE '$ s/\\n+$//' -i /etc/fstab").run()?;
+    process!(sudo "tee -a /etc/fstab" <("\n{fstab_line}")).run()?;
     let output = process!("cat /etc/fstab").run()?;
 
     debug!("{}", output.stdout);
 
-    let options = if is_mounted { "--options remount " } else { "" };
-    process!(sudo "mount {options}--source /dev/{id}", id = opt.id).run()?;
+    process!(sudo "mkdir -p /media-{numeral}").run()?;
+    process!(sudo "mount --source /dev/{id}", id = opt.id).run()?;
 }
 
 #[throws(Error)]
@@ -354,9 +381,13 @@ fn install_dependencies() {
     .run()?;
     process!(
         DEBIAN_FRONTEND="noninteractive"
-        sudo "apt-get install -y jq open-iscsi nfs-common"
+        sudo "apt-get install -y jq open-iscsi nfs-common python3 python3-pip"
     )
     .run()?;
+
+    process!("python3 -m venv pipvenv --without-pip --system-site-packages").run()?;
+    process!("pipvenv/bin/python3 -m pip install --upgrade pip").run()?;
+    process!("pipvenv/bin/python3 -m pip install six requests").run()?;
 }
 
 #[throws(Error)]

@@ -64,6 +64,10 @@ fn container_source_dir() -> &'static Path {
     Path::new("/hoc/source")
 }
 
+fn remote_temp_dir() -> &'static Path {
+    Path::new("/tmp/hoc")
+}
+
 #[derive(Parser)]
 struct App {
     #[clap(subcommand)]

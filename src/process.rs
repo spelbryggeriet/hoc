@@ -2,15 +2,24 @@ use std::{
     borrow::Cow,
     collections::HashMap,
     env,
+    fmt::{self, Write as FmtWrite},
+    fs::File,
     io::{self, Cursor, Read, Write},
     net::{IpAddr, TcpStream},
     process::Stdio,
-    sync::{Arc, Mutex, MutexGuard},
-    thread,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex, MutexGuard,
+    },
+    thread::{self, JoinHandle},
     time::Duration,
 };
 
 use crossterm::style::Stylize;
+use nix::{
+    sys::signal::{self, Signal},
+    unistd::Pid,
+};
 use once_cell::sync::OnceCell;
 use thiserror::Error;
 
@@ -28,17 +37,6 @@ use crate::{
 const SHELL_TOKEN_START_PREFIX: &str = "###[hoc::shell::start=";
 const SHELL_TOKEN_END_PREFIX: &str = "###[hoc::shell::end=";
 const SHELL_TOKEN_SUFFIX: &str = "]###";
-
-fn current_ssh_session() -> MutexGuard<'static, Option<(Cow<'static, str>, ssh2::Session)>> {
-    type NodeSession = (Cow<'static, str>, ssh2::Session);
-
-    static CURRENT_SSH_SESSION: OnceCell<Mutex<Option<NodeSession>>> = OnceCell::new();
-
-    CURRENT_SSH_SESSION
-        .get_or_init(|| Mutex::new(None))
-        .lock()
-        .expect(EXPECT_THREAD_NOT_POSIONED)
-}
 
 #[throws(Error)]
 pub fn get_local_password() -> Secret<String> {
@@ -134,14 +132,8 @@ impl ProcessBuilder {
     }
 
     #[allow(unused)]
-    fn shell_mode(
-        mut self,
-        outer_mode: ProcessMode,
-        stdin: Stdin,
-        stdout: Rewindable<Stdout>,
-        stderr: Rewindable<Stderr>,
-    ) -> Self {
-        self.settings.shell_mode(outer_mode, stdin, stdout, stderr);
+    fn shell_mode(mut self, outer_mode: ProcessMode, stdin: Stdin) -> Self {
+        self.settings.shell_mode(outer_mode, stdin);
         self
     }
 
@@ -275,54 +267,34 @@ impl ProcessBuilder {
                 self.spawn_container(password_to_cache, progress_handle)?
             }
             ProcessMode::Remote { node_name } => {
-                let mut current_session = current_ssh_session();
-                match &*current_session {
-                    Some((current_node, session)) if node_name == current_node => {
-                        self.spawn_remote(session, password_to_cache, progress_handle)?
-                    }
-                    _ => {
-                        let host: IpAddr =
-                            kv!("nodes/{node_name}/network/address").get()?.convert()?;
-                        let port = 22;
-                        let stream = TcpStream::connect(format!("{host}:{port}"))?;
+                let host: IpAddr = kv!("nodes/{node_name}/network/address").get()?.convert()?;
+                let port = 22;
+                let stream = TcpStream::connect(format!("{host}:{port}"))?;
 
-                        let mut session = ssh2::Session::new()?;
-                        session.set_tcp_stream(stream);
-                        session.handshake()?;
+                let mut session = ssh2::Session::new()?;
+                session.set_tcp_stream(stream);
+                session.handshake()?;
 
-                        let admin_username: String = kv!("admin/username").get()?.convert()?;
-                        let pub_key_file = files!("admin/ssh/pub").get()?;
-                        let priv_key_file = files!("admin/ssh/priv").get()?;
-                        let password = get_remote_password()?;
-                        password_to_cache.replace(password.clone());
+                let admin_username: String = kv!("admin/username").get()?.convert()?;
+                let pub_key_file = files!("admin/ssh/pub").get()?;
+                let priv_key_file = files!("admin/ssh/priv").get()?;
+                let password = get_remote_password()?;
+                password_to_cache.replace(password.clone());
 
-                        session.userauth_pubkey_file(
-                            &admin_username,
-                            Some(&pub_key_file.local_path),
-                            &priv_key_file.local_path,
-                            Some(&password.into_non_secret()),
-                        )?;
+                session.userauth_pubkey_file(
+                    &admin_username,
+                    Some(&pub_key_file.local_path),
+                    &priv_key_file.local_path,
+                    Some(&password.into_non_secret()),
+                )?;
 
-                        let node_name = node_name.clone();
-                        let process =
-                            self.spawn_remote(&session, password_to_cache, progress_handle);
+                let process = self.spawn_remote(session, password_to_cache, progress_handle);
 
-                        current_session.replace((node_name, session));
-
-                        process?
-                    }
-                }
+                process?
             }
-            ProcessMode::Shell {
-                stdin,
-                stdout,
-                stderr,
-                ..
-            } => {
+            ProcessMode::Shell { stdin, .. } => {
                 let stdin = stdin.clone();
-                let stdout = stdout.clone();
-                let stderr = stderr.clone();
-                self.spawn_in_shell(stdin, stdout, stderr, password_to_cache, progress_handle)?
+                self.spawn_in_shell(stdin, password_to_cache, progress_handle)?
             }
         }
     }
@@ -363,18 +335,33 @@ impl ProcessBuilder {
             stdin.write_all(self.input_data.as_bytes())?;
         }
 
+        let stdout = HistoryReader::new(Stream::StdStdout(Arc::new(Mutex::new(
+            child.stdout.take().expect("stdout should not be taken"),
+        ))));
+        let stderr = HistoryReader::new(Stream::StdStderr(Arc::new(Mutex::new(
+            child.stderr.take().expect("stderr should not be taken"),
+        ))));
+
+        let stdout_clone = stdout.clone();
+        let stdout_handle = thread::spawn(move || {
+            Ok((None, util::read_lines(stdout_clone, util::stdout_printer)?))
+        });
+        let stderr_clone = stderr.clone();
+        let stderr_handle = thread::spawn(move || {
+            Ok((None, util::read_lines(stderr_clone, util::stderr_printer)?))
+        });
+
         Process {
             builder: self,
             stdin: Stdin::Std(Arc::new(Mutex::new(stdin))),
-            stdout: Rewindable::new(Stdout::Std(Arc::new(Mutex::new(
-                child.stdout.take().expect("stdout should not be taken"),
-            )))),
-            stderr: Rewindable::new(Stderr::Std(Arc::new(Mutex::new(
-                child.stderr.take().expect("stderr should not be taken"),
-            )))),
+            stdout_history: stdout,
+            stderr_history: stderr,
+            stdout_handle,
+            stderr_handle,
             handle: Handle::Cmd(child),
             password_to_cache,
             progress_handle,
+            interrupt_signal: AtomicBool::new(false),
         }
     }
 
@@ -408,7 +395,7 @@ impl ProcessBuilder {
             ),
             "--mount",
             &format!(
-                "type=bind,source={},target={},readonly",
+                "type=bind,source={},target={}",
                 crate::local_temp_dir().to_string_lossy(),
                 crate::container_temp_dir().to_string_lossy(),
             ),
@@ -439,74 +426,142 @@ impl ProcessBuilder {
             stdin.write_all(self.input_data.as_bytes())?;
         }
 
+        let stdout = HistoryReader::new(Stream::StdStdout(Arc::new(Mutex::new(
+            child.stdout.take().expect("stdout should not be taken"),
+        ))));
+        let stderr = HistoryReader::new(Stream::StdStderr(Arc::new(Mutex::new(
+            child.stderr.take().expect("stderr should not be taken"),
+        ))));
+
+        let stdout_clone = stdout.clone();
+        let stdout_handle = thread::spawn(move || {
+            Ok((None, util::read_lines(stdout_clone, util::stdout_printer)?))
+        });
+        let stderr_clone = stderr.clone();
+        let stderr_handle = thread::spawn(move || {
+            Ok((None, util::read_lines(stderr_clone, util::stderr_printer)?))
+        });
+
         Process {
             builder: self,
             stdin: Stdin::Std(Arc::new(Mutex::new(stdin))),
-            stdout: Rewindable::new(Stdout::Std(Arc::new(Mutex::new(
-                child.stdout.take().expect("stdout should not be taken"),
-            )))),
-            stderr: Rewindable::new(Stderr::Std(Arc::new(Mutex::new(
-                child.stderr.take().expect("stderr should not be taken"),
-            )))),
+            stdout_history: stdout,
+            stderr_history: stderr,
+            stdout_handle,
+            stderr_handle,
             handle: Handle::Cmd(child),
             password_to_cache,
             progress_handle,
+            interrupt_signal: AtomicBool::new(false),
         }
     }
 
     #[throws(Error)]
     fn spawn_remote(
         self,
-        session: &ssh2::Session,
+        session: ssh2::Session,
         password_to_cache: Option<Secret<String>>,
         progress_handle: ProgressHandle,
     ) -> Process {
+        let token = crate::util::random_string(crate::util::RAND_CHARS, 16);
+
         let mut channel = session.channel_session()?;
 
         for (key, value) in self.settings.get_env_vars() {
             channel.setenv(key, value.as_ref().unwrap_or(&Cow::Borrowed("")))?;
         }
 
-        let raw: Cow<_> = if let Some(current_dir) = &self.settings.get_current_dir() {
-            format!("cd {current_dir} ; {}", util::get_prefixed_raw(&self)).into()
-        } else {
-            util::get_prefixed_raw(&self)
+        let mut command = String::new();
+
+        // Change current directory
+        if let Some(current_dir) = &self.settings.get_current_dir() {
+            write!(command, "cd {current_dir} ; ")?;
         };
 
-        let raw = if !self.input_data.is_empty() {
-            let heredoc_id = crate::util::random_string(crate::util::RAND_CHARS, 16);
+        // Start marker for the command output
+        write!(
+            command,
+            "echo \"{SHELL_TOKEN_START_PREFIX}{token}:$${SHELL_TOKEN_SUFFIX}\" \
+                | tee /dev/stderr ;",
+        )?;
+
+        // The command to execute
+        write!(command, " {}", util::get_prefixed_raw(&self))?;
+
+        // Input data heredoc start
+        if !self.input_data.is_empty() {
+            write!(command, " <<'EOT-{token}'")?;
+        }
+
+        // End marker for the command output
+        writeln!(
+            command,
+            " ; echo \"{SHELL_TOKEN_END_PREFIX}{token}:$?{SHELL_TOKEN_SUFFIX}\" \
+                | tee /dev/stderr",
+        )?;
+
+        // Write actual input data
+        if !self.input_data.is_empty() {
+            write!(command, "{}", self.input_data)?;
             if !self.input_data.ends_with('\n') {
-                format!(
-                    "{raw} <<'EOT-{heredoc_id}'\n{}\nEOT-{heredoc_id}",
-                    self.input_data
-                )
-                .into()
-            } else {
-                format!(
-                    "{raw} <<'EOT-{heredoc_id}'\n{}EOT-{heredoc_id}",
-                    self.input_data
-                )
-                .into()
+                writeln!(command)?;
             }
-        } else {
-            raw
+            write!(command, "EOT-{token}")?;
+        }
+
+        let mut stdout = HistoryReader::new(Stream::Ssh(Arc::new(Mutex::new(channel.stream(0)))));
+        let mut stderr = HistoryReader::new(Stream::Ssh(Arc::new(Mutex::new(channel.stderr()))));
+
+        channel.exec(&command)?;
+
+        session.set_blocking(false);
+
+        let stdout_pid = util::read_start_token(&mut stdout, &token)?;
+        let stderr_pid = util::read_start_token(&mut stderr, &token)?;
+
+        if stdout_pid != stderr_pid {
+            throw!(Error::Pid);
+        }
+
+        let Some(pid) = stdout_pid else {
+            throw!(Error::Pid);
         };
 
-        channel.exec(&raw)?;
+        let token_clone = token.clone();
+        let stdout_clone = stdout.clone();
+        let stdout_handle = thread::spawn(move || {
+            Ok((
+                None,
+                util::read_lines_until_end_token(stdout_clone, &token_clone, util::stdout_printer)?
+                    .1,
+            ))
+        });
+        let stderr_clone = stderr.clone();
+        let stderr_handle = thread::spawn(move || {
+            Ok((
+                None,
+                util::read_lines_until_end_token(stderr_clone, &token, util::stderr_printer)?.1,
+            ))
+        });
 
-        let stdout = Arc::new(Mutex::new(channel.stream(0)));
-        let stderr = Arc::new(Mutex::new(channel.stderr()));
-        let handle = Arc::new(Mutex::new(channel));
-        let stdin = Arc::clone(&handle);
+        let stdin = Arc::new(Mutex::new(channel.stream(0)));
+        let channel = Arc::new(Mutex::new(channel));
 
         Process {
             builder: self,
             stdin: Stdin::Ssh(stdin),
-            stdout: Rewindable::new(Stdout::Ssh(stdout)),
-            stderr: Rewindable::new(Stderr::Ssh(stderr)),
-            handle: Handle::Ssh(handle),
+            stdout_history: stdout,
+            stderr_history: stderr,
+            stdout_handle,
+            stderr_handle,
+            handle: Handle::Ssh {
+                pid,
+                session,
+                channel,
+            },
             password_to_cache,
             progress_handle,
+            interrupt_signal: AtomicBool::new(false),
         }
     }
 
@@ -514,12 +569,21 @@ impl ProcessBuilder {
     fn spawn_in_shell(
         self,
         stdin: Stdin,
-        stdout: Rewindable<Stdout>,
-        stderr: Rewindable<Stderr>,
         password_to_cache: Option<Secret<String>>,
         progress_handle: ProgressHandle,
     ) -> Process {
-        let token = crate::util::random_string(crate::util::RAND_CHARS, 10);
+        let token = crate::util::random_string(crate::util::RAND_CHARS, 16);
+        let shell_token = crate::util::random_string(crate::util::RAND_CHARS, 16);
+
+        let temp_dir = match self.settings.get_mode() {
+            ProcessMode::Shell { mode, .. } => match &**mode {
+                ProcessMode::Local => crate::local_temp_dir(),
+                ProcessMode::Container => crate::container_temp_dir().to_owned(),
+                ProcessMode::Remote { .. } => crate::remote_temp_dir().to_owned(),
+                ProcessMode::Shell { .. } => unreachable!(),
+            },
+            _ => unreachable!(),
+        };
 
         {
             let mut std_stdin;
@@ -535,54 +599,146 @@ impl ProcessBuilder {
                 }
             };
 
+            // Start subshell
+            write!(stdin_mut, "sh <<'EOT-SHELL-{shell_token}'")?;
+
+            // Redirect stdout and stderr to files
+            write!(
+                stdin_mut,
+                " >{temp_dir}/stdout_{token} 2>{temp_dir}/stderr_{token}",
+                temp_dir = temp_dir.to_string_lossy(),
+            )?;
+
+            // Place subshell in background
+            writeln!(stdin_mut, " &")?;
+
+            // Working directory
             if let Some(current_dir) = &self.settings.get_current_dir() {
-                stdin_mut.write_all(b"cd ")?;
-                stdin_mut.write_all(current_dir.as_bytes())?;
-                stdin_mut.write_all(b"\n")?;
+                writeln!(stdin_mut, "cd {current_dir}")?;
             };
 
-            stdin_mut.write_all(b"echo '")?;
-            stdin_mut.write_all(SHELL_TOKEN_START_PREFIX.as_bytes())?;
-            stdin_mut.write_all(token.as_bytes())?;
-            stdin_mut.write_all(SHELL_TOKEN_SUFFIX.as_bytes())?;
-            stdin_mut.write_all(b"' | tee /dev/stderr\n")?;
+            // Start marker for the command output
+            writeln!(
+                stdin_mut,
+                "echo \"{SHELL_TOKEN_START_PREFIX}{token}:$${SHELL_TOKEN_SUFFIX}\" \
+                    | tee -a /dev/stderr",
+            )?;
 
-            for (key, value) in self.settings.get_env_vars() {
-                stdin_mut.write_all(key.as_bytes())?;
-                stdin_mut.write_all(b"=")?;
-                if let Some(value) = value {
-                    stdin_mut.write_all(value.as_bytes())?;
-                }
-                stdin_mut.write_all(b" ")?;
-            }
+            // The command to execute
+            write!(stdin_mut, "{}", util::get_prefixed_raw(&self))?;
 
-            stdin_mut.write_all(util::get_prefixed_raw(&self).as_bytes())?;
+            // Input data
             if !self.input_data.is_empty() {
-                stdin_mut.write_all(b" <<EOT\n")?;
-                stdin_mut.write_all(self.input_data.as_bytes())?;
+                writeln!(stdin_mut, " <<'EOT-{token}'")?;
+                write!(stdin_mut, "{}", self.input_data)?;
                 if !self.input_data.ends_with('\n') {
-                    stdin_mut.write_all(b"\n")?;
+                    writeln!(stdin_mut)?;
                 }
-                stdin_mut.write_all(b"EOT")?;
+                writeln!(stdin_mut, "EOT-{token}")?;
+            } else {
+                writeln!(stdin_mut)?;
             }
-            stdin_mut.write_all(b"\n")?;
 
-            stdin_mut.write_all(b"echo '")?;
-            stdin_mut.write_all(SHELL_TOKEN_END_PREFIX.as_bytes())?;
-            stdin_mut.write_all(token.as_bytes())?;
-            stdin_mut.write_all(b":'$?'")?;
-            stdin_mut.write_all(SHELL_TOKEN_SUFFIX.as_bytes())?;
-            stdin_mut.write_all(b"' | tee /dev/stderr\n")?;
+            // End marker for the command output
+            writeln!(
+                stdin_mut,
+                "echo \"{SHELL_TOKEN_END_PREFIX}{token}:$?{SHELL_TOKEN_SUFFIX}\" \
+                    | tee -a /dev/stderr",
+            )?;
+
+            // Close subshell
+            writeln!(stdin_mut, "EOT-SHELL-{shell_token}")?;
         }
+
+        let mut stdout = match self.settings.get_mode() {
+            ProcessMode::Shell { mode, .. } => match &**mode {
+                ProcessMode::Local | ProcessMode::Container => {
+                    let file = File::options()
+                        .write(true)
+                        .read(true)
+                        .create(true)
+                        .open(crate::local_temp_dir().join(format!("stdout_{token}")))?;
+                    HistoryReader::new(Stream::File(Arc::new(Mutex::new(file))))
+                }
+                ProcessMode::Remote { node_name } => {
+                    let process = process!(
+                        "tail -n +1 -f {temp_dir}/stdout_{token}",
+                        temp_dir = temp_dir.to_string_lossy(),
+                    );
+                    let mut process_output = process
+                        .remote_mode(node_name.clone())
+                        .spawn_no_settings_update("Running process")?
+                        .stdout_history;
+                    process_output.rewind();
+                    process_output
+                }
+                ProcessMode::Shell { .. } => unreachable!(),
+            },
+            _ => unreachable!(),
+        };
+
+        let mut stderr = match self.settings.get_mode() {
+            ProcessMode::Shell { mode, .. } => match &**mode {
+                ProcessMode::Local | ProcessMode::Container => {
+                    let file = File::options()
+                        .write(true)
+                        .read(true)
+                        .create(true)
+                        .open(crate::local_temp_dir().join(format!("stderr_{token}")))?;
+                    HistoryReader::new(Stream::File(Arc::new(Mutex::new(file))))
+                }
+                ProcessMode::Remote { node_name } => {
+                    let process = process!(
+                        "tail -n +1 -f {temp_dir}/stderr_{token}",
+                        temp_dir = temp_dir.to_string_lossy(),
+                    );
+                    let mut process_output = process
+                        .remote_mode(node_name.clone())
+                        .spawn_no_settings_update("Running process")?
+                        .stderr_history;
+                    process_output.rewind();
+                    process_output
+                }
+                ProcessMode::Shell { .. } => unreachable!(),
+            },
+            _ => unreachable!(),
+        };
+
+        let stdout_pid = util::read_start_token(&mut stdout, &token)?;
+        let stderr_pid = util::read_start_token(&mut stderr, &token)?;
+
+        if stdout_pid != stderr_pid {
+            throw!(Error::Pid);
+        }
+
+        let Some(pid) = stdout_pid else {
+            throw!(Error::Pid);
+        };
+
+        let token_clone = token.clone();
+        let stdout_clone = stdout.clone();
+        let stdout_handle = thread::spawn(move || {
+            util::read_lines_until_end_token(stdout_clone, &token_clone, util::stdout_printer)
+                .map(|(code, output)| (Some(code), output))
+        });
+
+        let stderr_clone = stderr.clone();
+        let stderr_handle = thread::spawn(move || {
+            util::read_lines_until_end_token(stderr_clone, &token, util::stderr_printer)
+                .map(|(code, output)| (Some(code), output))
+        });
 
         Process {
             builder: self,
-            stdin,
-            stdout,
-            stderr,
-            handle: Handle::Shell(token),
+            stdin: stdin.clone(),
+            stdout_history: stdout,
+            stderr_history: stderr,
+            stdout_handle,
+            stderr_handle,
+            handle: Handle::Shell { pid, shell: stdin },
             password_to_cache,
             progress_handle,
+            interrupt_signal: AtomicBool::new(false),
         }
     }
 }
@@ -590,19 +746,67 @@ impl ProcessBuilder {
 pub struct Process {
     builder: ProcessBuilder,
     stdin: Stdin,
-    stdout: Rewindable<Stdout>,
-    stderr: Rewindable<Stderr>,
+    stdout_history: HistoryReader<Stream>,
+    stderr_history: HistoryReader<Stream>,
+    stdout_handle: JoinHandle<Result<(Option<i32>, String), Error>>,
+    stderr_handle: JoinHandle<Result<(Option<i32>, String), Error>>,
     handle: Handle,
     password_to_cache: Option<Secret<String>>,
     progress_handle: ProgressHandle,
+    interrupt_signal: AtomicBool,
 }
 
 impl Process {
     #[throws(Error)]
     pub fn join(mut self) -> Output {
-        let mut output = self.handle.join(self.stdin, self.stdout, self.stderr)?;
+        drop(self.stdin);
+
+        let remote_shell_node =
+            if let ProcessMode::Shell { mode, .. } = self.builder.settings.get_mode() {
+                if let ProcessMode::Remote { node_name } = &**mode {
+                    Some(node_name.clone())
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+
+        let mut output = Output::new();
+
+        if let Some(code) = self.handle.join()? {
+            output.code = code;
+        };
+
+        let code_opt;
+        let code2_opt;
+
+        (code_opt, output.stdout) = self
+            .stdout_handle
+            .join()
+            .expect(EXPECT_THREAD_NOT_POSIONED)?;
+        (code2_opt, output.stderr) = self
+            .stderr_handle
+            .join()
+            .expect(EXPECT_THREAD_NOT_POSIONED)?;
+
+        if let (Some(code), Some(code2)) = (code_opt, code2_opt) {
+            if code == code2 {
+                output.code = code;
+            }
+        }
+
         debug!("Exit code: {}", output.code);
 
+        if let Some(node_name) = remote_shell_node {
+            process!(
+                "rm -r {temp_dir}/*",
+                temp_dir = crate::remote_temp_dir().to_string_lossy()
+            )
+            .remote_mode(node_name)
+            .spawn_no_settings_update("Cleaning up temporary files")?
+            .join()?;
+        }
         self.progress_handle.finish();
 
         if self.builder.success_codes.contains(&output.code) {
@@ -731,83 +935,76 @@ impl Process {
 
         output
     }
+
+    #[throws(Error)]
+    pub fn interrupt(&mut self) {
+        self.handle.interrupt()?;
+        self.interrupt_signal.store(true, Ordering::SeqCst);
+    }
 }
 
 enum Handle {
     Cmd(std::process::Child),
-    Ssh(Arc<Mutex<ssh2::Channel>>),
-    Shell(String),
+    Ssh {
+        pid: u32,
+        session: ssh2::Session,
+        channel: Arc<Mutex<ssh2::Channel>>,
+    },
+    Shell {
+        pid: u32,
+        shell: Stdin,
+    },
 }
 
 impl Handle {
     #[throws(Error)]
-    fn join(
-        self,
-        stdin: Stdin,
-        mut stdout: Rewindable<Stdout>,
-        mut stderr: Rewindable<Stderr>,
-    ) -> Output {
-        drop(stdin);
-
-        let token = if let Self::Shell(token) = &self {
-            Some(token.as_str())
-        } else {
-            None
-        };
-
-        let mut output = Output::new();
-        stdout.rewind();
-        stderr.rewind();
-        thread::scope(|s| -> Result<(), Error> {
-            let stdout_printer = |line: &str| debug!("[{}] {line}", "stdout");
-            let stderr_printer = |line: &str| debug!("{}", format!("[stderr] {line}").red());
-
-            if let Some(token) = token {
-                let stdout_handle =
-                    s.spawn(move || util::read_lines_until_token(stdout, token, stdout_printer));
-                let stderr_handle =
-                    s.spawn(move || util::read_lines_until_token(stderr, token, stderr_printer));
-
-                (output.code, output.stdout) =
-                    stdout_handle.join().expect(EXPECT_THREAD_NOT_POSIONED)?;
-                (output.code, output.stderr) =
-                    stderr_handle.join().expect(EXPECT_THREAD_NOT_POSIONED)?;
-            } else {
-                let stdout_handle = s.spawn(move || util::read_lines(stdout, stdout_printer));
-                let stderr_handle = s.spawn(move || util::read_lines(stderr, stderr_printer));
-
-                output.stdout = stdout_handle.join().expect(EXPECT_THREAD_NOT_POSIONED)?;
-                output.stderr = stderr_handle.join().expect(EXPECT_THREAD_NOT_POSIONED)?;
-            }
-
-            Ok(())
-        })?;
-
+    fn join(self) -> Option<i32> {
         match self {
             Self::Cmd(mut child) => {
                 let status = child.wait()?;
                 let Some(code) = status.code() else {
                     throw!(Error::Terminated)
                 };
-                output.code = code;
+                Some(code)
             }
-            Self::Ssh(channel) => {
+            Self::Ssh {
+                channel, session, ..
+            } => {
                 let mut channel = channel.lock().expect(EXPECT_THREAD_NOT_POSIONED);
+                channel.send_eof()?;
+
+                session.set_blocking(true);
+
+                channel.wait_eof()?;
                 channel.close()?;
                 channel.wait_close()?;
-                output.code = channel.exit_status()?;
+                Some(channel.exit_status()?)
             }
-            _ => (),
+            _ => None,
         }
+    }
 
-        output
+    #[throws(Error)]
+    pub fn interrupt(&mut self) {
+        match self {
+            Self::Cmd(child) => {
+                signal::kill(Pid::from_raw(child.id() as i32), Signal::SIGINT)?;
+            }
+            Self::Ssh { pid, channel, .. } => {
+                let mut channel = channel.lock().expect(EXPECT_THREAD_NOT_POSIONED);
+                channel.exec(&format!("kill -s SIGINT {pid}"))?;
+            }
+            Self::Shell { pid, shell } => {
+                writeln!(shell, "kill -s SIGINT {pid}")?;
+            }
+        }
     }
 }
 
 #[derive(Clone)]
 enum Stdin {
     Std(Arc<Mutex<std::process::ChildStdin>>),
-    Ssh(Arc<Mutex<ssh2::Channel>>),
+    Ssh(Arc<Mutex<ssh2::Stream>>),
 }
 
 impl Write for Stdin {
@@ -846,13 +1043,13 @@ impl Write for Stdin {
 }
 
 #[derive(Clone)]
-struct Rewindable<T> {
+struct HistoryReader<T> {
     buffer: Arc<Mutex<Vec<u8>>>,
     cursor: usize,
     inner: T,
 }
 
-impl<T> Rewindable<T> {
+impl<T> HistoryReader<T> {
     fn new(inner: T) -> Self {
         Self {
             buffer: Arc::new(Mutex::new(Vec::new())),
@@ -866,7 +1063,7 @@ impl<T> Rewindable<T> {
     }
 }
 
-impl<T> Read for Rewindable<T>
+impl<T> Read for HistoryReader<T>
 where
     T: Read,
 {
@@ -896,33 +1093,25 @@ where
 }
 
 #[derive(Clone)]
-enum Stdout {
-    Std(Arc<Mutex<std::process::ChildStdout>>),
+enum Stream {
+    StdStdout(Arc<Mutex<std::process::ChildStdout>>),
+    StdStderr(Arc<Mutex<std::process::ChildStderr>>),
     Ssh(Arc<Mutex<ssh2::Stream>>),
+    File(Arc<Mutex<File>>),
 }
 
-impl Read for Stdout {
+impl Read for Stream {
     #[throws(io::Error)]
     fn read(&mut self, buf: &mut [u8]) -> usize {
         match self {
-            Self::Std(stdout) => stdout.lock().expect(EXPECT_THREAD_NOT_POSIONED).read(buf)?,
+            Self::StdStdout(stdout) => {
+                stdout.lock().expect(EXPECT_THREAD_NOT_POSIONED).read(buf)?
+            }
+            Self::StdStderr(stderr) => {
+                stderr.lock().expect(EXPECT_THREAD_NOT_POSIONED).read(buf)?
+            }
             Self::Ssh(stream) => stream.lock().expect(EXPECT_THREAD_NOT_POSIONED).read(buf)?,
-        }
-    }
-}
-
-#[derive(Clone)]
-enum Stderr {
-    Std(Arc<Mutex<std::process::ChildStderr>>),
-    Ssh(Arc<Mutex<ssh2::Stream>>),
-}
-
-impl Read for Stderr {
-    #[throws(io::Error)]
-    fn read(&mut self, buf: &mut [u8]) -> usize {
-        match self {
-            Self::Std(stderr) => stderr.lock().expect(EXPECT_THREAD_NOT_POSIONED).read(buf)?,
-            Self::Ssh(stream) => stream.lock().expect(EXPECT_THREAD_NOT_POSIONED).read(buf)?,
+            Self::File(file) => file.lock().expect(EXPECT_THREAD_NOT_POSIONED).read(buf)?,
         }
     }
 }
@@ -950,6 +1139,11 @@ impl Shell<Idle> {
         }
     }
 
+    pub fn remote_mode<S: Into<Cow<'static, str>>>(mut self, node_name: S) -> Self {
+        self.state.builder = self.state.builder.remote_mode(node_name);
+        self
+    }
+
     #[throws(Error)]
     #[allow(unused)]
     pub fn start(self) -> Shell<Running> {
@@ -967,16 +1161,18 @@ impl Shell<Idle> {
 
 impl Shell<Running> {
     #[throws(Error)]
-    #[allow(unused)]
+    pub fn spawn(&self, process: impl Into<ProcessBuilder>) -> Process {
+        process
+            .into()
+            .shell_mode(self.state.mode.clone(), self.state.process.stdin.clone())
+            .spawn()?
+    }
+
+    #[throws(Error)]
     pub fn run(&self, process: impl Into<ProcessBuilder>) -> Output {
         process
             .into()
-            .shell_mode(
-                self.state.mode.clone(),
-                self.state.process.stdin.clone(),
-                self.state.process.stdout.clone(),
-                self.state.process.stderr.clone(),
-            )
+            .shell_mode(self.state.mode.clone(), self.state.process.stdin.clone())
             .run()?
     }
 
@@ -1093,18 +1289,10 @@ impl Settings {
         self
     }
 
-    fn shell_mode(
-        &mut self,
-        outer_mode: ProcessMode,
-        stdin: Stdin,
-        stdout: Rewindable<Stdout>,
-        stderr: Rewindable<Stderr>,
-    ) -> &mut Self {
+    fn shell_mode(&mut self, outer_mode: ProcessMode, stdin: Stdin) -> &mut Self {
         self.mode.replace(ProcessMode::Shell {
             mode: Box::new(outer_mode),
             stdin,
-            stdout,
-            stderr,
         });
         self
     }
@@ -1167,8 +1355,6 @@ enum ProcessMode {
     Shell {
         mode: Box<ProcessMode>,
         stdin: Stdin,
-        stdout: Rewindable<Stdout>,
-        stderr: Rewindable<Stderr>,
     },
 }
 
@@ -1180,8 +1366,11 @@ pub enum Error {
     #[error("The process was terminated by a signal")]
     Terminated,
 
-    #[error("Unexpected end of input")]
-    EndOfInput,
+    #[error("Could not read the process ID")]
+    Pid,
+
+    #[error("Invalid UTF-8")]
+    InvalidUtf8,
 
     #[error(transparent)]
     Prompt(#[from] prompt::Error),
@@ -1193,10 +1382,16 @@ pub enum Error {
     Io(#[from] io::Error),
 
     #[error(transparent)]
+    Fmt(#[from] fmt::Error),
+
+    #[error(transparent)]
     Transaction(anyhow::Error),
 
     #[error(transparent)]
     Ssh(#[from] ssh2::Error),
+
+    #[error(transparent)]
+    Nix(#[from] nix::Error),
 }
 
 mod util {
@@ -1240,11 +1435,11 @@ mod util {
     pub fn read_lines(reader: impl Read, print_line: impl Fn(&str)) -> String {
         let mut buf_reader = BufReader::new(reader);
         let mut out = String::new();
-
+        let mut line = String::new();
         loop {
-            let mut line = String::new();
-            let read = buf_reader.read_line(&mut line)?;
-            if read == 0 {
+            line.clear();
+            let bytes_read = buf_reader.read_line(&mut line)?;
+            if bytes_read == 0 {
                 break;
             }
 
@@ -1256,7 +1451,34 @@ mod util {
     }
 
     #[throws(Error)]
-    pub fn read_lines_until_token(
+    pub fn read_start_token(reader: impl Read, token: &str) -> Option<u32> {
+        let mut buf_reader = BufReader::new(reader);
+        let mut line = String::new();
+        loop {
+            match buf_reader.read_line(&mut line) {
+                Ok(_) if line.ends_with('\n') => break,
+                Ok(_) => (),
+                Err(err) if err.kind() == io::ErrorKind::WouldBlock => (),
+                Err(err) => throw!(err),
+            }
+        }
+
+        let line = &*line;
+
+        let start_marker_prefix = format!("{SHELL_TOKEN_START_PREFIX}{token}:");
+        if let Some(("", rest)) = line.split_once(&start_marker_prefix) {
+            if let Some((pid, "" | "\n")) = rest.split_once(SHELL_TOKEN_SUFFIX) {
+                if let Ok(pid) = pid.parse() {
+                    return Some(pid);
+                }
+            }
+        }
+
+        None
+    }
+
+    #[throws(Error)]
+    pub fn read_lines_until_end_token(
         reader: impl Read,
         token: &str,
         print_line: impl Fn(&str),
@@ -1264,30 +1486,26 @@ mod util {
         let mut buf_reader = BufReader::new(reader);
         let mut out = String::new();
 
-        let mut start_found = false;
         let mut end_found = None;
-
-        let start_marker = format!("{SHELL_TOKEN_START_PREFIX}{token}{SHELL_TOKEN_SUFFIX}");
         let end_marker_prefix = format!("{SHELL_TOKEN_END_PREFIX}{token}:");
-        let end_marker_suffix = SHELL_TOKEN_SUFFIX;
 
+        let mut line = String::new();
         let code = loop {
-            let mut line = String::new();
-            let read = buf_reader.read_line(&mut line)?;
-            if read == 0 {
-                throw!(Error::EndOfInput);
+            line.clear();
+            loop {
+                match buf_reader.read_line(&mut line) {
+                    Ok(_) if line.ends_with('\n') => break,
+                    Ok(_) => (),
+                    Err(err) if err.kind() == io::ErrorKind::WouldBlock => (),
+                    Err(err) => throw!(err),
+                }
             }
 
             let mut line = &*line;
 
-            if !start_found && line.contains(&start_marker) {
-                start_found = true;
-                continue;
-            }
-
             if end_found.is_none() {
                 if let Some((before, rest)) = line.split_once(&end_marker_prefix) {
-                    if let Some((code, _)) = rest.split_once(end_marker_suffix) {
+                    if let Some((code, _)) = rest.split_once(SHELL_TOKEN_SUFFIX) {
                         if let Ok(code) = code.parse() {
                             end_found.replace(code);
                             line = before;
@@ -1296,7 +1514,7 @@ mod util {
                 }
             }
 
-            if start_found && (end_found.is_none() || !line.is_empty()) {
+            if end_found.is_none() || !line.is_empty() {
                 print_line(line.trim_end_matches('\n'));
                 out.push_str(line);
             }
@@ -1307,6 +1525,14 @@ mod util {
         };
 
         (code, out)
+    }
+
+    pub fn stdout_printer(line: &str) {
+        debug!("[stdout] {line}");
+    }
+
+    pub fn stderr_printer(line: &str) {
+        debug!("[stderr] {line}");
     }
 }
 
